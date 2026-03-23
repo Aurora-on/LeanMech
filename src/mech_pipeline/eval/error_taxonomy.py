@@ -1,0 +1,18 @@
+ERROR_TAXONOMY = {
+    "visual_grounding_failure",
+    "missing_diagram_information",
+    "variable_mapping_error",
+    "wrong_target_extraction",
+    "unit_dimension_mismatch",
+    "invalid_lean_syntax",
+    "missing_import_or_namespace",
+    "elaboration_failure",
+    "semantic_drift",
+    "proof_search_failure",
+    "partially_correct_but_unverifiable",
+    "lean_disabled",
+    "unsupported_multi_image_sample",
+    "data_source_unavailable",
+    "physlean_missing",
+    "physlean_env_error",
+}

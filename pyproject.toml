@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mech-baseline-pipeline"
+version = "0.1.0"
+description = "Baseline V1 for mechanics autoformalization and Lean4 verification"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "openai>=1.0",
+  "pandas>=2.0",
+  "pydantic>=2.0",
+  "pyarrow>=12.0",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+mech-baseline = "mech_pipeline.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

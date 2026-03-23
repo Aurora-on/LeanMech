@@ -1,0 +1,53 @@
+﻿dataset:
+  source: lean4phys
+  limit: 3
+  category: Mechanics
+  sample_policy: index_head
+  seed: 42
+  local_archive:
+    root: "F:/AI4Mechanics/\u6570\u636e\u96c6/\u5f52\u6863"
+    mode: text_only
+  lean4phys:
+    bench_path: "F:/AI4Mechanics/coding/Lean4PHYS/LeanPhysBench/LeanPhysBench_v0.json"
+    category: "mechanics"
+    level: null
+  single_image_only_for_mvp: true
+
+model:
+  provider: openai_compatible
+  model_id: gpt-5.2
+  base_url: "https://api.openai-proxy.org/v1"
+  api_key: null
+  api_key_env: OPENAI_PROXY_KEY
+  supports_vision: false
+  timeout_s: 60
+  max_retries: 2
+  extra: {}
+
+lean:
+  enabled: true
+  physlean_dir: "F:/AI4Mechanics/PhysLean-master"
+  timeout_s: 120
+  strict_blocklist: ["sorry", "admit", "axiom"]
+  lean_header: "import PhysLean"
+  preflight_enabled: true
+
+semantic:
+  pass_threshold: 0.7
+
+proof:
+  max_attempts: 2
+
+prompts:
+  dir: prompts
+  a_extract_ir: A_extract_ir.txt
+  b_generate_statements: B_generate_statements.txt
+  d_semantic_rank: D_semantic_rank.txt
+  e_generate_proof: E_generate_proof.txt
+  e_repair_proof: E_repair_proof.txt
+
+output:
+  output_dir: outputs/latest
+  runs_dir: runs
+  tag: mvp-lean4phys-mechanics
+

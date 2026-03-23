@@ -1,0 +1,24 @@
+returncode=1
+
+STDOUT:
+.pipeline1_tmp\repro_attempt1\proof\lean4phys-university_mechanics_Mechanics_73_University_c1.lean:12:23: error: unexpected token; expected '_' or identifier
+.pipeline1_tmp\repro_attempt1\proof\lean4phys-university_mechanics_Mechanics_73_University_c1.lean:12:19: error: Function expected at
+  m2
+but this term has type
+  ℝ
+
+Note: Expected a function because this term is being applied to the argument
+  failed to pretty print term (use 'set_option pp.rawOnError true' for raw representation)
+.pipeline1_tmp\repro_attempt1\proof\lean4phys-university_mechanics_Mechanics_73_University_c1.lean:12:7: error: Missing cases:
+.pipeline1_tmp\repro_attempt1\proof\lean4phys-university_mechanics_Mechanics_73_University_c1.lean:11:40: error: unsolved goals
+m1 m2 g a T : ℝ
+hm1 : m1 > 0
+hm2 : m2 > 0
+hg : g ≥ 0
+h_glider : T = m1 * a
+h_weight : m2 * g - T = m2 * a
+⊢ a = m2 / (m1 + m2) * g ∧ T = m1 * m2 / (m1 + m2) * g
+
+
+STDERR:
+

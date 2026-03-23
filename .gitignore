@@ -1,0 +1,10 @@
+.mypy_cache/
+.pytest_cache/
+outputs/
+runs/
+__pycache__/
+*.pyc
+src/*.egg-info/
+.tmp_leanforphysics_extract.txt
+.env
+.env.*

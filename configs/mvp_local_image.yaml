@@ -1,0 +1,47 @@
+dataset:
+  source: local_archive
+  limit: 10
+  category: Mechanics
+  sample_policy: index_head
+  seed: 42
+  local_archive:
+    root: "F:/AI4Mechanics/数据集/归档"
+    mode: image_text
+  single_image_only_for_mvp: true
+
+model:
+  provider: mock
+  model_id: mock-mvp-image
+  base_url: null
+  api_key_env: OPENAI_API_KEY
+  supports_vision: true
+  timeout_s: 60
+  max_retries: 2
+  extra: {}
+
+lean:
+  enabled: true
+  physlean_dir: "F:/AI4Mechanics/PhysLean-master"
+  timeout_s: 90
+  strict_blocklist: ["sorry", "admit", "axiom"]
+  lean_header: "import PhysLean"
+  preflight_enabled: true
+
+semantic:
+  pass_threshold: 0.7
+
+proof:
+  max_attempts: 2
+
+prompts:
+  dir: prompts
+  a_extract_ir: A_extract_ir.txt
+  b_generate_statements: B_generate_statements.txt
+  d_semantic_rank: D_semantic_rank.txt
+  e_generate_proof: E_generate_proof.txt
+  e_repair_proof: E_repair_proof.txt
+
+output:
+  output_dir: outputs/latest
+  runs_dir: runs
+  tag: mvp-local-image

@@ -1,0 +1,20 @@
+backend=mechlib
+returncode=1
+
+STDOUT:
+.pipeline1_tmp\route_check\compile\mechlib\routecheck_c1.lean:6:61: error: Application type mismatch: The argument
+  m
+has type
+  Mass
+but is expected to have type
+  SI.Mass
+in the application
+  secondLaw m
+.pipeline1_tmp\route_check\compile\mechlib\routecheck_c1.lean:6:67: error: failed to synthesize
+  HMul Mass Acceleration ?m.5
+
+Hint: Additional diagnostic information may be available using the `set_option diagnostics true` command.
+
+
+STDERR:
+

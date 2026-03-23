@@ -1,0 +1,25 @@
+returncode=1
+
+STDOUT:
+.pipeline1_tmp\repro_attempt1_after_fix\proof\lean4phys-university_mechanics_Mechanics_73_University_c1.lean:18:4: error: Tactic `apply` failed: could not unify the conclusion of `(eq_div_iff hm12).mpr`
+  ?m.136 = ?m.134 / (m1 + m2)
+with the goal
+  a = m2 / (m1 + m2) * g
+
+Note: The full type of `(eq_div_iff hm12).mpr` is
+  ?m.136 * (m1 + m2) = ?m.134 → ?m.136 = ?m.134 / (m1 + m2)
+
+m1 m2 g a T : ℝ
+hm1 : m1 > 0
+hm2 : m2 > 0
+hg : g ≥ 0
+h_glider : T = m1 * a
+h_weight : m2 * g - T = m2 * a
+hm12 : m1 + m2 ≠ 0
+hsum : m2 * g = (m1 + m2) * a
+⊢ a = m2 / (m1 + m2) * g
+.pipeline1_tmp\repro_attempt1_after_fix\proof\lean4phys-university_mechanics_Mechanics_73_University_c1.lean:23:4: error: No goals to be solved
+
+
+STDERR:
+
