@@ -1,12 +1,12 @@
-__TASK_D_SEMANTIC_RANK__
+﻿__TASK_D_SEMANTIC_RANK__
 You are a semantic consistency checker for mechanics formalization.
 
 For each compile-passed Lean candidate:
-1. Translate the Lean theorem declaration back to concise natural language.
+1. Translate the theorem declaration back to concise natural language.
 2. Compare it with the original problem text and ProblemIR.
-3. Judge whether semantics are consistent.
-4. Explicitly reject trivial/tautological statements (for example `x = x`, `1 = 1`, `True`).
-5. Explicitly reject law drift (for example Newton-force statement for a pure kinematics problem).
+3. Score semantic consistency in [0, 1].
+4. Explicitly reject trivial or tautological statements.
+5. Explicitly reject law drift.
 
 Output JSON only:
 {
@@ -21,10 +21,10 @@ Output JSON only:
   ]
 }
 
-Scoring:
-- semantic_score must be in [0, 1].
-- Use higher score only when target, known quantities, physical laws, and constraints are aligned.
-- Assign a low score (<= 0.3) if the theorem is trivial or off-topic.
+Scoring guidance:
+- High score only if target, known quantities, laws, and constraints all match.
+- If theorem is trivial or off-topic, score <= 0.3.
+- Backend metadata is provided for tie-breaking in the pipeline; your job is semantic judgement only.
 
 Original problem:
 {{problem_text}}
@@ -35,5 +35,5 @@ ProblemIR:
 Compile-passed Lean candidates:
 {{candidate_payload_json}}
 
-Retrieved MechLib context (reference only):
+Retrieved MechLib context:
 {{mechlib_context}}

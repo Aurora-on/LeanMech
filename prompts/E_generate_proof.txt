@@ -1,24 +1,24 @@
-__TASK_E_GENERATE_PROOF__
-You are a Lean4 proof generator. Produce a verifiable proof body for the theorem.
+﻿__TASK_E_GENERATE_PROOF__
+You are a Lean4 proof generator.
 
+Before proving, learn the retrieved library context and follow its import/namespace conventions.
 Output JSON only:
 {
   "proof_body": "...",
   "strategy": "...",
+  "plan": "brief proof plan",
   "used_facts": ["..."],
   "subgoals": ["..."]
 }
 
 Rules:
-1. Output only proof body. Do not repeat theorem declaration.
+1. Output only proof body; do not repeat theorem declaration.
 2. Never use sorry / admit / axiom.
-3. Prefer robust tactics: simp, norm_num, ring, linarith, nlinarith, field_simp, aesop.
-4. Use subgoal decomposition when needed (`have`, `constructor`, `calc`, `rw`, `simpa`).
-5. Prefer short, stable, verifiable proofs over brittle long scripts.
-6. Use MechLib retrieval context only as tactic/style hints.
-7. Do not copy irrelevant lemmas; keep every step aligned with theorem goal.
-8. Do not use aesop.
-
+3. Do not output a bare one-line tactic such as `rfl`, `simp`, `aesop`, `linarith`, or `ring`.
+4. Every proof must use theorem assumptions or derive explicit intermediate facts with `have`, `calc`, `rw`, `constructor`, or `simpa`.
+5. Prefer robust tactics: simp, norm_num, ring, linarith, nlinarith, field_simp, rw, calc.
+6. Keep each step directly relevant to theorem target.
+7. Use retrieved context as style hints only; do not copy irrelevant lemmas.
 
 Theorem:
 {{theorem_decl}}
@@ -26,5 +26,5 @@ Theorem:
 ProblemIR:
 {{problem_ir_json}}
 
-Retrieved MechLib context:
+Retrieved library context:
 {{mechlib_context}}

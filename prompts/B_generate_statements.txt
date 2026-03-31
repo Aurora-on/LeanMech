@@ -1,45 +1,78 @@
 __TASK_B_GENERATE_STATEMENTS__
-You are a Lean4 statement generator.
-Generate exactly 4 theorem/lemma declaration candidates from ProblemIR.
-Output JSON only:
+You are a Lean4 statement generator for mechanics formalization.
+
+First learn the library context, then generate declarations.
+Output JSON only.
+
+Target library policy:
+- library_target={{library_target}}
+- required_header_template:
+{{required_header_template}}
+
+Return exactly 4 candidates:
 {
   "candidates": [
-    {"candidate_id":"c1","lean_header":"import PhysLean","theorem_decl":"theorem ... : ...","assumptions":[]},
-    {"candidate_id":"c2","lean_header":"import PhysLean","theorem_decl":"theorem ... : ...","assumptions":[]},
-    {"candidate_id":"c3","lean_header":"import PhysLean","theorem_decl":"theorem ... : ...","assumptions":[]},
-    {"candidate_id":"c4","lean_header":"import PhysLean","theorem_decl":"theorem ... : ...","assumptions":[]}
+    {
+      "candidate_id": "c1",
+      "lean_header": "...",
+      "theorem_decl": "theorem ... : ...",
+      "assumptions": [],
+      "plan": "short modeling plan"
+    },
+    {
+      "candidate_id": "c2",
+      "lean_header": "...",
+      "theorem_decl": "theorem ... : ...",
+      "assumptions": [],
+      "plan": "short modeling plan"
+    },
+    {
+      "candidate_id": "c3",
+      "lean_header": "...",
+      "theorem_decl": "theorem ... : ...",
+      "assumptions": [],
+      "plan": "short modeling plan"
+    },
+    {
+      "candidate_id": "c4",
+      "lean_header": "...",
+      "theorem_decl": "theorem ... : ...",
+      "assumptions": [],
+      "plan": "short modeling plan"
+    }
   ]
 }
 
-Constraints:
-1. No proof body. Never output `:= by`.
-2. Forbidden trivial goals: `: True`, `: False`, `: Prop`.
-3. Declaration must be syntactically complete: `theorem/lemma name (args...) : target`.
-4. Use ASCII Lean notation (Real, ->, >=, forall) and avoid special symbols.
-5. Keep the same physical meaning across all candidates, but vary modeling details.
-6. Do not use any external gold answer or reference proof.
-7. Candidates must align with `physical_laws` and `unknown_target` in ProblemIR.
-8. Reject off-topic laws (for example Newton-force equations for pure kinematics).
-
-Readability and formatting requirements (important):
-9. Use multi-line theorem declarations. Do not output one extremely long single line.
-10. Preferred style:
-    theorem/lemma name
-      (arg1 : Type)
-      (arg2 : Type)
-      ...
-      : goal
-11. Put each binder on its own line with 2-space indentation.
-12. Keep one blank line between different candidate declarations in your internal drafting.
-13. Keep lines reasonably short (recommended <= 100 chars) by splitting binders/goal across lines.
-14. Use meaningful names (avoid generic names like `h1`, `h2` when possible).
-15. If the goal is a conjunction, prefer a readable layout (for example split with line breaks).
-16. Use MechLib retrieval context only for style and ontology hints.
-17. If you use `MechLib.` constants or namespaces, include `import MechLib` in `lean_header`.
-18. Never copy any retrieved declaration verbatim; adapt to current problem variables and goal.
+Hard constraints:
+1. No proof body; never output `:= by`.
+2. Reject trivial targets (`True`, `False`, `Prop`, `x = x`, `1 = 1`).
+3. Reject assumption-replay goals: do not output theorems whose conclusion is just an assumption restated or symmetry-flipped, such as `h : x = y ⊢ y = x`.
+4. Keep unknown_target, known_quantities, constraints, and physical_laws aligned with ProblemIR.
+5. Read "Domain Summary Context" first, then generate theorem declarations.
+6. Reject law drift (for example Newton-force equations for pure kinematics).
+7. Stay inside the selected domain tags in the context; do not mix unrelated mechanics domains.
+8. Prefer symbol naming and theorem semantics that are consistent with MechLib domain summary entries.
+9. Use domain context as modeling guidance; do not copy any theorem declaration verbatim.
+10. Prefer MechLib typed quantities (Mass, Force, Acceleration, Length, Time) only when algebra stays type-safe.
+11. If you need division of physical quantities (e.g., m2 / (m1 + m2)) or nonzero assumptions, switch to `Real` modeling for that candidate.
+12. Do not use `!=` in theorem propositions; use `≠` or `Not (...)`.
+13. Avoid `Quantity.cast` unless you are certain identifiers and dimension lemmas exist in MechLib.
+14. Use readable multiline declaration format:
+   theorem name
+     (arg1 : Type)
+     (arg2 : Type)
+     ...
+     : goal
+15. Use one binder per line with 2-space indentation.
+16. Use meaningful variable/hypothesis names.
+17. If library_target is `mechlib`, do not import PhysLean.
+18. If library_target is `physlean`, do not import MechLib.
+19. Keep output fully valid JSON.
+20. Do not invent MechLib APIs or helper names. If uncertain, write direct algebraic equalities over binders.
+21. If typed MechLib modeling would require undocumented helper defs or `Quantity.cast`, back off to `Real`.
 
 ProblemIR:
 {{problem_ir_json}}
 
-Retrieved MechLib context:
+Domain Summary Context + Retrieved library context:
 {{mechlib_context}}

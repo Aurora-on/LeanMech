@@ -61,7 +61,7 @@ class LeanConfig:
     lean_header: str = "import PhysLean"
     preflight_enabled: bool = True
     route_policy: str = "auto_by_import"
-    default_backend: str = "physlean"
+    default_backend: str = "mechlib"
     route_fallback: bool = True
 
 
@@ -72,7 +72,19 @@ class KnowledgeConfig:
     scope: str = "mechanics_si"
     top_k: int = 6
     cache_path: str = "tmp/mechlib_index.jsonl"
-    inject_modules: list[str] = field(default_factory=lambda: ["B", "D", "E"])
+    inject_modules: list[str] = field(default_factory=lambda: ["B"])
+    context_source: str = "hybrid"
+    summary_corpus_path: str = r"F:/AI4Mechanics/coding/MechLib/theorem_corpus.jsonl"
+    summary_injection_mode: str = "domain_full"
+    always_include_core_tags: list[str] = field(default_factory=lambda: ["SI", "Units"])
+
+
+@dataclass
+class StatementConfig:
+    library_target: str = "mechlib"
+    with_mechlib_context: bool = True
+    feedback_loop_enabled: bool = True
+    max_revision_rounds: int = 1
 
 
 @dataclass
@@ -90,6 +102,7 @@ class PromptConfig:
     dir: str = "prompts"
     a_extract_ir: str = "A_extract_ir.txt"
     b_generate_statements: str = "B_generate_statements.txt"
+    b_revise_statements: str = "B_revise_statements.txt"
     d_semantic_rank: str = "D_semantic_rank.txt"
     e_generate_proof: str = "E_generate_proof.txt"
     e_repair_proof: str = "E_repair_proof.txt"
@@ -108,6 +121,7 @@ class PipelineConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     lean: LeanConfig = field(default_factory=LeanConfig)
     knowledge: KnowledgeConfig = field(default_factory=KnowledgeConfig)
+    statement: StatementConfig = field(default_factory=StatementConfig)
     semantic: SemanticConfig = field(default_factory=SemanticConfig)
     proof: ProofConfig = field(default_factory=ProofConfig)
     prompts: PromptConfig = field(default_factory=PromptConfig)
@@ -149,6 +163,7 @@ def load_config(path: Path) -> PipelineConfig:
         model=ModelConfig(**merged["model"]),
         lean=LeanConfig(**merged["lean"]),
         knowledge=KnowledgeConfig(**merged["knowledge"]),
+        statement=StatementConfig(**merged["statement"]),
         semantic=SemanticConfig(**merged["semantic"]),
         proof=ProofConfig(**merged["proof"]),
         prompts=PromptConfig(**merged["prompts"]),
@@ -185,10 +200,20 @@ def validate_config(cfg: PipelineConfig) -> None:
         raise ValueError("knowledge.scope must be one of {'mechanics', 'mechanics_si', 'all'}")
     if cfg.knowledge.top_k <= 0:
         raise ValueError("knowledge.top_k must be > 0")
+    if cfg.knowledge.context_source not in {"hybrid", "summary_only", "source_only"}:
+        raise ValueError("knowledge.context_source must be one of {'hybrid', 'summary_only', 'source_only'}")
+    if cfg.knowledge.summary_injection_mode not in {"domain_full"}:
+        raise ValueError("knowledge.summary_injection_mode must be one of {'domain_full'}")
     valid_inject = {"B", "D", "E"}
     inject = {x.strip().upper() for x in cfg.knowledge.inject_modules}
     if not inject.issubset(valid_inject):
         raise ValueError("knowledge.inject_modules must be subset of {'B', 'D', 'E'}")
+    if not cfg.knowledge.always_include_core_tags:
+        raise ValueError("knowledge.always_include_core_tags must not be empty")
+    if cfg.statement.library_target not in {"mechlib", "physlean", "auto"}:
+        raise ValueError("statement.library_target must be one of {'mechlib', 'physlean', 'auto'}")
+    if cfg.statement.max_revision_rounds < 0:
+        raise ValueError("statement.max_revision_rounds must be >= 0")
     if cfg.proof.max_attempts <= 0:
         raise ValueError("proof.max_attempts must be > 0")
     if cfg.semantic.pass_threshold < 0 or cfg.semantic.pass_threshold > 1:

@@ -1,0 +1,10 @@
+name = "PipelineLeanArtifacts"
+version = "0.1.0"
+defaultTargets = ["PipelineLeanArtifacts"]
+
+[[require]]
+name = "MechLib"
+path = "../MechLib"
+
+[[lean_lib]]
+name = "PipelineLeanArtifacts"

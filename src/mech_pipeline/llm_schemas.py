@@ -31,6 +31,7 @@ class StatementCandidatePayload(BasePayloadModel):
     lean_header: str | None = None
     theorem_decl: str | None = None
     assumptions: list[Any] = Field(default_factory=list)
+    plan: str | None = None
 
 
 class StatementCandidatesPayload(BasePayloadModel):
@@ -73,3 +74,4 @@ class ProofPayload(BasePayloadModel):
     used_facts: list[str] = Field(default_factory=list)
     subgoals: list[str] = Field(default_factory=list)
     fix_notes: list[str] = Field(default_factory=list)
+    plan: str | None = None

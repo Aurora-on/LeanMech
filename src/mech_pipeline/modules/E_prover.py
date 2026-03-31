@@ -18,15 +18,16 @@ You are a Lean4 proof generator.
 Given a theorem declaration, produce a Lean proof body that can pass Lean checking.
 
 Output JSON only:
-{"proof_body":"...", "strategy":"...", "used_facts":["..."]}
+{"proof_body":"...", "strategy":"...", "plan":"...", "used_facts":["..."]}
 
 Rules:
 1) Output only proof body (do not repeat theorem declaration).
 2) Never use sorry/admit/axiom.
-3) Prefer robust tactics: simp, norm_num, ring, linarith, nlinarith, field_simp, aesop.
-4) If needed, decompose into subgoals with have/constructor and then close goals.
-5) Use retrieved MechLib snippets as references for tactic style and lemma naming only.
-6) Do not copy irrelevant lemmas; stay strictly aligned with theorem goal.
+3) Do not output a bare one-line tactic such as `rfl`, `simp`, `aesop`, `linarith`, or `ring`.
+4) Every proof must use the theorem assumptions or derive intermediate facts with `have`, `calc`, `rw`, `constructor`, or `simpa`.
+5) Prefer robust tactics: simp, norm_num, ring, linarith, nlinarith, field_simp, rw, calc.
+6) Use retrieved MechLib snippets as references for tactic style and lemma naming only.
+7) Do not copy irrelevant lemmas; stay strictly aligned with theorem goal.
 
 Theorem:
 {{theorem_decl}}
@@ -43,14 +44,16 @@ You are a Lean4 proof repair assistant.
 Given the previous proof and Lean error, produce a minimally changed fixed proof body.
 
 Output JSON only:
-{"proof_body":"...", "strategy":"...", "used_facts":["..."]}
+{"proof_body":"...", "strategy":"...", "plan":"...", "used_facts":["..."]}
 
 Rules:
 1) Output only proof body (do not repeat theorem declaration).
 2) Never use sorry/admit/axiom.
 3) Repair should directly address the provided Lean error.
-4) Prefer small edits over rewriting everything.
-5) Use retrieved MechLib snippets as references for tactic style and lemma naming only.
+4) Do not output a bare one-line tactic such as `rfl`, `simp`, `aesop`, `linarith`, or `ring`.
+5) Prefer small edits over rewriting everything.
+6) Use theorem assumptions or explicit intermediate facts; do not replace the proof with a placeholder tactic.
+7) Use retrieved MechLib snippets as references for tactic style and lemma naming only.
 
 Theorem:
 {{theorem_decl}}
@@ -67,7 +70,6 @@ Previous Lean error:
 Retrieved MechLib context:
 {{mechlib_context}}
 """
-FALLBACK_TACTICS = ["rfl", "simp", "aesop", "linarith", "ring"]
 
 
 class ModuleE:
@@ -138,6 +140,7 @@ class ModuleE:
             raw = ""
             parse_ok = False
             proof_body = ""
+            proof_plan: str | None = None
             try:
                 resp = self.model_client.generate_text(prompt)
                 raw = resp.text
@@ -150,10 +153,32 @@ class ModuleE:
                     parsed = parse_json_model(raw, ProofPayload)
                     parse_ok = True
                     proof_body = parsed.proof_body.strip()
+                    proof_plan = (parsed.plan or "").strip() or None
                 except ResponseParseError:
                     parse_ok = False
+
             if not proof_body:
-                proof_body = "trivial"
+                error_type = "proof_response_parse_failed" if raw else "proof_generation_failure"
+                stderr_digest = previous_error or error_type
+                attempt = ProofAttemptResult(
+                    sample_id=grounding.sample_id,
+                    attempt_index=idx,
+                    proof_body="",
+                    plan=proof_plan,
+                    parse_ok=parse_ok,
+                    raw_response=raw,
+                    compile_pass=False,
+                    strict_pass=False,
+                    error_type=error_type,
+                    stderr_digest=stderr_digest,
+                    log_path=None,
+                )
+                attempts.append(attempt)
+                previous_proof = ""
+                previous_error = attempt.stderr_digest or attempt.error_type or "proof_search_failure"
+                final_error = attempt.error_type or "proof_search_failure"
+                continue
+
             proof_body = normalize_lean_text(proof_body)
 
             verify = self.lean_runner.verify_proof(
@@ -172,6 +197,7 @@ class ModuleE:
                 sample_id=grounding.sample_id,
                 attempt_index=idx,
                 proof_body=proof_body,
+                plan=proof_plan,
                 parse_ok=parse_ok,
                 raw_response=raw,
                 compile_pass=bool(verify["compile_pass"]),
@@ -202,53 +228,6 @@ class ModuleE:
 
             previous_proof = proof_body
             previous_error = attempt.stderr_digest or attempt.error_type or "proof_search_failure"
-            final_error = attempt.error_type or "proof_search_failure"
-
-        # Deterministic tactic fallback after LLM attempts.
-        for tactic in FALLBACK_TACTICS:
-            idx = len(attempts) + 1
-            verify = self.lean_runner.verify_proof(
-                sample_id=grounding.sample_id,
-                candidate_id=selected_candidate.candidate_id,
-                lean_header=selected_candidate.lean_header,
-                theorem_decl=selected_candidate.theorem_decl,
-                proof_body=tactic,
-                run_dir=run_dir,
-            )
-            error_type = str(verify["error_type"]) if verify["error_type"] else None
-            if error_type and error_type in {"invalid_lean_syntax", "elaboration_failure"}:
-                error_type = "proof_search_failure"
-
-            attempt = ProofAttemptResult(
-                sample_id=grounding.sample_id,
-                attempt_index=idx,
-                proof_body=tactic,
-                parse_ok=True,
-                raw_response=f"[fallback_tactic] {tactic}",
-                compile_pass=bool(verify["compile_pass"]),
-                strict_pass=bool(verify["strict_pass"]),
-                error_type=error_type,
-                stderr_digest=str(verify["stderr_digest"]),
-                log_path=str(verify["log_path"]) if verify["log_path"] else None,
-                backend_used=str(verify.get("backend_used") or ""),
-                route_reason=str(verify.get("route_reason") or ""),
-                route_fallback_used=bool(verify.get("route_fallback_used")),
-            )
-            attempts.append(attempt)
-            final_log_path = attempt.log_path
-            if attempt.strict_pass:
-                return (
-                    attempts,
-                    ProofCheckResult(
-                        sample_id=grounding.sample_id,
-                        proof_success=True,
-                        attempts_used=idx,
-                        selected_candidate_id=selected_candidate.candidate_id,
-                        error_type=None,
-                        final_log_path=final_log_path,
-                        backend_used=attempt.backend_used,
-                    ),
-                )
             final_error = attempt.error_type or "proof_search_failure"
 
         return (

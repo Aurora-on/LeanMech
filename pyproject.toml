@@ -27,3 +27,7 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+cache_dir = "tmp/pytest/cache"
+addopts = "--basetemp=tmp/pytest/basetemp"

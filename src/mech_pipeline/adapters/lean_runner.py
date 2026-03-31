@@ -5,7 +5,7 @@ import subprocess
 import textwrap
 from pathlib import Path
 
-from mech_pipeline.utils import ensure_dir, safe_stem, truncate
+from mech_pipeline.utils import ensure_dir, normalize_lean_text, safe_stem, truncate
 
 _SUBPROCESS_TEXT_ENCODING = "utf-8"
 _SUBPROCESS_TEXT_ERRORS = "replace"
@@ -86,10 +86,17 @@ class LeanRunner:
         self._mechlib_ready = bool(self.mechlib_dir and self.mechlib_dir.exists())
 
     def _run_lean(self, *, root_dir: Path, rel_file: Path) -> tuple[bool, str, str]:
+        root = root_dir.resolve()
+        target = rel_file.resolve() if rel_file.is_absolute() else (root / rel_file).resolve()
+        try:
+            arg_path = target.relative_to(root)
+        except ValueError:
+            arg_path = target
+        arg = arg_path.as_posix()
         try:
             proc = subprocess.run(
-                ["lake", "env", "lean", str(rel_file)],
-                cwd=root_dir,
+                ["lake", "env", "lean", arg],
+                cwd=root,
                 capture_output=True,
                 text=True,
                 encoding=_SUBPROCESS_TEXT_ENCODING,
@@ -109,7 +116,7 @@ class LeanRunner:
         merged = (stderr or "").strip()
         if not merged:
             merged = (stdout or "").strip()
-        return truncate(merged, 800)
+        return truncate(normalize_lean_text(merged), 800)
 
     def _backend_root(self, backend: str) -> Path:
         if backend == "mechlib":
@@ -215,7 +222,8 @@ class LeanRunner:
         run_dir: Path,
     ) -> dict[str, str | bool | None]:
         root_dir = self._backend_root(backend)
-        compile_dir = run_dir / "lean_compile"
+        run_base = run_dir.resolve()
+        compile_dir = run_base / "lean_compile"
         ensure_dir(compile_dir)
         stem = safe_stem(f"{sample_id}_{candidate_id}")
         log_path = compile_dir / f"{stem}_{backend}.log"
@@ -223,12 +231,12 @@ class LeanRunner:
         decl = _declaration_only(theorem_decl)
         header = self._effective_header(lean_header, backend)
         code = f"{header}\n\n{decl} := by\n  sorry\n"
-        tmp_dir = root_dir / ".pipeline1_tmp" / safe_stem(run_dir.name) / "compile" / backend
+        tmp_dir = run_base / ".pipeline1_tmp" / "compile" / backend
         ensure_dir(tmp_dir)
         tmp_file = tmp_dir / f"{stem}.lean"
         tmp_file.write_text(code, encoding="utf-8")
 
-        ok, stdout, stderr = self._run_lean(root_dir=root_dir, rel_file=tmp_file.relative_to(root_dir))
+        ok, stdout, stderr = self._run_lean(root_dir=root_dir, rel_file=tmp_file)
         log_path.write_text(
             f"backend={backend}\nreturncode={0 if ok else 1}\n\nSTDOUT:\n{stdout}\n\nSTDERR:\n{stderr}\n",
             encoding="utf-8",
@@ -267,7 +275,8 @@ class LeanRunner:
         run_dir: Path,
     ) -> dict[str, str | bool | None]:
         root_dir = self._backend_root(backend)
-        proof_dir = run_dir / "lean_proof"
+        run_base = run_dir.resolve()
+        proof_dir = run_base / "lean_proof"
         ensure_dir(proof_dir)
         stem = safe_stem(f"{sample_id}_{candidate_id}")
         log_path = proof_dir / f"{stem}_{backend}.log"
@@ -287,12 +296,12 @@ class LeanRunner:
             proof = "trivial"
 
         code = f"{header}\n\n{decl} := by\n{_indent(proof)}\n"
-        tmp_dir = root_dir / ".pipeline1_tmp" / safe_stem(run_dir.name) / "proof" / backend
+        tmp_dir = run_base / ".pipeline1_tmp" / "proof" / backend
         ensure_dir(tmp_dir)
         tmp_file = tmp_dir / f"{stem}.lean"
         tmp_file.write_text(code, encoding="utf-8")
 
-        ok, stdout, stderr = self._run_lean(root_dir=root_dir, rel_file=tmp_file.relative_to(root_dir))
+        ok, stdout, stderr = self._run_lean(root_dir=root_dir, rel_file=tmp_file)
         log_path.write_text(
             f"backend={backend}\nreturncode={0 if ok else 1}\n\nSTDOUT:\n{stdout}\n\nSTDERR:\n{stderr}\n",
             encoding="utf-8",

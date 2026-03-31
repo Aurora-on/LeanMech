@@ -1,9 +1,0 @@
-backend=mechlib
-returncode=0
-
-STDOUT:
-.pipeline1_tmp\route_check\compile\mechlib\routecheck_c2.lean:7:8: warning: declaration uses 'sorry'
-
-
-STDERR:
-

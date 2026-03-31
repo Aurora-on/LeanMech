@@ -55,17 +55,21 @@ LEAN_MOJIBAKE_REPLACEMENTS = [
     ("∀", "forall"),
     ("≥", ">="),
     ("≤", "<="),
-    ("≠", "!="),
+    ("≠", "≠"),
     ("鈩?", "Real"),
     ("鈩", "Real"),
     ("鈫?", "->"),
     ("鈫", "->"),
     ("鈭€", "forall"),
     ("鈭", "forall"),
-    ("鈮?", ">="),
-    ("鈮", ">="),
-    ("鉁?", "!="),
-    ("鉁", "!="),
+    ("鈮?", "≠"),
+    ("鈮", "≠"),
+    ("鉁?", "≠"),
+    ("鉁", "≠"),
+    ("鈭?", "∧"),
+    ("鈭", "∧"),
+    ("鈥?", "-"),
+    ("鈥", "-"),
     ("晑", ""),
     ("锛?", ""),
     ("锛?", ""),
@@ -199,5 +203,8 @@ def normalize_lean_text(text: str) -> str:
     out = text
     for bad, good in LEAN_MOJIBAKE_REPLACEMENTS:
         out = out.replace(bad, good)
+    # In Lean theorem propositions, `!=` is boolean inequality (BEq), which is often wrong here.
+    # Normalize to propositional inequality to avoid BEq synthesis failures.
+    out = out.replace("!=", "≠")
     out = out.replace("�", "")
     return out

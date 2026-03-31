@@ -45,9 +45,12 @@ class StatementCandidate:
     lean_header: str
     theorem_decl: str
     assumptions: list[str] = field(default_factory=list)
+    plan: str | None = None
     parse_ok: bool = False
     raw_response: str = ""
     error: str | None = None
+    round_index: int = 0
+    source_round_index: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -66,6 +69,7 @@ class CompileCheckResult:
     backend_used: str | None = None
     route_reason: str | None = None
     route_fallback_used: bool = False
+    round_index: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -78,7 +82,14 @@ class SemanticRankResult:
     selected_theorem_decl: str | None
     semantic_pass: bool
     ranking: list[dict[str, Any]]
+    selected_backend: str | None = None
+    selected_route_reason: str | None = None
+    selected_route_fallback_used: bool = False
     error: str | None = None
+    round_index: int = 0
+    retry_triggered: bool = False
+    retry_reason: str | None = None
+    retry_feedback_summary: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -96,6 +107,7 @@ class ProofAttemptResult:
     error_type: str | None
     stderr_digest: str
     log_path: str | None
+    plan: str | None = None
     backend_used: str | None = None
     route_reason: str | None = None
     route_fallback_used: bool = False
@@ -113,6 +125,7 @@ class ProofCheckResult:
     error_type: str | None
     final_log_path: str | None
     backend_used: str | None = None
+    round_index: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -129,6 +142,8 @@ class SampleRunSummary:
     end_to_end_ok: bool
     final_error_type: str | None
     notes: str | None = None
+    final_round_index: int = 0
+    feedback_loop_used: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

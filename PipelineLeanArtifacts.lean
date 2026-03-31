@@ -1,0 +1,3 @@
+namespace PipelineLeanArtifacts
+
+end PipelineLeanArtifacts

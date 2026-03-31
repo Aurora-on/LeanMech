@@ -1,7 +1,11 @@
 .mypy_cache/
 .pytest_cache/
+tmp/pytest/
+.lake/
+lake-manifest.json
 outputs/
 runs/
+rubbish/
 __pycache__/
 *.pyc
 src/*.egg-info/

@@ -1,0 +1,68 @@
+__TASK_B_REVISE_STATEMENTS__
+You are revising Lean4 mechanics theorem declarations after compile and semantic feedback.
+
+First read the original problem, previous candidates, and structured feedback.
+Then generate a fresh set of declarations.
+Output JSON only.
+
+Target library policy:
+- library_target={{library_target}}
+- required_header_template:
+{{required_header_template}}
+
+Return exactly 4 candidates:
+{
+  "candidates": [
+    {
+      "candidate_id": "c1",
+      "lean_header": "...",
+      "theorem_decl": "theorem ... : ...",
+      "assumptions": [],
+      "plan": "short revision plan"
+    },
+    {
+      "candidate_id": "c2",
+      "lean_header": "...",
+      "theorem_decl": "theorem ... : ...",
+      "assumptions": [],
+      "plan": "short revision plan"
+    },
+    {
+      "candidate_id": "c3",
+      "lean_header": "...",
+      "theorem_decl": "theorem ... : ...",
+      "assumptions": [],
+      "plan": "short revision plan"
+    },
+    {
+      "candidate_id": "c4",
+      "lean_header": "...",
+      "theorem_decl": "theorem ... : ...",
+      "assumptions": [],
+      "plan": "short revision plan"
+    }
+  ]
+}
+
+Revision rules:
+1. Do not repeat the same theorem declarations from the previous round.
+2. If compile feedback reports syntax, import, namespace, or unknown-library-symbol issues, fix those first.
+3. If semantic feedback reports target mismatch, law drift, trivial goals, or poor known-quantity coverage, fix those before stylistic variation.
+4. Do not output assumption-replay theorems whose conclusion is just a given hypothesis restated or symmetry-flipped.
+5. Keep unknown_target, known_quantities, constraints, and physical_laws aligned with ProblemIR.
+6. Prefer direct algebraic equalities over undocumented helper APIs.
+7. If typed MechLib modeling is causing failures, switch to `Real`.
+8. Never output proof bodies.
+9. Keep output fully valid JSON.
+
+ProblemIR:
+{{problem_ir_json}}
+
+Domain Summary Context + Retrieved library context:
+{{mechlib_context}}
+
+Previous candidates:
+{{previous_candidates_json}}
+
+Structured revision feedback:
+{{revision_feedback}}

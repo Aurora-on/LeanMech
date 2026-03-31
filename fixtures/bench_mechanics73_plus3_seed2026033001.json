@@ -1,0 +1,46 @@
+[
+  {
+    "Name": "university_mechanics_Mechanics_73_University",
+    "Level": "college_level",
+    "Category": "mechanics",
+    "Header": "import Mathlib\nimport Aesop\nimport Mathlib.Tactic\nimport PHYSlib.Foundations.SI\nimport PHYSlib.Foundations.SIDeriv\nimport PHYSlib.Mechanics.Displacement\nimport PHYSlib.Mechanics.Motion\nimport PHYSlib.Thermodynamics.Volume\nopen BigOperators Real Nat Topology Rat UnitsSystem SI SI.Mechanics SI.Thermodynamics\nunseal Rat.add Rat.mul Rat.sub Rat.inv\nvariable (m:Mass) (v:Speed) (F:Force) (p:Momentum) (E:Energy) (h:Length) (x:Displacement) (t:Time) (a:Acceleration)",
+    "Theorem": "theorem Mechanics_73_University\n  (T : Force)(m_1 m_2 : Mass)(a : Acceleration)\n  (ha : a = m_2 * g / (m_1 + m_2))\n  (hT : T = (m_1 * m_2) / (m_1 + m_2) * g):\n  (a = (m_2 / (m_1 + m_2)) * g ∧ T = (m_1 * m_2) / (m_1 + m_2) * g) := by sorry",
+    "Statement": "import Mathlib\nimport Aesop\nimport Mathlib.Tactic\nimport PHYSlib.Foundations.SI\nimport PHYSlib.Foundations.SIDeriv\nimport PHYSlib.Mechanics.Displacement\nimport PHYSlib.Mechanics.Motion\nimport PHYSlib.Thermodynamics.Volume\nopen BigOperators Real Nat Topology Rat UnitsSystem SI SI.Mechanics SI.Thermodynamics\nunseal Rat.add Rat.mul Rat.sub Rat.inv\nvariable (m:Mass) (v:Speed) (F:Force) (p:Momentum) (E:Energy) (h:Length) (x:Displacement) (t:Time) (a:Acceleration)\ntheorem Mechanics_73_University\n  (T : Force)(m_1 m_2 : Mass)(a : Acceleration)\n  (ha : a = m_2 * g / (m_1 + m_2))\n  (hT : T = (m_1 * m_2) / (m_1 + m_2) * g):\n  (a = (m_2 / (m_1 + m_2)) * g ∧ T = (m_1 * m_2) / (m_1 + m_2) * g) := by sorry",
+    "Proof": "",
+    "Informal_statement": "Question 73 an air-track glider with mass m1 moves on a level, frictionless air track in the physics lab. The glider is connected to a lab weight with mass m2 by a light, flexible, nonstretching string that passes over a stationary, frictionless pulley. Find the acceleration of each object and the tension in the string. Answer: Newton’s second law gives: **Glider:** \\[ \\sum F_x = T = m_1 a_{1x} = m_1 a \\] \\[ \\sum F_y = n + (-m_1 g) = m_1 a_{1y} = 0 \\] **Lab weight:** \\[ \\sum F_y = m_2 g + (-T) = m_2 a_{2y} = m_2 a \\] (There are no forces on the lab weight in the $x$-direction.) In these equations, we’ve used $a_{1y} = 0$ (the glider doesn’t accelerate vertically) and $a_{1x} = a_{2y} = a$. The $x$-equation for the glider and the equation for the lab weight give us two simultaneous equations for $T$ and $a$: **Glider:** \\[ T = m_1 a \\] **Lab weight:** \\[ m_2 g - T = m_2 a \\] We add the two equations to eliminate $T$, giving: \\[ m_2 g = m_1 a + m_2 a = (m_1 + m_2)a \\] and so the magnitude of each object’s acceleration is: \\[ a = \\frac{m_2}{m_1 + m_2} g \\] Substituting this back into the glider equation $T= m_1 a$, we get \\[ T = \\frac{m_1 m_2}{m_1 + m_2} g \\]",
+    "Informal_proof": ""
+  },
+  {
+    "Name": "university_mechanics_Mechanics_6_University_Significant_figures_in_multiplication",
+    "Level": "college_level",
+    "Category": "mechanics",
+    "Header": "import Mathlib\nimport Aesop\nimport Mathlib.Tactic\nimport PHYSlib.Foundations.SI\nimport PHYSlib.Foundations.SIDeriv\nimport PHYSlib.Mechanics.Displacement\nimport PHYSlib.Mechanics.Motion\nimport PHYSlib.Thermodynamics.Volume\nopen BigOperators Real Nat Topology Rat UnitsSystem SI SI.Mechanics SI.Thermodynamics\nunseal Rat.add Rat.mul Rat.sub Rat.inv\nvariable (m:Mass) (v:Speed) (F:Force) (p:Momentum) (E:Energy) (h:Length) (x:Displacement) (t:Time) (a:Acceleration)",
+    "Theorem": "theorem Mechanics_6_University_Significant_figures_in_multiplication\n  (m:Mass)(E:Energy)\n  (hm: m = (911/ (10^32) : ℚ) • kilogram)\n  (hE: E = m * c**2):\n  (joule.in E = (819 / 10^16 : ℚ) ) := by sorry",
+    "Statement": "import Mathlib\nimport Aesop\nimport Mathlib.Tactic\nimport PHYSlib.Foundations.SI\nimport PHYSlib.Foundations.SIDeriv\nimport PHYSlib.Mechanics.Displacement\nimport PHYSlib.Mechanics.Motion\nimport PHYSlib.Thermodynamics.Volume\nopen BigOperators Real Nat Topology Rat UnitsSystem SI SI.Mechanics SI.Thermodynamics\nunseal Rat.add Rat.mul Rat.sub Rat.inv\nvariable (m:Mass) (v:Speed) (F:Force) (p:Momentum) (E:Energy) (h:Length) (x:Displacement) (t:Time) (a:Acceleration)\ntheorem Mechanics_6_University_Significant_figures_in_multiplication\n  (m:Mass)(E:Energy)\n  (hm: m = (911/ (10^32) : ℚ) • kilogram)\n  (hE: E = m * c**2):\n  (joule.in E = (819 / 10^16 : ℚ) ) := by sorry",
+    "Proof": "",
+    "Informal_statement": "Question 6 The rest energy E of an object with rest mass m is given by AlbertEinstein's famous equation E= mc2, where c is the speed of lightin vacuum. Find E for an electron for which(to three significantfigures) m=9.11 x10^(-31)kg. The SI unit for E is the joule (J);1J = 1 kg'm?/s?",
+    "Informal_proof": ""
+  },
+  {
+    "Name": "university_mechanics_Mechanics_34_University_copy",
+    "Level": "college_level",
+    "Category": "mechanics",
+    "Header": "import Mathlib\nimport Aesop\nimport Mathlib.Tactic\nimport PHYSlib.Foundations.SI\nimport PHYSlib.Foundations.SIDeriv\nimport PHYSlib.Mechanics.Displacement\nimport PHYSlib.Mechanics.Motion\nimport PHYSlib.Thermodynamics.Volume\nopen BigOperators Real Nat Topology Rat UnitsSystem SI SI.Mechanics SI.Thermodynamics\nunseal Rat.add Rat.mul Rat.sub Rat.inv\nvariable (m:Mass) (v:Speed) (F:Force) (p:Momentum) (E:Energy) (h:Length) (x:Displacement) (t:Time) (a:Acceleration)",
+    "Theorem": "theorem Mechanics_34_University_copy\n  (t_0 t_1 t : Time)(v_0 v_1 v : Speed)(a : Acceleration)\n  (vf: Time → Speed)\n  (ht_0 : t_0 = 0 • second)\n  (ht_1 : t_1 = 20 • second)\n  (hv_0 : v_0 = 10 • meter / second)\n  (hv : ∀ t, vf t = v_0 + (2 • meter / second**2) * t - ((0.10:ℚ) • meter / second**3) * t**2 / 2)\n  (hv_1: v_1 = vf t_1):\n  (t_1 = 20 • second) := by sorry",
+    "Statement": "import Mathlib\nimport Aesop\nimport Mathlib.Tactic\nimport PHYSlib.Foundations.SI\nimport PHYSlib.Foundations.SIDeriv\nimport PHYSlib.Mechanics.Displacement\nimport PHYSlib.Mechanics.Motion\nimport PHYSlib.Thermodynamics.Volume\nopen BigOperators Real Nat Topology Rat UnitsSystem SI SI.Mechanics SI.Thermodynamics\nunseal Rat.add Rat.mul Rat.sub Rat.inv\nvariable (m:Mass) (v:Speed) (F:Force) (p:Momentum) (E:Energy) (h:Length) (x:Displacement) (t:Time) (a:Acceleration)\ntheorem Mechanics_34_University_copy\n  (t_0 t_1 t : Time)(v_0 v_1 v : Speed)(a : Acceleration)\n  (vf: Time → Speed)\n  (ht_0 : t_0 = 0 • second)\n  (ht_1 : t_1 = 20 • second)\n  (hv_0 : v_0 = 10 • meter / second)\n  (hv : ∀ t, vf t = v_0 + (2 • meter / second**2) * t - ((0.10:ℚ) • meter / second**3) * t**2 / 2)\n  (hv_1: v_1 = vf t_1):\n  (t_1 = 20 • second) := by sorry",
+    "Proof": "",
+    "Informal_statement": "Quesiton 34 Sally is driving along a straight highway. At t = 0, when she is movingat 10 m/s in the positive x-direction, she passes a signpost at x = 50 m. Her x-acceleration as a function of time is ax= 2.0 m/s? -(0.10 m/s³)t (b) When isher x-velocity greatest?",
+    "Informal_proof": ""
+  },
+  {
+    "Name": "competition_mechanics_Ch1_Q2",
+    "Level": "competition_hard",
+    "Category": "mechanics",
+    "Header": "import Mathlib\nimport Aesop\nimport Mathlib.Tactic\nimport PHYSlib.Foundations.SI\nimport PHYSlib.Foundations.SIDeriv\nopen BigOperators Real Nat Topology Filter Rat UnitsSystem SI\nunseal Rat.add Rat.mul Rat.sub Rat.inv",
+    "Theorem": "theorem Ch1_Q2\n  {v : Time → Speed}\n  (hdif:Differentiable ℝ v)\n  (k : Scalar (-time_unit))\n  (v0 : Speed)\n  (n : ℝ)\n  (hk_pos : 0 < k.val)\n  (hn : n > 1)\n  (hv_diff : physderiv v=physmapcast (physmapsmul v (-k)) _ _ (by module) (by module))\n  (hv0 : v (0 • second) = v0)\n  (h_total : Tendsto\n    (fun T : ℝ => ∫ t in (0:ℝ)..T, (v ⟨t⟩).val)\n    atTop (𝓝 x_total))\n  (t₁ : Time) (ht₁ : v t₁ = v0 / n)\n  : ∫ t in (0:ℝ)..t₁.val, ((mathcast v) t) / x_total = 1 - 1 / n := by sorry",
+    "Statement": "import Mathlib\nimport Aesop\nimport Mathlib.Tactic\nimport PHYSlib.Foundations.SI\nimport PHYSlib.Foundations.SIDeriv\nopen BigOperators Real Nat Topology Filter Rat UnitsSystem SI\nunseal Rat.add Rat.mul Rat.sub Rat.inv\ntheorem Ch1_Q2\n  {v : Time → Speed}\n  (hdif:Differentiable ℝ v)\n  (k : Scalar (-time_unit))\n  (v0 : Speed)\n  (n : ℝ)\n  (hk_pos : 0 < k.val)\n  (hn : n > 1)\n  (hv_diff : physderiv v=physmapcast (physmapsmul v (-k)) _ _ (by module) (by module))\n  (hv0 : v (0 • second) = v0)\n  (h_total : Tendsto\n    (fun T : ℝ => ∫ t in (0:ℝ)..T, (v ⟨t⟩).val)\n    atTop (𝓝 x_total))\n  (t₁ : Time) (ht₁ : v t₁ = v0 / n)\n  : ∫ t in (0:ℝ)..t₁.val, ((mathcast v) t) / x_total = 1 - 1 / n := by sorry",
+    "Proof": "",
+    "Informal_statement": "EXAMPLE Ch1_Q2 Q: A particle moves along a straight line with initial velocity v₀. It experiences resistance proportional to its velocity: a = dv/dt = -k v. Let the particle's speed reduce to v₀ / n (n > 1). Show that the ratio of the distance traveled to the total distance is 1 - 1/n.",
+    "Informal_proof": ""
+  }
+]

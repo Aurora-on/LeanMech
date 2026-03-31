@@ -11,6 +11,7 @@ class ModuleF:
     def build(
         self,
         summaries: list[SampleRunSummary],
+        statement_rows: list[dict[str, Any]],
         grounding_rows: list[GroundingResult],
         compile_rows: list[CompileCheckResult],
         semantic_rows: list[SemanticRankResult],
@@ -18,6 +19,7 @@ class ModuleF:
     ) -> tuple[dict[str, Any], str]:
         metrics = build_metrics(
             summaries=summaries,
+            statement_rows=statement_rows,
             grounding_rows=grounding_rows,
             compile_rows=compile_rows,
             semantic_rows=semantic_rows,
@@ -29,6 +31,8 @@ class ModuleF:
             if s.final_error_type:
                 counter[s.final_error_type] += 1
         failed_ids = [s.sample_id for s in summaries if not s.end_to_end_ok][:10]
+        feedback_loop_used = sum(1 for s in summaries if s.feedback_loop_used)
+        feedback_loop_success = sum(1 for s in summaries if s.feedback_loop_used and s.end_to_end_ok)
 
         lines = [
             "# Baseline V1 Analysis",
@@ -41,6 +45,14 @@ class ModuleF:
             f"- semantic_consistency_pass_rate: {metrics['semantic_consistency_pass_rate']}",
             f"- proof_success_rate: {metrics['proof_success_rate']}",
             f"- end_to_end_verified_solve_rate: {metrics['end_to_end_verified_solve_rate']}",
+            f"- mechlib_header_rate: {metrics['mechlib_header_rate']}",
+            f"- mechlib_compile_pass_rate: {metrics['mechlib_compile_pass_rate']}",
+            f"- selected_mechlib_candidate_rate: {metrics['selected_mechlib_candidate_rate']}",
+            f"- feedback_loop_used_rate: {metrics.get('feedback_loop_used_rate', 0)}",
+            "",
+            "## Feedback Loop",
+            f"- feedback_loop_used_count: {feedback_loop_used}",
+            f"- feedback_loop_success_count: {feedback_loop_success}",
             "",
             "## Error Distribution",
         ]

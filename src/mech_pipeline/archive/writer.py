@@ -45,6 +45,7 @@ def write_outputs(
     analysis_md: str,
     run_readme_md: str,
     config_payload: dict[str, Any],
+    extra_text_files: dict[str, str] | None = None,
 ) -> None:
     ensure_dir(run_dir)
     ensure_dir(latest_dir)
@@ -55,6 +56,8 @@ def write_outputs(
     write_text(run_dir / "analysis.md", analysis_md)
     write_text(run_dir / "README.md", run_readme_md)
     write_json(run_dir / "config.json", config_payload)
+    for rel_path, text in (extra_text_files or {}).items():
+        write_text(run_dir / rel_path, text)
     write_json(run_dir / "manifest.json", _build_manifest(run_dir))
 
     if latest_dir.exists():

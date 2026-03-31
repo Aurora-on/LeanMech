@@ -1,14 +1,14 @@
 dataset:
   source: lean4phys
-  limit: 10
+  limit: 4
   category: Mechanics
-  sample_policy: seed_random
-  seed: 20260316
+  sample_policy: index_head
+  seed: 20260330
   local_archive:
     root: "F:/AI4Mechanics/数据集/归档"
     mode: text_only
   lean4phys:
-    bench_path: "F:/AI4Mechanics/coding/Lean4PHYS/LeanPhysBench/LeanPhysBench_v0.json"
+    bench_path: "F:/AI4Mechanics/coding/pipeline1/fixtures/bench_mechanics73_plus3_seed20260330.json"
     category: "mechanics"
     level: null
   single_image_only_for_mvp: true
@@ -20,17 +20,39 @@ model:
   api_key: null
   api_key_env: OPENAI_PROXY_KEY
   supports_vision: false
-  timeout_s: 90
+  timeout_s: 120
   max_retries: 2
   extra: {}
 
 lean:
   enabled: true
   physlean_dir: "F:/AI4Mechanics/PhysLean-master"
+  mechlib_dir: "F:/AI4Mechanics/coding/MechLib"
   timeout_s: 120
   strict_blocklist: ["sorry", "admit", "axiom"]
-  lean_header: "import PhysLean"
+  lean_header: "import MechLib"
   preflight_enabled: true
+  route_policy: auto_by_import
+  default_backend: mechlib
+  route_fallback: true
+
+knowledge:
+  enabled: true
+  mechlib_dir: "F:/AI4Mechanics/coding/MechLib"
+  scope: mechanics_si
+  top_k: 6
+  cache_path: "tmp/mechlib_index.jsonl"
+  inject_modules: ["B"]
+  context_source: hybrid
+  summary_corpus_path: "F:/AI4Mechanics/coding/MechLib/theorem_corpus.jsonl"
+  summary_injection_mode: domain_full
+  always_include_core_tags: ["SI", "Units"]
+
+statement:
+  library_target: mechlib
+  with_mechlib_context: true
+  feedback_loop_enabled: true
+  max_revision_rounds: 1
 
 semantic:
   pass_threshold: 0.7
@@ -42,6 +64,7 @@ prompts:
   dir: prompts
   a_extract_ir: A_extract_ir.txt
   b_generate_statements: B_generate_statements.txt
+  b_revise_statements: B_revise_statements.txt
   d_semantic_rank: D_semantic_rank.txt
   e_generate_proof: E_generate_proof.txt
   e_repair_proof: E_repair_proof.txt
@@ -49,4 +72,4 @@ prompts:
 output:
   output_dir: outputs/latest
   runs_dir: runs
-  tag: lean4phys-random10-gpt54
+  tag: codex-realapi-mechanics73-plus3-proxy-20260330

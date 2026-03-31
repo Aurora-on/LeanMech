@@ -20,6 +20,9 @@ LAW_KEYWORDS = {
     "ForceAnalysis2D": ["force", "x", "y", "component", "normal", "friction"],
 }
 
+PROOFABILITY_DECIMAL_PATTERN = re.compile(r"(?<![A-Za-z0-9_])-?\d+\.\d+(?![A-Za-z0-9_])")
+PROOFABILITY_TYPED_TOKENS = ("Mass", "Force", "Acceleration", "Length", "Time", "Speed", "Momentum")
+
 DEFAULT_PROMPT = """__TASK_D_SEMANTIC_RANK__
 You are a semantic consistency checker for mechanics formalization.
 For each Lean theorem candidate:
@@ -190,6 +193,42 @@ def _semantic_pass(score: float, target_match: float, law_match: float, threshol
     return score >= 0.5 and target_match >= 0.6 and law_match >= 0.3
 
 
+def _backend_bias(backend_used: str | None, route_fallback_used: bool) -> float:
+    bias = 0.0
+    if (backend_used or "").strip().lower() == "mechlib":
+        bias += 0.03
+    if route_fallback_used and (backend_used or "").strip().lower() != "mechlib":
+        bias -= 0.02
+    return round(bias, 4)
+
+
+def _proofability_bias(theorem_decl: str) -> float:
+    text = theorem_decl
+    lowered = text.lower()
+    bias = 0.0
+    if "Real.sqrt" in text or re.search(r"\bsqrt\b", lowered):
+        bias -= 0.12
+    if PROOFABILITY_DECIMAL_PATTERN.search(text):
+        bias -= 0.06
+    if "->" in text or "∀" in text or "forall" in lowered:
+        bias -= 0.06
+    if "Quantity.cast" in text:
+        bias -= 0.08
+    if any(token in text for token in PROOFABILITY_TYPED_TOKENS):
+        bias -= 0.03
+    if "/" in text:
+        bias -= 0.02
+    if (
+        "Real.sqrt" not in text
+        and "->" not in text
+        and "∀" not in text
+        and "forall" not in lowered
+        and "Quantity.cast" not in text
+    ):
+        bias += 0.03
+    return round(bias, 4)
+
+
 def _as_float(value: object, default: float = 0.0) -> float:
     if isinstance(value, (int, float)):
         return float(value)
@@ -355,6 +394,9 @@ class ModuleD:
                 selected_theorem_decl=None,
                 semantic_pass=False,
                 ranking=[],
+                selected_backend=None,
+                selected_route_reason=None,
+                selected_route_fallback_used=False,
                 error="semantic_drift",
             )
 
@@ -370,10 +412,21 @@ class ModuleD:
             score_rule = round(0.35 * t + 0.25 * k + 0.2 * l + 0.1 * u + 0.1 * a, 4)
             if trivial_goal:
                 score_rule = min(score_rule, 0.2)
+            status = status_map.get(candidate.candidate_id)
+            backend_used = str(getattr(status, "backend_used", "") or "")
+            route_reason = str(getattr(status, "route_reason", "") or "")
+            route_fallback_used = bool(getattr(status, "route_fallback_used", False))
+            backend_bias = _backend_bias(backend_used, route_fallback_used)
+            proofability_bias = _proofability_bias(candidate.theorem_decl)
             ranking.append(
                 {
                     "candidate_id": candidate.candidate_id,
                     "theorem_decl": candidate.theorem_decl,
+                    "backend_used": backend_used,
+                    "route_reason": route_reason,
+                    "route_fallback_used": route_fallback_used,
+                    "backend_bias": backend_bias,
+                    "proofability_bias": proofability_bias,
                     "goal_expr": goal_expr,
                     "trivial_goal": trivial_goal,
                     "target_match": t,
@@ -384,6 +437,7 @@ class ModuleD:
                     "semantic_score_rule": score_rule,
                     "semantic_score_llm": None,
                     "semantic_score": score_rule,
+                    "semantic_rank_score": score_rule + backend_bias + proofability_bias,
                     "semantic_pass_llm": None,
                     "semantic_pass": _semantic_pass(score_rule, t, l, self.pass_threshold),
                     "back_translation_text": "",
@@ -407,6 +461,11 @@ class ModuleD:
                             "candidate_id": c.candidate_id,
                             "theorem_decl": c.theorem_decl,
                             "assumptions": c.assumptions,
+                            "backend_used": str(getattr(status_map.get(c.candidate_id), "backend_used", "") or ""),
+                            "route_reason": str(getattr(status_map.get(c.candidate_id), "route_reason", "") or ""),
+                            "route_fallback_used": bool(
+                                getattr(status_map.get(c.candidate_id), "route_fallback_used", False)
+                            ),
                         }
                         for c in compile_pass_candidates
                     ],
@@ -477,6 +536,9 @@ class ModuleD:
             final_pass = final_pass and hard_gate_pass
 
             row["semantic_score"] = final_score
+            backend_bias = _as_float(row.get("backend_bias"), 0.0)
+            proofability_bias = _as_float(row.get("proofability_bias"), 0.0)
+            row["semantic_rank_score"] = round(final_score + backend_bias + proofability_bias, 4)
             row["semantic_pass_llm"] = llm_pass
             row["semantic_pass"] = final_pass
             row["back_translation_text"] = back_translation
@@ -487,7 +549,7 @@ class ModuleD:
         ranking.sort(
             key=lambda x: (
                 bool(x.get("semantic_pass")),
-                _as_float(x.get("semantic_score"), 0.0),
+                _as_float(x.get("semantic_rank_score"), 0.0),
                 -assumptions_len_map.get(str(x["candidate_id"]), 0),
                 x["candidate_id"],
             ),
@@ -500,5 +562,8 @@ class ModuleD:
             selected_theorem_decl=str(best["theorem_decl"]),
             semantic_pass=bool(best["semantic_pass"]),
             ranking=ranking,
+            selected_backend=str(best.get("backend_used") or ""),
+            selected_route_reason=str(best.get("route_reason") or ""),
+            selected_route_fallback_used=bool(best.get("route_fallback_used", False)),
             error=None if best["semantic_pass"] else "semantic_drift",
         )
