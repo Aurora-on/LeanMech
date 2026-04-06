@@ -5,7 +5,7 @@
   sample_policy: index_head
   seed: 42
   local_archive:
-    root: "F:/AI4Mechanics/\u6570\u636e\u96c6/\u5f52\u6863"
+    root: "F:/AI4Mechanics/datasets/archive"
     mode: text_only
   single_image_only_for_mvp: true
 

@@ -7,6 +7,13 @@ For each compile-passed Lean candidate:
 3. Score semantic consistency in [0, 1].
 4. Explicitly reject trivial or tautological statements.
 5. Explicitly reject law drift.
+6. If the candidate is wrong, explicitly identify which part was translated incorrectly.
+7. Distinguish the target relation carefully:
+   - `exact`: same target as the original problem
+   - `equivalent`: different surface form but semantically equivalent target
+   - `special_case`: only a special case because of extra assumptions or coordinate choices
+   - `weaker`: only a weaker or partial version of the intended target
+   - `drift`: genuinely different target
 
 Output JSON only:
 {
@@ -16,7 +23,13 @@ Output JSON only:
       "back_translation": "natural language paraphrase",
       "semantic_score": 0.0,
       "semantic_pass": false,
-      "reason": "brief explanation"
+      "target_relation": "drift",
+      "reason": "brief explanation",
+      "failure_summary": "one-sentence failure summary",
+      "failure_tags": ["wrong_target"],
+      "mismatch_fields": ["unknown_target", "known_quantities"],
+      "missing_or_incorrect_translations": ["The theorem solves for displacement, but the problem asks for final speed."],
+      "suggested_fix_direction": "Keep the same givens and restate the conclusion so it solves for final speed."
     }
   ]
 }
@@ -25,6 +38,11 @@ Scoring guidance:
 - High score only if target, known quantities, laws, and constraints all match.
 - If theorem is trivial or off-topic, score <= 0.3.
 - Backend metadata is provided for tie-breaking in the pipeline; your job is semantic judgement only.
+- Mark algebraic rearrangements, offset forms, and coordinate-origin choices as `equivalent` if they preserve the intended target semantics.
+- Use `special_case` only when the candidate adds a real extra restriction that narrows the original target.
+- `mismatch_fields` should use problem-facing categories such as `unknown_target`, `physical_laws`, `known_quantities`, `constraints`, `units`, or `sign`.
+- `missing_or_incorrect_translations` should directly answer which part of the original problem was mistranslated or omitted.
+- `suggested_fix_direction` should be short and actionable for a revision prompt.
 
 Original problem:
 {{problem_text}}

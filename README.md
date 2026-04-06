@@ -1,232 +1,469 @@
 # pipeline1
 
-面向力学题自动形式化的基线流水线。项目把自然语言题目送入 LLM，生成结构化 `Problem IR`、Lean 定理候选、Lean 编译检查、语义筛选和证明尝试，并把整次运行归档为可复盘的 stage 日志。
+面向力学题自动形式化与 Lean 校验的基线流水线。
 
-当前主流程是：
+当前代码把自然语言题目送入 `A -> B -> C -> D -> E -> F` 流程，输出结构化 `Problem IR`、Lean 定理候选、编译与语义验证结果、证明尝试日志，以及可直接打开的 Lean 导出工作区。项目重点是“可跑通、可回放、可诊断”，而不是训练框架或通用 agent 平台。
 
-`输入样本 -> A Grounding -> B Statement Generation -> C Lean Compile Check -> D Semantic Rank -> E Proof Search/Repair -> F Metrics & Report`
+## 1. 项目定位
 
-在当前代码中，`B/C/D` 已支持一轮失败后闭环重试：
+本项目当前解决的是一个可验证的 baseline 问题：
 
-`B -> C -> D -> feedback -> B(revise) -> C -> D -> E`
+- 从题面中抽取物理对象、已知量、未知目标、约束与物理规律。
+- 生成 Lean theorem 候选，并在真实 Lean 环境中做编译检查。
+- 用规则和 LLM 联合做语义筛选，必要时把反馈回送给 B 阶段重生候选。
+- 对最终候选做 Lean 证明生成与修复。
+- 将整次运行归档为可复盘的日志、报告和 Lean 文件。
 
-只有最终轮会进入 `E` 和最终指标统计；第 0 轮保留用于日志和诊断。
+## 2. 当前主流程
 
-## 1. 项目目标
-
-这个仓库当前解决的是一个可跑通、可复盘的 baseline 问题，而不是训练框架或通用 agent 平台：
-
-- 从题面中抽取物理量、目标量和物理规律。
-- 生成多个 Lean theorem 候选，并用真实 Lean 环境筛掉无法编译的候选。
-- 用规则 + LLM 做语义筛选，并在失败时把错误反馈回送给 B 阶段重生候选。
-- 对最终候选做 proof generation / repair，并输出结构化运行记录。
-
-## 2. 运行机制
-
-### 2.1 总体控制流
-
-CLI 入口是：
+主入口：
 
 ```powershell
 mech-baseline run --config <config>.yaml
 ```
 
-实际执行链路在 [src/mech_pipeline/cli.py](/f:/AI4Mechanics/coding/pipeline1/src/mech_pipeline/cli.py)：
+等价调用：
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m mech_pipeline.cli run --config <config>.yaml
+```
+
+当前主流程如下：
+
+```text
+输入样本
+  -> A Grounding
+  -> MechLib 检索
+  -> B Statement Generation
+  -> C Lean Compile Check
+  -> D Semantic Rank
+  -> E Proof Search / Repair
+  -> F Metrics / Analysis / Export
+```
+
+其中真正的控制逻辑在 [src/mech_pipeline/cli.py](src/mech_pipeline/cli.py)：
 
 1. 读取并校验 YAML 配置。
-2. 建立 `runs/<timestamp>_<tag>/` 和 `outputs/latest/`。
-3. 构建数据集 adapter。
-4. `--dry-run` 时只创建目录和基础汇总，不执行 A-F。
-5. 非 dry-run 时构建 model client、LeanRunner、MechLibRetriever 和各阶段模块。
-6. 若 `lean.enabled=true` 且 `preflight_enabled=true`，先对 `PhysLean` / `MechLib` 做 `lake env lean` 预检。
-7. 对每个样本执行 A 阶段、知识检索、B/C/D 主流程。
-8. 若满足闭环条件，则把上一轮 C/D 反馈打包后回送给 B 再跑一轮。
-9. 仅对最终轮 `semantic_pass=true` 的样本执行 E 阶段。
-10. F 阶段汇总 `metrics.json`、`analysis.md`、`sample_summary.jsonl` 和运行级 README。
+2. 构建 `runs/<timestamp>_<tag>/`。
+3. 加载数据源。
+4. 构建模型客户端、LeanRunner、MechLibRetriever 和 A-F 各模块。
+5. 可选执行 Lean preflight。
+6. 逐题或并发执行样本流程。
+7. 聚合阶段日志、指标、分析报告和 Lean 导出文件。
+8. 将整次 run 复制到 `outputs/latest/`。
 
-### 2.2 A-F 各阶段
+## 3. 各模块职责
 
-#### A. Grounding
+### A. Grounding
 
-文件：[src/mech_pipeline/modules/A_grounding.py](/f:/AI4Mechanics/coding/pipeline1/src/mech_pipeline/modules/A_grounding.py)
+文件：[src/mech_pipeline/modules/A_grounding.py](src/mech_pipeline/modules/A_grounding.py)
 
 职责：
 
-- 读取题面文本、选项、图像或图像描述。
-- 调用模型抽取 `Problem IR`。
-- 规范化 `physical_laws`、`known_quantities`、`unknown_target` 等字段。
-- 做基础防泄漏清理，避免把基准答案直接喂回后续 prompt。
+- 从题面抽取 `Problem IR`。
+- 规范化 `known_quantities`、`unknown_target`、`physical_laws`、`constraints` 等字段。
+- 图文题优先尝试 vision；失败时退回纯文本抽取。
 
-#### B. Statement Generation
+### B. Statement Generation
 
-文件：[src/mech_pipeline/modules/B_statement_gen.py](/f:/AI4Mechanics/coding/pipeline1/src/mech_pipeline/modules/B_statement_gen.py)
-
-职责：
-
-- 为每个样本生成 4 个 Lean theorem 候选。
-- 可注入 MechLib 检索上下文，帮助模型对齐命名、导入和风格。
-- 对高风险输出做本地正规化和修补，例如数值字面量规范化、部分幻觉 API 修复、风险符号拦截。
-- round 0 使用 [prompts/B_generate_statements.txt](/f:/AI4Mechanics/coding/pipeline1/prompts/B_generate_statements.txt)。
-- revision round 使用 [prompts/B_revise_statements.txt](/f:/AI4Mechanics/coding/pipeline1/prompts/B_revise_statements.txt)。
-
-#### C. Lean Compile Check
-
-文件：[src/mech_pipeline/modules/C_compile_check.py](/f:/AI4Mechanics/coding/pipeline1/src/mech_pipeline/modules/C_compile_check.py)
+文件：[src/mech_pipeline/modules/B_statement_gen.py](src/mech_pipeline/modules/B_statement_gen.py)
 
 职责：
 
-- 对每个候选调用 LeanRunner。
-- 按 import 和路由策略选择 `physlean` 或 `mechlib` backend。
-- 输出编译是否通过、错误类型、后端、fallback 使用情况和日志路径。
+- 根据 `Problem IR` 和可选的 MechLib 上下文生成 Lean theorem 候选。
+- round 0 使用 [prompts/B_generate_statements.txt](prompts/B_generate_statements.txt)。
+- revision round 使用 [prompts/B_revise_statements.txt](prompts/B_revise_statements.txt)。
+- 做本地规范化，例如小数字面量规范化、合法标识符修复、希腊字母标识符转 ASCII。
 
-#### D. Semantic Rank
+当前行为有两个关键点：
 
-文件：[src/mech_pipeline/modules/D_semantic_rank.py](/f:/AI4Mechanics/coding/pipeline1/src/mech_pipeline/modules/D_semantic_rank.py)
+- 目标仍然是生成 4 个候选，但最终只保留“可用候选”。
+- **已经不再生成伪造的 fallback theorem**，也不再用克隆候选去硬补满 4 个位置。
+
+也就是说，B 阶段现在宁可返回较少的真实候选，也不会再制造 `fallback_goal` 这一类无研究价值的占位命题。
+
+### C. Lean Compile Check
+
+文件：[src/mech_pipeline/modules/C_compile_check.py](src/mech_pipeline/modules/C_compile_check.py)
 
 职责：
 
-- 仅对编译通过的候选做语义排序。
-- 综合规则分数、LLM 分数和 proofability bias。
-- 拒绝 trivial goal、law drift、target mismatch、known quantity mismatch 等候选。
-- 产出最终选中候选和完整 ranking。
+- 逐个候选调用 LeanRunner 编译。
+- 记录 `compile_pass`、`syntax_ok`、`elaboration_ok`、`backend_used`、`route_reason` 等结果。
+- 不引入额外 LLM 评审，只基于 Lean 输出提取更细的错误信息。
 
-#### E. Proof Search / Repair
+当前会额外保存：
 
-文件：[src/mech_pipeline/modules/E_prover.py](/f:/AI4Mechanics/coding/pipeline1/src/mech_pipeline/modules/E_prover.py)
+- `stderr_excerpt`
+- `error_line`
+- `error_message`
+- `error_snippet`
+- `sub_error_type`
+- `failure_summary`
+
+首批规则化细标签包括：
+
+- `symbol_hallucination`
+- `wrong_api_shape`
+- `namespace_or_import_issue`
+- `type_mismatch`
+- `invalid_decl_shape`
+- `timeout_or_tooling_block`
+
+### D. Semantic Rank
+
+文件：[src/mech_pipeline/modules/D_semantic_rank.py](src/mech_pipeline/modules/D_semantic_rank.py)  
+Prompt：[prompts/D_semantic_rank.txt](prompts/D_semantic_rank.txt)
+
+职责：
+
+- 只对编译通过的候选做语义排序。
+- 联合规则分数、LLM 语义判断和 proofability bias 选出最终候选。
+- 输出可回流给 B 的细粒度语义反馈。
+
+当前 D 阶段已经支持区分“表面形式不同但语义等价”和“真正 target drift”。  
+`target_relation` 目前使用以下分类：
+
+- `exact`
+- `equivalent`
+- `special_case`
+- `weaker`
+- `drift`
+
+其中：
+
+- `exact` / `equivalent` 可以进入通过路径。
+- `special_case` / `weaker` / `drift` 会被当作真正的目标偏移或不足。
+
+LLM 输出会被结构化保存，重点字段包括：
+
+- `failure_summary`
+- `failure_tags`
+- `mismatch_fields`
+- `missing_or_incorrect_translations`
+- `suggested_fix_direction`
+- `sub_error_type`
+
+这部分是当前闭环质量提升的核心。
+
+### E. Proof Search / Repair
+
+文件：[src/mech_pipeline/modules/E_prover.py](src/mech_pipeline/modules/E_prover.py)  
+Prompts：
+
+- [prompts/E_generate_proof.txt](prompts/E_generate_proof.txt)
+- [prompts/E_repair_proof.txt](prompts/E_repair_proof.txt)
 
 职责：
 
 - 对 D 最终选中的 theorem 生成 Lean proof body。
-- 若失败，基于 Lean 报错做 repair。
-- LLM 尝试失败后，追加 deterministic fallback tactic。
-- 当前只有最终轮 `semantic_pass=true` 的样本会进入 E。
-- 若最终轮 `semantic_pass=false`，会直接记为 `proof_skipped_due_to_semantic_fail`。
+- 若失败，则依据 Lean 报错做 proof repair。
+- 用 LeanRunner 做真实 proof verify。
 
-#### F. Metrics & Report
+当前行为已经与早期版本不同：
 
-文件：[src/mech_pipeline/modules/F_report.py](/f:/AI4Mechanics/coding/pipeline1/src/mech_pipeline/modules/F_report.py)
+- **已经停用无意义的 deterministic bare tactic fallback**。
+- 不再自动追加 `rfl`、`simp`、`aesop`、`linarith`、`ring` 之类的裸 tactic 尝试。
+- 如果模型没有给出可用 proof body，也不会再伪造 `trivial` 证明。
+
+同时：
+
+- E 只会在最终轮 `semantic_pass = true` 时运行。
+- 如果最终轮语义失败，proof 会被记为 `proof_skipped_due_to_semantic_fail`。
+
+E 阶段目前也会落盘更细的规则化错误信息，但**不会回流到 B**。
+
+### F. Metrics / Analysis / Export
+
+文件：[src/mech_pipeline/modules/F_report.py](src/mech_pipeline/modules/F_report.py)
 
 职责：
 
-- 汇总最终轮样本结果。
-- 计算阶段成功率、MechLib 采用率、错误分布和闭环使用率。
-- 生成运行级分析文本和运行 README。
+- 汇总最终轮结果。
+- 计算阶段成功率、错误分布和闭环使用率。
+- 生成：
+  - `metrics.json`
+  - `analysis.md`
+  - run 级 `README.md`
+  - Lean 导出工作区
 
-### 2.3 B/C/D 闭环机制
+## 4. B/C/D 闭环机制
 
-这是当前项目最重要的增量机制，控制逻辑在 [src/mech_pipeline/cli.py](/f:/AI4Mechanics/coding/pipeline1/src/mech_pipeline/cli.py)。
+当前闭环只作用于 `B -> C -> D`，最多一轮 revision。
 
-第 0 轮固定执行：
+控制逻辑：
 
-`B -> C -> D`
-
-触发 revision 的条件只有两个：
-
-- `C` 全部编译失败，`retry_reason = "no_compile_pass"`
-- `C` 有通过项，但 `D.semantic_pass = false`，`retry_reason = "semantic_fail"`
-
-触发后执行：
-
-1. 把上一轮的 compile 结果和 semantic ranking 组装成结构化 feedback。
-2. 把 feedback、上一轮候选和原始 `Problem IR` 一起送给 B 的 revise prompt。
-3. 重新生成完整 4 个候选，再跑一轮 `C -> D`。
-4. 第 1 轮作为最终轮；不会继续第 2 次 revision。
-
-反馈包内容包括：
-
-- 轮次摘要：`retry_reason`、`compile_pass_count`、`semantic_pass`、`selected_candidate_id`
-- 候选级反馈：`candidate_id`、`theorem_decl`、`plan`
-- 编译反馈：`compile_pass`、`error_type`、`stderr_digest`、`backend_used`、`route_reason`、`route_fallback_used`
-- 对已进入 D 的候选补充：`semantic_score`、`semantic_pass`、`semantic_reason`、`back_translation_text`、`hard_gate_reasons`、`semantic_rank_score`
-
-日志和统计规则：
-
-- `statement_candidates.jsonl`、`compile_checks.jsonl`、`semantic_rank.jsonl`、`proof_checks.jsonl` 会写入所有轮次。
-- 每条记录都带 `round_index`。
-- `sample_summary.jsonl` 会带 `final_round_index` 和 `feedback_loop_used`。
-- `metrics.json` 只按最终轮统计，不把第 0 轮失败重复计入成功率。
-
-## 3. 数据源
-
-### `lean4phys`
-
-文件：[src/mech_pipeline/adapters/lean4phys.py](/f:/AI4Mechanics/coding/pipeline1/src/mech_pipeline/adapters/lean4phys.py)
-
-用途：
-
-- 从 Lean4Phys 风格 JSON benchmark 加载题目。
-- 当前最常用的数据源。
-- 仓库自带一个最小 fixture：[fixtures/bench_mechanics73.json](/f:/AI4Mechanics/coding/pipeline1/fixtures/bench_mechanics73.json)。
-
-### `local_archive`
-
-文件：[src/mech_pipeline/adapters/local_archive.py](/f:/AI4Mechanics/coding/pipeline1/src/mech_pipeline/adapters/local_archive.py)
-
-用途：
-
-- 从本地归档目录读取文本题或图文题。
-- `text_only` 和 `image_text` 两种模式。
-- 当前图文模式默认只支持单图样本。
-
-### `phyx`
-
-文件：[src/mech_pipeline/adapters/phyx.py](/f:/AI4Mechanics/coding/pipeline1/src/mech_pipeline/adapters/phyx.py)
-
-用途：
-
-- 从 parquet URL 拉取 PhyX mechanics 数据。
-- 支持多个 URL 顺序 fallback。
-
-## 4. 模型与外部依赖
-
-### Python
-
-要求：
-
-- Python `>=3.10`
-- `openai`
-- `pandas`
-- `pydantic`
-- `pyarrow`
-- `PyYAML`
-
-安装：
-
-```powershell
-pip install -e .[dev]
+```text
+Round 0: B -> C -> D
+若失败:
+  反馈打包 -> B(revise) -> C -> D
+Round 1 作为最终轮
 ```
 
-如果暂时不想安装包，也可以直接用源码路径运行：
+只在以下情况触发 revision：
 
-```powershell
-$env:PYTHONPATH = "src"
-python -m mech_pipeline.cli run --config <config>.yaml --dry-run --limit 1
-```
+- `C` 阶段没有任何候选编译通过  
+  `retry_reason = "no_compile_pass"`
+- `C` 阶段有候选编译通过，但 `D.semantic_pass = false`  
+  `retry_reason = "semantic_fail"`
 
-### 模型 provider
+当前反馈包包含：
 
-当前只支持两类 provider：
+- 轮次摘要
+  - `retry_reason`
+  - `compile_pass_count`
+  - `semantic_pass`
+  - `selected_candidate_id`
+- C 阶段详细编译错误
+  - `error_type`
+  - `sub_error_type`
+  - `failure_summary`
+  - `stderr_excerpt`
+  - `error_line`
+  - `error_message`
+  - `error_snippet`
+- D 阶段详细语义反馈
+  - `semantic_score`
+  - `target_relation`
+  - `failure_tags`
+  - `mismatch_fields`
+  - `missing_or_incorrect_translations`
+  - `suggested_fix_direction`
+  - `hard_gate_reasons`
 
-- `mock`
-- `openai_compatible`
+注意：
 
-`openai_compatible` 通过 OpenAI Python SDK 调兼容接口，关键字段是：
+- 闭环只回送结构化摘要，不会把完整长日志直接塞回 prompt。
+- 最终 `metrics.json` 只按最终轮统计，不会把 round 0 的失败重复计入指标。
 
-- `model.model_id`
-- `model.base_url`
-- `model.api_key` 或 `model.api_key_env`
+## 5. 并发与实时进度
 
-如果你走官方 OpenAI：
+当前已经支持题目级并发执行。
+
+配置项：
 
 ```yaml
+runtime:
+  sample_concurrency: 4
+```
+
+也可以用 CLI 覆盖：
+
+```powershell
+python -m mech_pipeline.cli run --config <config>.yaml --sample-concurrency 4
+```
+
+实现方式：
+
+- 并发粒度是“题目”，不是候选或 proof attempt。
+- 单题内部仍保持 `A -> B -> C -> D -> E` 顺序。
+- 主线程按输入顺序汇总最终结果。
+- 并发上限当前限制为 **10**。
+
+运行时会输出题目级进度：
+
+```text
+progress: 0/40 completed, sample_concurrency=10
+progress: 7/40 completed, sample=<sample_id>
+progress: 40/40 completed
+```
+
+并发模式下采用真实完成顺序刷新，不会因为前面某一题较慢而卡住后续进度显示。
+
+如果你在 IDE 输出面板里看不到实时刷新，优先使用：
+
+```powershell
+python -u -m mech_pipeline.cli run --config <config>.yaml --sample-concurrency 4
+```
+
+仓库还提供了 VS Code 启动配置：
+
+- [.vscode/launch.json](.vscode/launch.json)
+- [.vscode/tasks.json](.vscode/tasks.json)
+
+这些配置会强制使用 `integratedTerminal` 与无缓冲输出。
+
+## 6. Lean / MechLib / Mathlib 适配
+
+### LeanRunner
+
+文件：[src/mech_pipeline/adapters/lean_runner.py](src/mech_pipeline/adapters/lean_runner.py)
+
+当前支持：
+
+- `physlean` / `mechlib` 两类 backend
+- `auto_by_import` / `force_physlean` / `force_mechlib`
+- route fallback
+- preflight 检查
+
+preflight 现在按配置中的 `root_dir` 解析相对路径，不再错误地基于当前工作目录拼接。
+
+### 导出 Lean 工作区
+
+每次 run 完成后都会生成：
+
+- `runs/<run>/lean_exports/`
+- `outputs/latest/lean_exports/`
+
+其中包含：
+
+- `lean-toolchain`
+- `lakefile.toml`
+- `lake-manifest.json`（若本地 package cache 可用）
+- `RunArtifacts.lean`
+- `README.md`
+- `index.json`
+- `problems/*.lean`
+
+设计目的：
+
+- 每道题单独导出为一份 `.lean` 文件。
+- 直接把 `lean_exports/` 当成 Lean workspace 打开。
+- 避免单独打开 `runs/.../*.lean` 时出现 `import MechLib` 无法解析的问题。
+
+当前导出逻辑会显式加入：
+
+- 本地 `MechLib`
+- 如 PhysLean `.lake/packages/mathlib` 存在，则显式加入 `mathlib`
+
+根项目本身的 [lakefile.toml](lakefile.toml) 也已显式声明本地 `mathlib` 路径依赖。
+
+## 7. 数据源
+
+支持三类数据源：
+
+- `lean4phys`
+- `local_archive`
+- `phyx`
+
+### lean4phys
+
+文件：[src/mech_pipeline/adapters/lean4phys.py](src/mech_pipeline/adapters/lean4phys.py)
+
+默认配置使用本地 `LeanPhysBench_v0.json`。  
+在当前这台机器上，`mechanics` 子集是最常用的评测对象。
+
+### local_archive
+
+文件：[src/mech_pipeline/adapters/local_archive.py](src/mech_pipeline/adapters/local_archive.py)
+
+支持：
+
+- `text_only`
+- `image_text`
+
+当前 `image_text` 默认仍按 MVP 路径工作，样本图像处理能力是保守实现。
+
+### phyx
+
+文件：[src/mech_pipeline/adapters/phyx.py](src/mech_pipeline/adapters/phyx.py)
+
+支持从多个 parquet URL 顺序尝试加载。
+
+## 8. 关键配置项
+
+配置定义在 [src/mech_pipeline/config.py](src/mech_pipeline/config.py)。
+
+主要字段：
+
+```yaml
+dataset:
+  source: lean4phys
+  limit: 10
+  sample_policy: index_head
+  seed: 42
+
 model:
   provider: openai_compatible
   model_id: gpt-5.4
   base_url: null
   api_key_env: OPENAI_API_KEY
+
+lean:
+  enabled: true
+  preflight_enabled: true
+  physlean_dir: F:/AI4Mechanics/PhysLean-master
+  mechlib_dir: F:/AI4Mechanics/coding/MechLib
+  route_policy: auto_by_import
+  default_backend: mechlib
+  route_fallback: true
+
+knowledge:
+  enabled: true
+  scope: mechanics_si
+  top_k: 6
+  inject_modules: [B]
+
+statement:
+  library_target: mechlib
+  with_mechlib_context: true
+  feedback_loop_enabled: true
+  max_revision_rounds: 1
+
+semantic:
+  pass_threshold: 0.7
+
+proof:
+  max_attempts: 2
+
+runtime:
+  sample_concurrency: 1
 ```
 
-如果你走兼容代理：
+当前校验规则中最重要的几项：
+
+- `runtime.sample_concurrency` 必须在 `1..10`
+- `statement.max_revision_rounds >= 0`
+- `semantic.pass_threshold` 必须在 `[0, 1]`
+- 多个路径字段会做乱码嫌疑检测
+- YAML 按 `utf-8-sig` 读取
+
+## 9. 快速开始
+
+### 9.1 安装
+
+```powershell
+pip install -e .[dev]
+```
+
+### 9.2 dry-run
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m mech_pipeline.cli run --config configs/default_mechanics73_openai.yaml --dry-run --limit 1 --tag dryrun-check
+```
+
+作用：
+
+- 验证 CLI、配置加载和输出目录创建。
+- 不调用模型。
+- 不执行 Lean 编译和证明。
+
+### 9.3 单题或小样本真实运行
+
+仓库中保留了几组可复用配置：
+
+- [configs/default_mechanics73_openai.yaml](configs/default_mechanics73_openai.yaml)
+- [configs/mechanics73_plus3_openai_gpt54.yaml](configs/mechanics73_plus3_openai_gpt54.yaml)
+- [configs/mechanics73_plus3_proxy_gpt54.yaml](configs/mechanics73_plus3_proxy_gpt54.yaml)
+- [configs/full_run_openai_proxy_lean.yaml](configs/full_run_openai_proxy_lean.yaml)
+
+配套 bench：
+
+- [fixtures/bench_mechanics73.json](fixtures/bench_mechanics73.json)
+- [fixtures/bench_mechanics73_plus3_seed20260330.json](fixtures/bench_mechanics73_plus3_seed20260330.json)
+- [fixtures/bench_mechanics73_plus3_seed2026033001.json](fixtures/bench_mechanics73_plus3_seed2026033001.json)
+
+示例：
+
+```powershell
+$env:PYTHONPATH = "src"
+$env:OPENAI_API_KEY = "<your-key>"
+python -u -m mech_pipeline.cli run --config configs/mechanics73_plus3_openai_gpt54.yaml --sample-concurrency 4 --tag demo
+```
+
+如果你使用兼容代理：
 
 ```yaml
 model:
@@ -238,195 +475,11 @@ model:
 
 不要把 API key 直接写进仓库文件。
 
-### Lean / PhysLean / MechLib
+## 10. 输出文件说明
 
-若要执行真实编译与证明校验，还需要：
+每次运行都会写入 `runs/<timestamp>_<tag>/`，并复制到 `outputs/latest/`。
 
-- 可用的 Lean4 / Lake
-- 本地 `PhysLean` 仓库
-- 本地 `MechLib` 仓库
-
-配置中的很多样例路径仍然是作者机器上的绝对路径，例如：
-
-- `F:/AI4Mechanics/PhysLean-master`
-- `F:/AI4Mechanics/coding/MechLib`
-- `F:/AI4Mechanics/数据集/归档`
-
-换机器时必须先改这些路径。
-
-## 5. 快速开始
-
-### 5.1 先跑 dry-run
-
-最稳妥的第一步是先确认 CLI、配置加载和输出目录没问题：
-
-```powershell
-$env:PYTHONPATH = "src"
-python -m mech_pipeline.cli run --config configs/default_mechanics73_openai.yaml --dry-run --limit 1 --tag dryrun-check
-```
-
-特点：
-
-- 会创建 `runs/` 和 `outputs/latest/`
-- 不调用模型
-- 不执行 Lean 编译和证明
-
-### 5.2 跑 Mechanics73 fixture
-
-仓库内置的最小样本配置是：
-
-[configs/default_mechanics73_openai.yaml](/f:/AI4Mechanics/coding/pipeline1/configs/default_mechanics73_openai.yaml)
-
-运行前请先检查：
-
-- `dataset.lean4phys.bench_path`
-- `lean.physlean_dir`
-- `lean.mechlib_dir`
-- `knowledge.summary_corpus_path`
-
-示例：
-
-```powershell
-$env:PYTHONPATH = "src"
-$env:OPENAI_PROXY_KEY = "<your-key>"
-python -m mech_pipeline.cli run --config configs/default_mechanics73_openai.yaml --limit 1 --tag mechanics73-real
-```
-
-### 5.3 跑自定义 4 题 benchmark
-
-仓库里现在保留了一组可复用的 4 题样本：
-
-- bench: [fixtures/bench_mechanics73_plus3_seed20260330.json](/f:/AI4Mechanics/coding/pipeline1/fixtures/bench_mechanics73_plus3_seed20260330.json)
-- 代理配置: [configs/mechanics73_plus3_proxy_gpt54.yaml](/f:/AI4Mechanics/coding/pipeline1/configs/mechanics73_plus3_proxy_gpt54.yaml)
-- 官方 OpenAI 配置: [configs/mechanics73_plus3_openai_gpt54.yaml](/f:/AI4Mechanics/coding/pipeline1/configs/mechanics73_plus3_openai_gpt54.yaml)
-
-这组 bench 固定包含 `Mechanics73`，并附带 3 道按固定 seed 选出的 mechanics 题，适合做小规模真实 API 回归。
-
-示例：
-
-```powershell
-$env:PYTHONPATH = "src"
-$env:OPENAI_PROXY_KEY = "<your-key>"
-python -m mech_pipeline.cli run --config configs/mechanics73_plus3_proxy_gpt54.yaml
-```
-
-### 5.4 常用参数
-
-```powershell
-mech-baseline run --config <config>.yaml --limit 10
-mech-baseline run --config <config>.yaml --tag myrun
-mech-baseline run --config <config>.yaml --dry-run
-```
-
-含义：
-
-- `--limit` 覆盖配置中的样本数
-- `--tag` 覆盖输出标签
-- `--dry-run` 只建运行骨架，不执行实际阶段
-
-## 6. 配置说明
-
-配置定义在 [src/mech_pipeline/config.py](/f:/AI4Mechanics/coding/pipeline1/src/mech_pipeline/config.py)。
-
-### `dataset`
-
-- `source`: `local_archive` / `phyx` / `lean4phys`
-- `limit`
-- `sample_policy`: `index_head` / `seed_random`
-- `seed`
-- `lean4phys.bench_path`
-- `local_archive.root`
-- `single_image_only_for_mvp`
-
-### `model`
-
-- `provider`
-- `model_id`
-- `base_url`
-- `api_key` / `api_key_env`
-- `supports_vision`
-- `timeout_s`
-- `max_retries`
-
-### `lean`
-
-- `enabled`
-- `physlean_dir`
-- `mechlib_dir`
-- `timeout_s`
-- `preflight_enabled`
-- `route_policy`: `auto_by_import` / `force_physlean` / `force_mechlib`
-- `default_backend`
-- `route_fallback`
-
-### `knowledge`
-
-- `enabled`
-- `mechlib_dir`
-- `scope`
-- `top_k`
-- `cache_path`
-- `context_source`
-- `summary_corpus_path`
-- `inject_modules`: 当前支持 `B` / `D` / `E`
-
-### `statement`
-
-- `library_target`
-- `with_mechlib_context`
-- `feedback_loop_enabled`
-- `max_revision_rounds`
-
-### `semantic`
-
-- `pass_threshold`
-
-### `proof`
-
-- `max_attempts`
-
-### `prompts`
-
-- `a_extract_ir`
-- `b_generate_statements`
-- `b_revise_statements`
-- `d_semantic_rank`
-- `e_generate_proof`
-- `e_repair_proof`
-
-### `output`
-
-- `output.output_dir`
-- `output.runs_dir`
-- `output.tag`
-
-## 7. MechLib 检索机制
-
-文件：[src/mech_pipeline/knowledge/mechlib.py](/f:/AI4Mechanics/coding/pipeline1/src/mech_pipeline/knowledge/mechlib.py)
-
-当前不是向量数据库，而是轻量混合检索：
-
-- 从 `theorem_corpus.jsonl` 按领域标签读取 summary
-- 从本地 MechLib `.lean` 文件抽取 declaration、import hint 和 proof 风格示例
-
-随后把两部分拼成 prompt context，按 `inject_modules` 选择性注入到 B/D/E。
-
-当前可确认的行为：
-
-- 领域标签优先来自 A 阶段抽取的 `physical_laws`
-- 若 A 提供不稳定，则退回题面关键词匹配
-- D 阶段存在轻微的 MechLib backend bias
-
-## 8. 输出文件
-
-每次运行都会创建：
-
-- `runs/<timestamp>_<tag>/`
-- `outputs/latest/`
-
-`outputs/latest/` 会被最新一次运行覆盖，`runs/` 会保留历史结果。
-
-当前主流程会写出这些文件：
+阶段日志：
 
 - `problem_ir.jsonl`
 - `mechlib_retrieval.jsonl`
@@ -436,140 +489,95 @@ mech-baseline run --config <config>.yaml --dry-run
 - `proof_attempts.jsonl`
 - `proof_checks.jsonl`
 - `sample_summary.jsonl`
+
+聚合结果：
+
 - `metrics.json`
 - `analysis.md`
 - `README.md`
 - `config.json`
 - `manifest.json`
 
-另外还有两个非常实用的目录：
+Lean 导出：
 
-- `lean_compile/`: C 阶段的编译日志
-- `lean_proof/`: E 阶段的 proof 验证日志
+- `lean_exports/README.md`
+- `lean_exports/index.json`
+- `lean_exports/problems/*.lean`
 
-以及一个中间目录：
+当前一些关键字段的含义：
 
-- `.pipeline1_tmp/compile/<backend>/`: 编译时实际写出的临时 Lean 文件
-- `.pipeline1_tmp/proof/<backend>/`: proof 验证时实际写出的临时 Lean 文件
+- `sample_summary.jsonl`
+  - 每题最终结果
+  - `final_round_index`
+  - `feedback_loop_used`
+  - `final_error_type`
+  - `sub_error_type`
+  - `failure_summary`
+- `semantic_rank.jsonl`
+  - 语义排序全量信息
+  - `target_relation`
+  - `mismatch_fields`
+  - `missing_or_incorrect_translations`
+  - `suggested_fix_direction`
+- `proof_attempts.jsonl`
+  - 每次证明尝试的原始响应、Lean 校验结果和规则化错误信息
 
-这两个目录对排查 “候选能过 C 但过不了 E” 很重要。
+## 11. 测试
 
-## 9. 指标说明
+单元和 smoke 测试使用 `pytest`，临时文件统一写到：
 
-指标由 [src/mech_pipeline/eval/metrics.py](/f:/AI4Mechanics/coding/pipeline1/src/mech_pipeline/eval/metrics.py) 生成。
+- `tmp/pytest/cache`
+- `tmp/pytest/basetemp`
 
-核心字段包括：
-
-- `grounding_success_rate`
-- `statement_generation_success_rate`
-- `lean_compile_success_rate`
-- `semantic_consistency_pass_rate`
-- `proof_success_rate`
-- `end_to_end_verified_solve_rate`
-- `mechlib_header_rate`
-- `mechlib_compile_pass_rate`
-- `selected_mechlib_candidate_rate`
-- `feedback_loop_used_rate`
-- `error_type_distribution`
-
-注意：
-
-- `lean_compile_success_rate` 的分母是候选数，不是样本数。
-- 最终指标只统计每个样本的最终轮。
-- `feedback_loop_used_rate` 统计触发过 revision 的样本比例。
-
-## 10. 测试
-
-最简单的回归方式：
+运行示例：
 
 ```powershell
-pytest -q
+python -m pytest -q
 ```
 
-如果只想先看 CLI 和关键阶段：
+当前仓库已经覆盖的重点包括：
 
-```powershell
-pytest -q tests/test_cli_smoke.py tests/test_statement_normalization.py tests/test_semantic_rank.py
-```
-
-当前测试覆盖重点包括：
-
-- 配置加载与校验
-- CLI smoke
-- LeanRunner 路径解析
-- B 阶段正规化与修补
-- D 阶段 guardrail / proofability bias
-- B/C/D feedback loop 控制流
-
-## 11. 常见问题
-
-### `No module named mech_pipeline`
-
-执行以下任一项：
-
-```powershell
-pip install -e .[dev]
-```
-
-或：
-
-```powershell
-$env:PYTHONPATH = "src"
-```
-
-### Lean preflight 失败
-
-通常是以下原因之一：
-
-- `lean.physlean_dir` 路径错误
-- `lean.mechlib_dir` 路径错误
-- 对应仓库缺少 `lakefile.toml` 或 `lean-toolchain`
-- `lake env lean` 在对应仓库目录下无法执行
-
-如果只是想先验证上游阶段，可以临时关闭：
-
-```yaml
-lean:
-  enabled: false
-  preflight_enabled: false
-```
-
-### `AuthenticationError` / `invalid_api_key`
-
-请优先检查：
-
-- `model.base_url` 是否和 key 类型匹配
-- `model.api_key_env` 指向的环境变量是否存在
-- 当前 key 是否有对应模型的访问权限
-
-### Windows 中文乱码
-
-CLI 会尝试切到 UTF-8。若仍然乱码，可先执行：
-
-```powershell
-chcp 65001
-```
+- B 阶段候选规范化与反 trivial 规则
+- D 阶段 target equivalence / drift 区分
+- E 阶段无意义 fallback 停用
+- 并发执行
+- 实时 progress 输出
+- Lean 导出工作区
+- 配置校验
 
 ## 12. 当前限制
 
-这些是当前代码层面可确认的限制：
+以下限制仍然存在：
 
-- CLI 只有 `run` 一个子命令。
-- provider 只有 `mock` 和 `openai_compatible`。
-- 图文数据路径仍主要按 MVP 约束处理。
-- B 阶段虽然加入了本地修补和 feedback loop，但仍会出现语义漂移和 fallback 候选。
-- E 阶段仍是 baseline 级 proof 策略，对代数消元、分母讨论、ODE/微分几何类题目的稳定性不足。
-- 多个样例配置仍包含作者机器的绝对路径，迁移到新机器前必须先改。
+- 很多示例配置仍然带有本机绝对路径，换机器前必须先改：
+  - `lean.physlean_dir`
+  - `lean.mechlib_dir`
+  - `dataset.lean4phys.bench_path`
+  - `knowledge.summary_corpus_path`
+- `D` 和 `E` 仍然是 baseline 质量，不代表题目语义理解或证明搜索已经足够强。
+- `competition` 子集整体仍然明显弱于 `university` 子集。
+- 闭环目前只做一轮，且只覆盖 `B/C/D`，不扩展到 `E`。
+- `local_archive` 的图文路径仍是保守实现，不是通用多图系统。
 
-## 13. 建议阅读顺序
+## 13. 推荐阅读顺序
 
-如果你准备继续开发这个项目，建议按下面顺序读代码：
+如果你要快速理解当前代码，建议按以下顺序读：
 
-1. [src/mech_pipeline/cli.py](/f:/AI4Mechanics/coding/pipeline1/src/mech_pipeline/cli.py)
-2. [src/mech_pipeline/config.py](/f:/AI4Mechanics/coding/pipeline1/src/mech_pipeline/config.py)
-3. [src/mech_pipeline/modules/A_grounding.py](/f:/AI4Mechanics/coding/pipeline1/src/mech_pipeline/modules/A_grounding.py)
-4. [src/mech_pipeline/modules/B_statement_gen.py](/f:/AI4Mechanics/coding/pipeline1/src/mech_pipeline/modules/B_statement_gen.py)
-5. [src/mech_pipeline/adapters/lean_runner.py](/f:/AI4Mechanics/coding/pipeline1/src/mech_pipeline/adapters/lean_runner.py)
-6. [src/mech_pipeline/modules/D_semantic_rank.py](/f:/AI4Mechanics/coding/pipeline1/src/mech_pipeline/modules/D_semantic_rank.py)
-7. [src/mech_pipeline/modules/E_prover.py](/f:/AI4Mechanics/coding/pipeline1/src/mech_pipeline/modules/E_prover.py)
-8. [src/mech_pipeline/knowledge/mechlib.py](/f:/AI4Mechanics/coding/pipeline1/src/mech_pipeline/knowledge/mechlib.py)
+1. [src/mech_pipeline/cli.py](src/mech_pipeline/cli.py)
+2. [src/mech_pipeline/config.py](src/mech_pipeline/config.py)
+3. [src/mech_pipeline/modules/B_statement_gen.py](src/mech_pipeline/modules/B_statement_gen.py)
+4. [src/mech_pipeline/modules/D_semantic_rank.py](src/mech_pipeline/modules/D_semantic_rank.py)
+5. [src/mech_pipeline/modules/E_prover.py](src/mech_pipeline/modules/E_prover.py)
+6. [src/mech_pipeline/adapters/lean_runner.py](src/mech_pipeline/adapters/lean_runner.py)
+
+## 14. 当前版本的关键变化
+
+相较于项目早期版本，当前 README 对应的真实代码状态是：
+
+- B 阶段已删除伪造 fallback theorem。
+- D 阶段已经能区分“表面形式不同但语义等价”和“真正 target drift”。
+- E 阶段已停用无意义的 bare tactic fallback。
+- `B/C/D` 已支持一轮结构化 feedback 闭环。
+- 已支持题目级并发和实时进度输出。
+- 每次 run 都会导出可直接打开的 Lean 工作区。
+

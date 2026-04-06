@@ -27,9 +27,19 @@ class ModuleF:
         )
 
         counter: Counter[str] = Counter()
+        sub_counter: Counter[str] = Counter()
+        mismatch_counter: Counter[str] = Counter()
         for s in summaries:
             if s.final_error_type:
                 counter[s.final_error_type] += 1
+            if s.sub_error_type:
+                sub_counter[s.sub_error_type] += 1
+            mismatch_fields = s.failure_details.get("mismatch_fields") if isinstance(s.failure_details, dict) else None
+            if isinstance(mismatch_fields, list):
+                for item in mismatch_fields:
+                    text = str(item).strip()
+                    if text:
+                        mismatch_counter[text] += 1
         failed_ids = [s.sample_id for s in summaries if not s.end_to_end_ok][:10]
         feedback_loop_used = sum(1 for s in summaries if s.feedback_loop_used)
         feedback_loop_success = sum(1 for s in summaries if s.feedback_loop_used and s.end_to_end_ok)
@@ -58,6 +68,30 @@ class ModuleF:
         ]
         if counter:
             for key, value in counter.most_common():
+                lines.append(f"- {key}: {value}")
+        else:
+            lines.append("- none")
+
+        lines.extend(
+            [
+                "",
+                "## Sub Error Distribution",
+            ]
+        )
+        if sub_counter:
+            for key, value in sub_counter.most_common():
+                lines.append(f"- {key}: {value}")
+        else:
+            lines.append("- none")
+
+        lines.extend(
+            [
+                "",
+                "## Semantic Mismatch Fields",
+            ]
+        )
+        if mismatch_counter:
+            for key, value in mismatch_counter.most_common():
                 lines.append(f"- {key}: {value}")
         else:
             lines.append("- none")

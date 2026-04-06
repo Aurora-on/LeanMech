@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 import json
 import os
 import sys
@@ -15,12 +16,13 @@ from mech_pipeline.adapters import (
     PhyxDatasetAdapter,
 )
 from mech_pipeline.archive import create_run_dir, write_outputs
-from mech_pipeline.config import PipelineConfig, load_config
+from mech_pipeline.config import PipelineConfig, load_config, validate_config
 from mech_pipeline.knowledge import MechLibRetriever
 from mech_pipeline.model import build_model_client
 from mech_pipeline.modules import ModuleA, ModuleB, ModuleC, ModuleD, ModuleE, ModuleF
 from mech_pipeline.types import (
     CompileCheckResult,
+    GroundingResult,
     ProofCheckResult,
     SampleRunSummary,
     SemanticRankResult,
@@ -29,12 +31,25 @@ from mech_pipeline.types import (
 from mech_pipeline.utils import normalize_lean_text, safe_stem, to_row, truncate
 
 
+STAGE_ROW_FILES = (
+    "problem_ir.jsonl",
+    "mechlib_retrieval.jsonl",
+    "statement_candidates.jsonl",
+    "compile_checks.jsonl",
+    "semantic_rank.jsonl",
+    "proof_attempts.jsonl",
+    "proof_checks.jsonl",
+    "sample_summary.jsonl",
+)
+
+
 def _configure_utf8_console() -> None:
     os.environ.setdefault("PYTHONUTF8", "1")
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
     if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True, write_through=True)
     if sys.stderr is not None and hasattr(sys.stderr, "reconfigure"):
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True, write_through=True)
     if sys.stdin is not None and hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8", errors="replace")
     if os.name != "nt":
@@ -50,6 +65,10 @@ def _configure_utf8_console() -> None:
         pass
 
 
+def _emit_console_line(message: str) -> None:
+    print(message, flush=True)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="mech-baseline",
@@ -60,6 +79,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run.add_argument("--config", required=True, type=str)
     run.add_argument("--limit", type=int, default=None)
     run.add_argument("--tag", type=str, default=None)
+    run.add_argument("--sample-concurrency", type=int, default=None)
     run.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
 
@@ -88,6 +108,46 @@ def _build_dataset(cfg: PipelineConfig):
         limit=cfg.dataset.limit,
         seed=cfg.dataset.seed,
     )
+
+
+def _new_stage_rows() -> dict[str, list[dict[str, object]]]:
+    return {name: [] for name in STAGE_ROW_FILES}
+
+
+def _build_lean_runner(cfg: PipelineConfig) -> LeanRunner:
+    return LeanRunner(
+        physlean_dir=Path(cfg.lean.physlean_dir),
+        mechlib_dir=Path(cfg.lean.mechlib_dir),
+        timeout_s=cfg.lean.timeout_s,
+        strict_blocklist=cfg.lean.strict_blocklist,
+        lean_header=cfg.lean.lean_header,
+        enabled=cfg.lean.enabled,
+        route_policy=cfg.lean.route_policy,
+        default_backend=cfg.lean.default_backend,
+        route_fallback=cfg.lean.route_fallback,
+    )
+
+
+def _build_worker_modules(cfg: PipelineConfig, prompt_dir: Path):
+    model_client = build_model_client(cfg.model)
+    lean_runner = _build_lean_runner(cfg)
+    module_a = ModuleA(model_client, cfg.model.model_id, prompt_dir / cfg.prompts.a_extract_ir)
+    module_b = ModuleB(
+        model_client,
+        prompt_dir / cfg.prompts.b_generate_statements,
+        revise_prompt_path=prompt_dir / cfg.prompts.b_revise_statements,
+        library_target=cfg.statement.library_target,
+    )
+    module_c = ModuleC(lean_runner)
+    module_d = ModuleD(model_client, prompt_dir / cfg.prompts.d_semantic_rank, cfg.semantic.pass_threshold)
+    module_e = ModuleE(
+        model_client=model_client,
+        lean_runner=lean_runner,
+        prompt_generate_path=prompt_dir / cfg.prompts.e_generate_proof,
+        prompt_repair_path=prompt_dir / cfg.prompts.e_repair_proof,
+        max_attempts=cfg.proof.max_attempts,
+    )
+    return module_a, module_b, module_c, module_d, module_e
 
 
 def _empty_metrics_with_error(error_type: str) -> dict[str, object]:
@@ -182,10 +242,17 @@ def _build_revision_feedback(
             "plan": candidate.plan,
             "compile_pass": bool(compile_row.compile_pass) if compile_row else False,
             "error_type": compile_row.error_type if compile_row else "compile_not_run",
+            "sub_error_type": compile_row.sub_error_type if compile_row else None,
+            "failure_tags": list(compile_row.failure_tags) if compile_row else [],
+            "failure_summary": compile_row.failure_summary if compile_row else None,
             "stderr_digest": compile_row.stderr_digest if compile_row else "",
+            "stderr_excerpt": compile_row.stderr_excerpt if compile_row else None,
             "backend_used": compile_row.backend_used if compile_row else None,
             "route_reason": compile_row.route_reason if compile_row else None,
             "route_fallback_used": bool(compile_row.route_fallback_used) if compile_row else False,
+            "error_line": compile_row.error_line if compile_row else None,
+            "error_message": compile_row.error_message if compile_row else None,
+            "error_snippet": compile_row.error_snippet if compile_row else None,
         }
         semantic_row = ranking_map.get(candidate.candidate_id)
         if semantic_row is not None:
@@ -193,8 +260,14 @@ def _build_revision_feedback(
                 {
                     "semantic_score": semantic_row.get("semantic_score"),
                     "semantic_pass": semantic_row.get("semantic_pass"),
+                    "semantic_sub_error_type": semantic_row.get("sub_error_type"),
+                    "semantic_failure_tags": semantic_row.get("failure_tags"),
+                    "semantic_failure_summary": semantic_row.get("failure_summary"),
                     "semantic_reason": semantic_row.get("semantic_reason"),
                     "back_translation_text": semantic_row.get("back_translation_text"),
+                    "mismatch_fields": semantic_row.get("mismatch_fields"),
+                    "missing_or_incorrect_translations": semantic_row.get("missing_or_incorrect_translations"),
+                    "suggested_fix_direction": semantic_row.get("suggested_fix_direction"),
                     "hard_gate_reasons": semantic_row.get("hard_gate_reasons"),
                     "semantic_rank_score": semantic_row.get("semantic_rank_score"),
                 }
@@ -292,27 +365,8 @@ def _build_lean_export_workspace_files(*, cfg: PipelineConfig, export_root: Path
     if toolchain_path.exists():
         toolchain = toolchain_path.read_text(encoding="utf-8", errors="replace").strip() or toolchain
 
-    lakefile = "\n".join(
-        [
-            'name = "RunArtifacts"',
-            'version = "0.1.0"',
-            'defaultTargets = ["RunArtifacts"]',
-            "",
-            "[[require]]",
-            'name = "MechLib"',
-            f'path = "{_lean_export_relpath(export_root, mechlib_dir)}"',
-            "",
-            "[[lean_lib]]",
-            'name = "RunArtifacts"',
-            'srcDir = "."',
-            "",
-        ]
-    )
-
-    files["lean_exports/lean-toolchain"] = toolchain + "\n"
-    files["lean_exports/lakefile.toml"] = lakefile
-    files["lean_exports/RunArtifacts.lean"] = "namespace RunArtifacts\n\nend RunArtifacts\n"
-
+    mathlib_dir: Path | None = None
+    mathlib_config: str | None = None
     manifest_packages: list[dict[str, object]] = [
         {
             "type": "path",
@@ -325,9 +379,11 @@ def _build_lean_export_workspace_files(*, cfg: PipelineConfig, export_root: Path
         }
     ]
     if packages_dir.exists():
-        mathlib_dir = packages_dir / "mathlib"
-        mathlib_config = _detect_lake_config(mathlib_dir)
-        if mathlib_dir.exists() and mathlib_config:
+        detected_mathlib_dir = packages_dir / "mathlib"
+        detected_mathlib_config = _detect_lake_config(detected_mathlib_dir)
+        if detected_mathlib_dir.exists() and detected_mathlib_config:
+            mathlib_dir = detected_mathlib_dir
+            mathlib_config = detected_mathlib_config
             manifest_packages.append(
                 {
                     "type": "path",
@@ -339,7 +395,7 @@ def _build_lean_export_workspace_files(*, cfg: PipelineConfig, export_root: Path
                     "configFile": mathlib_config,
                 }
             )
-        transitive_manifest_path = mathlib_dir / "lake-manifest.json"
+        transitive_manifest_path = detected_mathlib_dir / "lake-manifest.json"
         added_names = {str(pkg.get("name") or "") for pkg in manifest_packages}
         if transitive_manifest_path.exists():
             transitive_manifest = json.loads(transitive_manifest_path.read_text(encoding="utf-8"))
@@ -365,7 +421,7 @@ def _build_lean_export_workspace_files(*, cfg: PipelineConfig, export_root: Path
                     }
                 )
                 added_names.add(name)
-        elif mathlib_dir.exists():
+        elif detected_mathlib_dir.exists():
             for package_dir in sorted(packages_dir.iterdir(), key=lambda p: p.name.lower()):
                 if not package_dir.is_dir():
                     continue
@@ -387,6 +443,40 @@ def _build_lean_export_workspace_files(*, cfg: PipelineConfig, export_root: Path
                     }
                 )
                 added_names.add(name)
+
+    lakefile_lines = [
+        'name = "RunArtifacts"',
+        'version = "0.1.0"',
+        'defaultTargets = ["RunArtifacts"]',
+        "",
+        "[[require]]",
+        'name = "MechLib"',
+        f'path = "{_lean_export_relpath(export_root, mechlib_dir)}"',
+        "",
+    ]
+    if mathlib_dir is not None:
+        lakefile_lines.extend(
+            [
+                "[[require]]",
+                'name = "mathlib"',
+                f'path = "{_lean_export_relpath(export_root, mathlib_dir)}"',
+                "",
+            ]
+        )
+    lakefile_lines.extend(
+        [
+            "[[lean_lib]]",
+            'name = "RunArtifacts"',
+            'srcDir = "."',
+            "",
+        ]
+    )
+
+    lakefile = "\n".join(lakefile_lines)
+    files["lean_exports/lean-toolchain"] = toolchain + "\n"
+    files["lean_exports/lakefile.toml"] = lakefile
+    files["lean_exports/RunArtifacts.lean"] = "namespace RunArtifacts\n\nend RunArtifacts\n"
+    if packages_dir.exists():
         manifest = {
             "version": "1.1.0",
             "packagesDir": ".lake/packages",
@@ -560,12 +650,360 @@ def _build_lean_export_files(
     return files
 
 
+def _process_sample(
+    *,
+    cfg: PipelineConfig,
+    sample,
+    run_dir: Path,
+    prompt_dir: Path,
+    inject_set: set[str],
+    retriever: MechLibRetriever | None,
+    preflight_ok: bool,
+    preflight_error: str | None,
+    preflight_message: str,
+) -> dict[str, object]:
+    stage_rows = _new_stage_rows()
+    grounding_rows: list[GroundingResult] = []
+    compile_rows: list[CompileCheckResult] = []
+    semantic_rows: list[SemanticRankResult] = []
+    proof_rows: list[ProofCheckResult] = []
+
+    if sample.skip_reason:
+        return {
+            "stage_rows": stage_rows,
+            "grounding_rows": grounding_rows,
+            "compile_rows": compile_rows,
+            "semantic_rows": semantic_rows,
+            "proof_rows": proof_rows,
+            "summary": SampleRunSummary(
+                sample_id=sample.sample_id,
+                grounding_ok=False,
+                statement_generation_ok=False,
+                compile_ok=False,
+                semantic_ok=False,
+                proof_ok=False,
+                end_to_end_ok=False,
+                final_error_type=sample.skip_reason,
+                notes="dataset skip",
+                final_round_index=0,
+                feedback_loop_used=False,
+                sub_error_type=sample.skip_reason,
+                failure_summary="Sample skipped by dataset adapter.",
+                failure_details={"skip_reason": sample.skip_reason},
+            ),
+        }
+
+    if not preflight_ok:
+        return {
+            "stage_rows": stage_rows,
+            "grounding_rows": grounding_rows,
+            "compile_rows": compile_rows,
+            "semantic_rows": semantic_rows,
+            "proof_rows": proof_rows,
+            "summary": SampleRunSummary(
+                sample_id=sample.sample_id,
+                grounding_ok=False,
+                statement_generation_ok=False,
+                compile_ok=False,
+                semantic_ok=False,
+                proof_ok=False,
+                end_to_end_ok=False,
+                final_error_type=preflight_error,
+                notes=preflight_message,
+                final_round_index=0,
+                feedback_loop_used=False,
+                sub_error_type=preflight_error,
+                failure_summary=preflight_message,
+                failure_details={"preflight_error": preflight_error, "preflight_message": preflight_message},
+            ),
+        }
+
+    module_a, module_b, module_c, module_d, module_e = _build_worker_modules(cfg, prompt_dir)
+
+    def _run_statement_round(
+        *,
+        round_index: int,
+        grounding: GroundingResult,
+        mechlib_context: str,
+        revision_feedback: str = "(none)",
+        previous_candidates: list[StatementCandidate] | None = None,
+    ) -> tuple[list[StatementCandidate], list[CompileCheckResult], SemanticRankResult]:
+        b_context = mechlib_context if "B" in inject_set else "(none)"
+        candidates = module_b.run(
+            grounding,
+            mechlib_context=b_context,
+            revision_feedback=revision_feedback,
+            round_index=round_index,
+            previous_candidates=previous_candidates,
+        )
+        stage_rows["statement_candidates.jsonl"].extend(to_row(c) for c in candidates)
+
+        compile_results = module_c.run(sample.sample_id, candidates, run_dir=run_dir)
+        for row in compile_results:
+            row.round_index = round_index
+        compile_rows.extend(compile_results)
+        stage_rows["compile_checks.jsonl"].extend(to_row(r) for r in compile_results)
+
+        d_context = mechlib_context if "D" in inject_set else "(none)"
+        semantic = module_d.run(
+            grounding=grounding,
+            candidates=candidates,
+            compile_checks=compile_results,
+            problem_text=sample.problem_text,
+            mechlib_context=d_context,
+        )
+        semantic.round_index = round_index
+        return candidates, compile_results, semantic
+
+    grounding = module_a.run(sample)
+    grounding_rows.append(grounding)
+    stage_rows["problem_ir.jsonl"].append(to_row(grounding))
+
+    mechlib_items: list[dict[str, object]] = []
+    summary_items: list[dict[str, object]] = []
+    mechlib_pack: dict[str, object] = {
+        "import_hints": [],
+        "law_matched_items": [],
+        "proof_style_examples": [],
+        "domain_from_a": [],
+        "selected_tags": [],
+        "summary_items_count": 0,
+        "source_items_count": 0,
+        "final_context_chars": 0,
+    }
+    mechlib_context = "(none)"
+    if retriever and grounding.parse_ok and cfg.statement.with_mechlib_context:
+        domain_pack = retriever.build_domain_context(
+            problem_text=sample.problem_text,
+            problem_ir=grounding.problem_ir,
+            top_k=cfg.knowledge.top_k,
+        )
+        raw_source_items = domain_pack.get("source_items")
+        if isinstance(raw_source_items, list):
+            mechlib_items = [x for x in raw_source_items if isinstance(x, dict)]
+        raw_summary_items = domain_pack.get("summary_items")
+        if isinstance(raw_summary_items, list):
+            summary_items = [x for x in raw_summary_items if isinstance(x, dict)]
+        mechlib_pack = {
+            "import_hints": domain_pack.get("import_hints", []),
+            "law_matched_items": domain_pack.get("law_matched_items", []),
+            "proof_style_examples": domain_pack.get("proof_style_examples", []),
+            "domain_from_a": domain_pack.get("domain_from_a", []),
+            "selected_tags": domain_pack.get("selected_tags", []),
+            "summary_items_count": int(domain_pack.get("summary_items_count", len(summary_items))),
+            "source_items_count": int(domain_pack.get("source_items_count", len(mechlib_items))),
+            "final_context_chars": int(domain_pack.get("final_context_chars", 0)),
+        }
+        mechlib_context = str(domain_pack.get("context_text") or "(none)")
+
+    stage_rows["mechlib_retrieval.jsonl"].append(
+        {
+            "sample_id": sample.sample_id,
+            "enabled": bool(retriever and cfg.statement.with_mechlib_context),
+            "retrieved_count": int(mechlib_pack.get("summary_items_count", 0))
+            + int(mechlib_pack.get("source_items_count", 0)),
+            "domain_from_a": mechlib_pack.get("domain_from_a", []),
+            "selected_tags": mechlib_pack.get("selected_tags", []),
+            "summary_items_count": mechlib_pack.get("summary_items_count", 0),
+            "source_items_count": mechlib_pack.get("source_items_count", 0),
+            "final_context_chars": mechlib_pack.get("final_context_chars", 0),
+            "items": mechlib_items,
+            "summary_items": summary_items,
+            "import_hints": mechlib_pack.get("import_hints", []),
+            "law_matched_items": mechlib_pack.get("law_matched_items", []),
+            "proof_style_examples": mechlib_pack.get("proof_style_examples", []),
+            "retrieval_context": mechlib_context,
+        }
+    )
+
+    if not grounding.parse_ok:
+        summary = SampleRunSummary(
+            sample_id=sample.sample_id,
+            grounding_ok=False,
+            statement_generation_ok=False,
+            compile_ok=False,
+            semantic_ok=False,
+            proof_ok=False,
+            end_to_end_ok=False,
+            final_error_type=grounding.error or "visual_grounding_failure",
+            notes="module A failed",
+            final_round_index=0,
+            feedback_loop_used=False,
+            sub_error_type=grounding.error or "visual_grounding_failure",
+            failure_summary=grounding.error or "module A failed",
+            failure_details={"grounding_error": grounding.error, "parse_ok": grounding.parse_ok},
+        )
+        return {
+            "stage_rows": stage_rows,
+            "grounding_rows": grounding_rows,
+            "compile_rows": compile_rows,
+            "semantic_rows": semantic_rows,
+            "proof_rows": proof_rows,
+            "summary": summary,
+        }
+
+    feedback_loop_used = False
+    final_round_index = 0
+    retry_reason: str | None = None
+
+    candidates, compile_results, semantic = _run_statement_round(
+        round_index=0,
+        grounding=grounding,
+        mechlib_context=mechlib_context,
+    )
+    semantic.retry_triggered = False
+    semantic.retry_reason = None
+    semantic.retry_feedback_summary = None
+
+    if cfg.statement.feedback_loop_enabled and cfg.statement.max_revision_rounds > 0:
+        if not any(r.compile_pass for r in compile_results):
+            retry_reason = "no_compile_pass"
+        elif not semantic.semantic_pass:
+            retry_reason = "semantic_fail"
+
+    if retry_reason:
+        feedback_loop_used = True
+        semantic.retry_triggered = True
+        semantic.retry_reason = retry_reason
+        semantic.retry_feedback_summary = _build_revision_feedback(
+            retry_reason=retry_reason,
+            candidates=candidates,
+            compile_results=compile_results,
+            semantic=semantic,
+        )
+        semantic_rows.append(semantic)
+        stage_rows["semantic_rank.jsonl"].append(to_row(semantic))
+        final_round_index = 1
+        candidates, compile_results, semantic = _run_statement_round(
+            round_index=1,
+            grounding=grounding,
+            mechlib_context=mechlib_context,
+            revision_feedback=semantic.retry_feedback_summary,
+            previous_candidates=candidates,
+        )
+        semantic.retry_triggered = False
+        semantic.retry_reason = None
+        semantic.retry_feedback_summary = None
+
+    semantic_rows.append(semantic)
+    stage_rows["semantic_rank.jsonl"].append(to_row(semantic))
+
+    statement_generation_ok = len(candidates) > 0
+    compile_ok = any(r.compile_pass for r in compile_results)
+    selected_candidate = None
+    if semantic.selected_candidate_id:
+        selected_candidate = next(
+            (c for c in candidates if c.candidate_id == semantic.selected_candidate_id),
+            None,
+        )
+
+    e_context = mechlib_context if "E" in inject_set else "(none)"
+    if not semantic.semantic_pass:
+        proof_attempts = []
+        proof_check = ProofCheckResult(
+            sample_id=grounding.sample_id,
+            proof_success=False,
+            attempts_used=0,
+            selected_candidate_id=semantic.selected_candidate_id,
+            error_type="proof_skipped_due_to_semantic_fail",
+            final_log_path=None,
+            backend_used=semantic.selected_backend,
+            round_index=final_round_index,
+            sub_error_type="proof_skipped_due_to_semantic_fail",
+            failure_tags=["proof_skipped_due_to_semantic_fail"],
+            failure_summary="Proof stage skipped because semantic ranking failed.",
+            failure_details={
+                "semantic_error_type": semantic.error,
+                "semantic_sub_error_type": semantic.sub_error_type,
+                "semantic_failure_summary": semantic.failure_summary,
+            },
+        )
+    else:
+        proof_attempts, proof_check = module_e.run(
+            grounding=grounding,
+            selected_candidate=selected_candidate,
+            run_dir=run_dir,
+            mechlib_context=e_context,
+        )
+        proof_check.round_index = final_round_index
+
+    proof_rows.append(proof_check)
+    stage_rows["proof_attempts.jsonl"].extend(to_row(a) for a in proof_attempts)
+    stage_rows["proof_checks.jsonl"].append(to_row(proof_check))
+
+    end_to_end = (
+        grounding.parse_ok
+        and statement_generation_ok
+        and compile_ok
+        and semantic.semantic_pass
+        and proof_check.proof_success
+    )
+    final_error: str | None = None
+    final_sub_error: str | None = None
+    final_failure_summary: str | None = None
+    final_failure_details: dict[str, object] = {}
+    if not end_to_end:
+        compile_error = next((r.error_type for r in compile_results if not r.compile_pass), None)
+        compile_failure_row = next((r for r in compile_results if not r.compile_pass), None)
+        if not grounding.parse_ok:
+            final_error = grounding.error or "visual_grounding_failure"
+            final_sub_error = grounding.error or "visual_grounding_failure"
+            final_failure_summary = grounding.error or "module A failed"
+            final_failure_details = {"grounding_error": grounding.error, "parse_ok": grounding.parse_ok}
+        elif not statement_generation_ok:
+            final_error = "statement_generation_parse_failed"
+            final_sub_error = "statement_generation_parse_failed"
+            final_failure_summary = "Statement generation did not produce any usable candidates."
+            final_failure_details = {"candidate_count": len(candidates)}
+        elif not compile_ok:
+            final_error = compile_error or "elaboration_failure"
+            final_sub_error = compile_failure_row.sub_error_type if compile_failure_row else None
+            final_failure_summary = compile_failure_row.failure_summary if compile_failure_row else None
+            final_failure_details = compile_failure_row.failure_details if compile_failure_row else {}
+        elif not semantic.semantic_pass:
+            final_error = semantic.error or "semantic_drift"
+            final_sub_error = semantic.sub_error_type
+            final_failure_summary = semantic.failure_summary
+            final_failure_details = semantic.failure_details
+        else:
+            final_error = proof_check.error_type or "proof_search_failure"
+            final_sub_error = proof_check.sub_error_type
+            final_failure_summary = proof_check.failure_summary
+            final_failure_details = proof_check.failure_details
+
+    summary = SampleRunSummary(
+        sample_id=sample.sample_id,
+        grounding_ok=grounding.parse_ok,
+        statement_generation_ok=statement_generation_ok,
+        compile_ok=compile_ok,
+        semantic_ok=semantic.semantic_pass,
+        proof_ok=proof_check.proof_success,
+        end_to_end_ok=end_to_end,
+        final_error_type=final_error,
+        notes=None,
+        final_round_index=final_round_index,
+        feedback_loop_used=feedback_loop_used,
+        sub_error_type=final_sub_error,
+        failure_summary=final_failure_summary,
+        failure_details=final_failure_details,
+    )
+    return {
+        "stage_rows": stage_rows,
+        "grounding_rows": grounding_rows,
+        "compile_rows": compile_rows,
+        "semantic_rows": semantic_rows,
+        "proof_rows": proof_rows,
+        "summary": summary,
+    }
+
+
 def _build_run_readme(
     samples,
     stage_rows: dict[str, list[dict[str, object]]],
     summaries: list[SampleRunSummary],
     metrics: dict[str, object],
     run_dir: Path,
+    sample_concurrency: int = 1,
 ) -> str:
     candidate_rows = stage_rows.get("statement_candidates.jsonl", [])
     compile_rows = stage_rows.get("compile_checks.jsonl", [])
@@ -615,6 +1053,7 @@ def _build_run_readme(
         f"- mechlib_compile_pass_rate: {metrics.get('mechlib_compile_pass_rate', 0)}",
         f"- selected_mechlib_candidate_rate: {metrics.get('selected_mechlib_candidate_rate', 0)}",
         f"- feedback_loop_used_rate: {metrics.get('feedback_loop_used_rate', 0)}",
+        f"- sample_concurrency: {sample_concurrency}",
         "",
         "## MechLib Adoption",
         "",
@@ -810,22 +1249,16 @@ def run_pipeline(args: argparse.Namespace) -> int:
         cfg.dataset.limit = args.limit
     if args.tag:
         cfg.output.tag = args.tag
+    if args.sample_concurrency is not None:
+        cfg.runtime.sample_concurrency = args.sample_concurrency
+    validate_config(cfg)
 
     run_dir = create_run_dir(Path(cfg.output.runs_dir), cfg.output.tag)
     latest_dir = Path(cfg.output.output_dir)
-    print(f"run_dir={run_dir}")
-    print(f"latest_dir={latest_dir}")
+    _emit_console_line(f"run_dir={run_dir}")
+    _emit_console_line(f"latest_dir={latest_dir}")
 
-    stage_rows: dict[str, list[dict[str, object]]] = {
-        "problem_ir.jsonl": [],
-        "mechlib_retrieval.jsonl": [],
-        "statement_candidates.jsonl": [],
-        "compile_checks.jsonl": [],
-        "semantic_rank.jsonl": [],
-        "proof_attempts.jsonl": [],
-        "proof_checks.jsonl": [],
-        "sample_summary.jsonl": [],
-    }
+    stage_rows = _new_stage_rows()
 
     retriever: MechLibRetriever | None = None
     if cfg.knowledge.enabled:
@@ -871,6 +1304,9 @@ def run_pipeline(args: argparse.Namespace) -> int:
                     end_to_end_ok=False,
                     final_error_type="dry_run_skipped",
                     notes="dry-run mode",
+                    sub_error_type="dry_run_skipped",
+                    failure_summary="Pipeline execution skipped in dry-run mode.",
+                    failure_details={"dry_run": True},
                 )
             )
         module_f = ModuleF()
@@ -894,321 +1330,103 @@ def run_pipeline(args: argparse.Namespace) -> int:
         )
         return 0
 
-    model_client = build_model_client(cfg.model)
     prompt_dir = Path(cfg.prompts.dir)
-    module_a = ModuleA(model_client, cfg.model.model_id, prompt_dir / cfg.prompts.a_extract_ir)
-    module_b = ModuleB(
-        model_client,
-        prompt_dir / cfg.prompts.b_generate_statements,
-        revise_prompt_path=prompt_dir / cfg.prompts.b_revise_statements,
-        library_target=cfg.statement.library_target,
-    )
-    lean_runner = LeanRunner(
-        physlean_dir=Path(cfg.lean.physlean_dir),
-        mechlib_dir=Path(cfg.lean.mechlib_dir),
-        timeout_s=cfg.lean.timeout_s,
-        strict_blocklist=cfg.lean.strict_blocklist,
-        lean_header=cfg.lean.lean_header,
-        enabled=cfg.lean.enabled,
-        route_policy=cfg.lean.route_policy,
-        default_backend=cfg.lean.default_backend,
-        route_fallback=cfg.lean.route_fallback,
-    )
-    module_c = ModuleC(lean_runner)
-    module_d = ModuleD(model_client, prompt_dir / cfg.prompts.d_semantic_rank, cfg.semantic.pass_threshold)
-    module_e = ModuleE(
-        model_client=model_client,
-        lean_runner=lean_runner,
-        prompt_generate_path=prompt_dir / cfg.prompts.e_generate_proof,
-        prompt_repair_path=prompt_dir / cfg.prompts.e_repair_proof,
-        max_attempts=cfg.proof.max_attempts,
-    )
     module_f = ModuleF()
+    preflight_runner = _build_lean_runner(cfg)
 
     preflight_ok = True
     preflight_error: str | None = None
     preflight_message = "skip"
     if cfg.lean.enabled and cfg.lean.preflight_enabled:
-        preflight_ok, preflight_error, preflight_message = lean_runner.preflight()
-        print(f"lean_preflight={preflight_ok}, message={preflight_message}")
+        preflight_ok, preflight_error, preflight_message = preflight_runner.preflight()
+        _emit_console_line(f"lean_preflight={preflight_ok}, message={preflight_message}")
 
-    grounding_rows = []
-    compile_rows = []
-    semantic_rows = []
-    proof_rows = []
+    grounding_rows: list[GroundingResult] = []
+    compile_rows: list[CompileCheckResult] = []
+    semantic_rows: list[SemanticRankResult] = []
+    proof_rows: list[ProofCheckResult] = []
     summaries: list[SampleRunSummary] = []
-
-    def _run_statement_round(
-        *,
-        round_index: int,
-        grounding,
-        sample,
-        mechlib_context: str,
-        revision_feedback: str = "(none)",
-        previous_candidates: list[StatementCandidate] | None = None,
-    ) -> tuple[list[StatementCandidate], list[CompileCheckResult], SemanticRankResult]:
-        b_context = mechlib_context if "B" in inject_set else "(none)"
-        candidates = module_b.run(
-            grounding,
-            mechlib_context=b_context,
-            revision_feedback=revision_feedback,
-            round_index=round_index,
-            previous_candidates=previous_candidates,
-        )
-        stage_rows["statement_candidates.jsonl"].extend(to_row(c) for c in candidates)
-
-        compile_results = module_c.run(sample.sample_id, candidates, run_dir=run_dir)
-        for row in compile_results:
-            row.round_index = round_index
-        compile_rows.extend(compile_results)
-        stage_rows["compile_checks.jsonl"].extend(to_row(r) for r in compile_results)
-
-        d_context = mechlib_context if "D" in inject_set else "(none)"
-        semantic = module_d.run(
-            grounding=grounding,
-            candidates=candidates,
-            compile_checks=compile_results,
-            problem_text=sample.problem_text,
-            mechlib_context=d_context,
-        )
-        semantic.round_index = round_index
-        return candidates, compile_results, semantic
-
+    total_samples = len(samples)
+    sample_concurrency = min(cfg.runtime.sample_concurrency, total_samples) if total_samples else 1
+    ordered_worker_results: list[dict[str, object] | None] = [None] * total_samples
+    completed_samples = 0
     for idx, sample in enumerate(samples, start=1):
-        print(f"[{idx}/{len(samples)}] sample={sample.sample_id}")
-        if sample.skip_reason:
-            summaries.append(
-                SampleRunSummary(
-                    sample_id=sample.sample_id,
-                    grounding_ok=False,
-                    statement_generation_ok=False,
-                    compile_ok=False,
-                    semantic_ok=False,
-                    proof_ok=False,
-                    end_to_end_ok=False,
-                    final_error_type=sample.skip_reason,
-                    notes="dataset skip",
-                    final_round_index=0,
-                    feedback_loop_used=False,
+        _emit_console_line(f"[{idx}/{total_samples}] sample={sample.sample_id}")
+    _emit_console_line(f"progress: 0/{total_samples} completed, sample_concurrency={sample_concurrency}")
+
+    if sample_concurrency <= 1:
+        for idx, sample in enumerate(samples):
+            try:
+                result = _process_sample(
+                    cfg=cfg,
+                    sample=sample,
+                    run_dir=run_dir,
+                    prompt_dir=prompt_dir,
+                    inject_set=inject_set,
+                    retriever=retriever,
+                    preflight_ok=preflight_ok,
+                    preflight_error=preflight_error,
+                    preflight_message=preflight_message,
                 )
-            )
-            continue
-
-        if not preflight_ok:
-            summaries.append(
-                SampleRunSummary(
-                    sample_id=sample.sample_id,
-                    grounding_ok=False,
-                    statement_generation_ok=False,
-                    compile_ok=False,
-                    semantic_ok=False,
-                    proof_ok=False,
-                    end_to_end_ok=False,
-                    final_error_type=preflight_error,
-                    notes=preflight_message,
-                    final_round_index=0,
-                    feedback_loop_used=False,
+            except Exception:
+                _emit_console_line(
+                    f"progress: failed after {completed_samples}/{total_samples} completed, sample={sample.sample_id}"
                 )
-            )
-            continue
-
-        grounding = module_a.run(sample)
-        grounding_rows.append(grounding)
-        stage_rows["problem_ir.jsonl"].append(to_row(grounding))
-
-        mechlib_items: list[dict[str, object]] = []
-        summary_items: list[dict[str, object]] = []
-        mechlib_pack: dict[str, object] = {
-            "import_hints": [],
-            "law_matched_items": [],
-            "proof_style_examples": [],
-            "domain_from_a": [],
-            "selected_tags": [],
-            "summary_items_count": 0,
-            "source_items_count": 0,
-            "final_context_chars": 0,
-        }
-        mechlib_context = "(none)"
-        if retriever and grounding.parse_ok and cfg.statement.with_mechlib_context:
-            domain_pack = retriever.build_domain_context(
-                problem_text=sample.problem_text,
-                problem_ir=grounding.problem_ir,
-                top_k=cfg.knowledge.top_k,
-            )
-            raw_source_items = domain_pack.get("source_items")
-            if isinstance(raw_source_items, list):
-                mechlib_items = [x for x in raw_source_items if isinstance(x, dict)]
-            raw_summary_items = domain_pack.get("summary_items")
-            if isinstance(raw_summary_items, list):
-                summary_items = [x for x in raw_summary_items if isinstance(x, dict)]
-            mechlib_pack = {
-                "import_hints": domain_pack.get("import_hints", []),
-                "law_matched_items": domain_pack.get("law_matched_items", []),
-                "proof_style_examples": domain_pack.get("proof_style_examples", []),
-                "domain_from_a": domain_pack.get("domain_from_a", []),
-                "selected_tags": domain_pack.get("selected_tags", []),
-                "summary_items_count": int(domain_pack.get("summary_items_count", len(summary_items))),
-                "source_items_count": int(domain_pack.get("source_items_count", len(mechlib_items))),
-                "final_context_chars": int(domain_pack.get("final_context_chars", 0)),
-            }
-            mechlib_context = str(domain_pack.get("context_text") or "(none)")
-        stage_rows["mechlib_retrieval.jsonl"].append(
-            {
-                "sample_id": sample.sample_id,
-                "enabled": bool(retriever and cfg.statement.with_mechlib_context),
-                "retrieved_count": int(mechlib_pack.get("summary_items_count", 0))
-                + int(mechlib_pack.get("source_items_count", 0)),
-                "domain_from_a": mechlib_pack.get("domain_from_a", []),
-                "selected_tags": mechlib_pack.get("selected_tags", []),
-                "summary_items_count": mechlib_pack.get("summary_items_count", 0),
-                "source_items_count": mechlib_pack.get("source_items_count", 0),
-                "final_context_chars": mechlib_pack.get("final_context_chars", 0),
-                "items": mechlib_items,
-                "summary_items": summary_items,
-                "import_hints": mechlib_pack.get("import_hints", []),
-                "law_matched_items": mechlib_pack.get("law_matched_items", []),
-                "proof_style_examples": mechlib_pack.get("proof_style_examples", []),
-                "retrieval_context": mechlib_context,
-            }
-        )
-
-        if not grounding.parse_ok:
-            grounding_error = grounding.error or "visual_grounding_failure"
-            summaries.append(
-                SampleRunSummary(
-                    sample_id=sample.sample_id,
-                    grounding_ok=False,
-                    statement_generation_ok=False,
-                    compile_ok=False,
-                    semantic_ok=False,
-                    proof_ok=False,
-                    end_to_end_ok=False,
-                    final_error_type=grounding_error,
-                    notes="module A failed",
-                    final_round_index=0,
-                    feedback_loop_used=False,
+                raise
+            ordered_worker_results[idx] = result
+            completed_samples += 1
+            _emit_console_line(f"progress: {completed_samples}/{total_samples} completed, sample={sample.sample_id}")
+    else:
+        futures: dict[Future[dict[str, object]], tuple[int, str]] = {}
+        executor = ThreadPoolExecutor(max_workers=sample_concurrency, thread_name_prefix="sample")
+        try:
+            for idx, sample in enumerate(samples):
+                future = executor.submit(
+                    _process_sample,
+                    cfg=cfg,
+                    sample=sample,
+                    run_dir=run_dir,
+                    prompt_dir=prompt_dir,
+                    inject_set=inject_set,
+                    retriever=retriever,
+                    preflight_ok=preflight_ok,
+                    preflight_error=preflight_error,
+                    preflight_message=preflight_message,
                 )
-            )
-            continue
-
-        feedback_loop_used = False
-        final_round_index = 0
-        retry_reason: str | None = None
-
-        candidates, compile_results, semantic = _run_statement_round(
-            round_index=0,
-            grounding=grounding,
-            sample=sample,
-            mechlib_context=mechlib_context,
-        )
-        semantic.retry_triggered = False
-        semantic.retry_reason = None
-        semantic.retry_feedback_summary = None
-
-        if cfg.statement.feedback_loop_enabled and cfg.statement.max_revision_rounds > 0:
-            if not any(r.compile_pass for r in compile_results):
-                retry_reason = "no_compile_pass"
-            elif not semantic.semantic_pass:
-                retry_reason = "semantic_fail"
-
-        if retry_reason:
-            feedback_loop_used = True
-            semantic.retry_triggered = True
-            semantic.retry_reason = retry_reason
-            semantic.retry_feedback_summary = _build_revision_feedback(
-                retry_reason=retry_reason,
-                candidates=candidates,
-                compile_results=compile_results,
-                semantic=semantic,
-            )
-            semantic_rows.append(semantic)
-            stage_rows["semantic_rank.jsonl"].append(to_row(semantic))
-            final_round_index = 1
-            candidates, compile_results, semantic = _run_statement_round(
-                round_index=1,
-                grounding=grounding,
-                sample=sample,
-                mechlib_context=mechlib_context,
-                revision_feedback=semantic.retry_feedback_summary,
-                previous_candidates=candidates,
-            )
-            semantic.retry_triggered = False
-            semantic.retry_reason = None
-            semantic.retry_feedback_summary = None
-        semantic_rows.append(semantic)
-        stage_rows["semantic_rank.jsonl"].append(to_row(semantic))
-
-        statement_generation_ok = len(candidates) == 4
-        compile_ok = any(r.compile_pass for r in compile_results)
-
-        selected_candidate = None
-        if semantic.selected_candidate_id:
-            selected_candidate = next(
-                (c for c in candidates if c.candidate_id == semantic.selected_candidate_id),
-                None,
-            )
-
-        e_context = mechlib_context if "E" in inject_set else "(none)"
-        if not semantic.semantic_pass:
-            proof_attempts = []
-            proof_check = ProofCheckResult(
-                sample_id=grounding.sample_id,
-                proof_success=False,
-                attempts_used=0,
-                selected_candidate_id=semantic.selected_candidate_id,
-                error_type="proof_skipped_due_to_semantic_fail",
-                final_log_path=None,
-                backend_used=semantic.selected_backend,
-                round_index=final_round_index,
-            )
+                futures[future] = (idx, sample.sample_id)
+            for future in as_completed(futures):
+                idx, sample_id = futures[future]
+                try:
+                    result = future.result()
+                except Exception:
+                    _emit_console_line(
+                        f"progress: failed after {completed_samples}/{total_samples} completed, sample={sample_id}"
+                    )
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    raise
+                ordered_worker_results[idx] = result
+                completed_samples += 1
+                _emit_console_line(f"progress: {completed_samples}/{total_samples} completed, sample={sample_id}")
+        except Exception:
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
         else:
-            proof_attempts, proof_check = module_e.run(
-                grounding=grounding,
-                selected_candidate=selected_candidate,
-                run_dir=run_dir,
-                mechlib_context=e_context,
-            )
-            proof_check.round_index = final_round_index
-        proof_rows.append(proof_check)
-        stage_rows["proof_attempts.jsonl"].extend(to_row(a) for a in proof_attempts)
-        stage_rows["proof_checks.jsonl"].append(to_row(proof_check))
+            executor.shutdown(wait=True)
 
-        end_to_end = (
-            grounding.parse_ok
-            and statement_generation_ok
-            and compile_ok
-            and semantic.semantic_pass
-            and proof_check.proof_success
-        )
-        final_error: str | None = None
-        if not end_to_end:
-            compile_error = next((r.error_type for r in compile_results if not r.compile_pass), None)
-            if not grounding.parse_ok:
-                final_error = grounding.error or "visual_grounding_failure"
-            elif not statement_generation_ok:
-                final_error = "statement_generation_parse_failed"
-            elif not compile_ok:
-                final_error = compile_error or "elaboration_failure"
-            elif not semantic.semantic_pass:
-                final_error = semantic.error or "semantic_drift"
-            else:
-                final_error = proof_check.error_type or "proof_search_failure"
+    _emit_console_line(f"progress: {completed_samples}/{total_samples} completed")
 
-        summaries.append(
-            SampleRunSummary(
-                sample_id=sample.sample_id,
-                grounding_ok=grounding.parse_ok,
-                statement_generation_ok=statement_generation_ok,
-                compile_ok=compile_ok,
-                semantic_ok=semantic.semantic_pass,
-                proof_ok=proof_check.proof_success,
-                end_to_end_ok=end_to_end,
-                final_error_type=final_error,
-                notes=None,
-                final_round_index=final_round_index,
-                feedback_loop_used=feedback_loop_used,
-            )
-        )
+    worker_results = [result for result in ordered_worker_results if result is not None]
+    for result in worker_results:
+        result_stage_rows = result["stage_rows"]
+        for name in STAGE_ROW_FILES:
+            if name == "sample_summary.jsonl":
+                continue
+            stage_rows[name].extend(result_stage_rows.get(name, []))
+        grounding_rows.extend(result["grounding_rows"])
+        compile_rows.extend(result["compile_rows"])
+        semantic_rows.extend(result["semantic_rows"])
+        proof_rows.extend(result["proof_rows"])
+        summaries.append(result["summary"])
 
     stage_rows["sample_summary.jsonl"] = [to_row(s) for s in summaries]
     metrics, analysis = module_f.build(
@@ -1225,6 +1443,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
         summaries=summaries,
         metrics=metrics,
         run_dir=run_dir,
+        sample_concurrency=sample_concurrency,
     )
     lean_export_files = _build_lean_export_files(
         cfg=cfg,

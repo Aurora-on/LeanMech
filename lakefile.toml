@@ -6,5 +6,9 @@ defaultTargets = ["PipelineLeanArtifacts"]
 name = "MechLib"
 path = "../MechLib"
 
+[[require]]
+name = "mathlib"
+path = "../../PhysLean-master/.lake/packages/mathlib"
+
 [[lean_lib]]
 name = "PipelineLeanArtifacts"

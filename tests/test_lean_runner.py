@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mech_pipeline.adapters.lean_runner import LeanRunner
+from mech_pipeline.adapters.lean_runner import LeanRunner, classify_compile_sub_error, extract_lean_error_details
 
 
 def test_run_lean_resolves_relative_path_from_backend_root(tmp_path: Path, monkeypatch) -> None:
@@ -38,3 +38,18 @@ def test_run_lean_resolves_relative_path_from_backend_root(tmp_path: Path, monke
     assert ok is True
     assert Path(captured["cwd"]) == root_dir
     assert captured["cmd"][-1] == "PhysLean/ClassicalMechanics/Basic.lean"
+
+
+def test_extract_lean_error_details_and_compile_sub_error() -> None:
+    stderr = (
+        "F:/repo/tmp.lean:11:4: error: Function expected at\n"
+        "  averageVelocity\n"
+        "but this term has type\n"
+        "  ?m.1\n"
+    )
+    details = extract_lean_error_details("", stderr)
+
+    assert details["error_line"] == 11
+    assert details["error_message"] == "Function expected at"
+    assert "averageVelocity" in str(details["stderr_excerpt"])
+    assert classify_compile_sub_error("elaboration_failure", stderr) == "wrong_api_shape"

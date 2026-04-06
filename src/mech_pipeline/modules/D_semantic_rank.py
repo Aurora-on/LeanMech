@@ -31,6 +31,13 @@ For each Lean theorem candidate:
 3) Return a score in [0, 1], where 1 means perfectly aligned.
 4) Reject trivial statements (x = x, 1 = 1, True).
 5) Reject law drift (e.g., Newton-force theorem for pure kinematics).
+6) If the theorem is wrong, explicitly identify which part was translated incorrectly.
+7) Distinguish target relation carefully:
+   - exact: same target as the original problem
+   - equivalent: different surface form but semantically equivalent target
+   - special_case: only a special case because of extra assumptions or coordinate choices
+   - weaker: only a weaker or partial version of the intended target
+   - drift: genuinely different target
 
 Output JSON only:
 {
@@ -40,7 +47,13 @@ Output JSON only:
       "back_translation": "...",
       "semantic_score": 0.0,
       "semantic_pass": false,
-      "reason": "..."
+      "target_relation": "drift",
+      "reason": "...",
+      "failure_summary": "...",
+      "failure_tags": ["wrong_target"],
+      "mismatch_fields": ["unknown_target", "known_quantities"],
+      "missing_or_incorrect_translations": ["The target quantity should be final speed, not displacement."],
+      "suggested_fix_direction": "Keep the same givens, but restate the theorem so the conclusion solves for final speed."
     }
   ]
 }
@@ -57,6 +70,17 @@ Compile-passed Lean candidates:
 Retrieved MechLib context (style and ontology reference only):
 {{mechlib_context}}
 """
+
+SEMANTIC_SUB_ERROR_TYPES = {
+    "wrong_target",
+    "wrong_law",
+    "missing_given",
+    "unit_or_sign_mismatch",
+    "constraint_mismatch",
+    "trivial_goal",
+}
+TARGET_RELATION_EQUIVALENT = {"exact", "equivalent"}
+TARGET_RELATION_MISMATCH = {"special_case", "weaker", "drift"}
 
 
 def _tokenize(text: str) -> set[str]:
@@ -98,11 +122,25 @@ def _target_match(ir: dict[str, object], theorem_decl: str) -> float:
         symbol = str(unknown.get("symbol") or "").lower()
         description = str(unknown.get("description") or "").lower()
         score = 0.0
-        if symbol and symbol in tokens:
-            score += 0.6
+        if symbol:
+            if symbol in tokens:
+                score += 0.6
+            else:
+                symbol_parts = [part for part in re.split(r"[^a-z0-9]+", symbol) if part]
+                if symbol_parts:
+                    hit = sum(1 for part in symbol_parts if _symbol_hits(part, tokens))
+                    if hit == len(symbol_parts):
+                        score += 0.6
+                    elif hit > 0:
+                        score += round(0.6 * (hit / len(symbol_parts)), 4)
         desc_tokens = _tokenize(description)
         if desc_tokens and desc_tokens.intersection(tokens):
             score += 0.4
+        goal_statement = str(ir.get("goal_statement") or "").strip().lower()
+        goal_tokens = _tokenize(goal_statement)
+        if goal_tokens:
+            overlap = len(goal_tokens.intersection(tokens))
+            score += min(0.2, round(0.2 * overlap / len(goal_tokens), 4))
         return min(1.0, score)
     return 0.0
 
@@ -261,6 +299,167 @@ def _clamp_score(value: float) -> float:
     return max(0.0, min(1.0, value))
 
 
+def _as_str_list(value: object) -> list[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, list):
+        out: list[str] = []
+        for item in value:
+            text = str(item).strip()
+            if text:
+                out.append(text)
+        return out
+    if isinstance(value, dict):
+        out = []
+        for key, item in value.items():
+            if item in (None, "", [], {}, False):
+                continue
+            text = str(key).strip()
+            if text:
+                out.append(text)
+        return out
+    return []
+
+
+def _normalize_failure_tags(*values: object) -> list[str]:
+    tags: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for item in _as_str_list(value):
+            normalized = re.sub(r"\s+", "_", item.strip().lower())
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            tags.append(normalized)
+    return tags
+
+
+def _normalize_target_relation(value: object) -> str | None:
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    aliases = {
+        "same": "exact",
+        "exact_match": "exact",
+        "equivalent_form": "equivalent",
+        "equivalent_target": "equivalent",
+        "special-case": "special_case",
+        "specialcase": "special_case",
+        "partial": "weaker",
+        "partial_answer": "weaker",
+        "weaker_equivalent_form": "weaker",
+        "wrong_target": "drift",
+        "off_topic": "drift",
+        "target_drift": "drift",
+    }
+    normalized = aliases.get(text, text)
+    if normalized in TARGET_RELATION_EQUIVALENT or normalized in TARGET_RELATION_MISMATCH:
+        return normalized
+    return None
+
+
+def _infer_target_relation(
+    *,
+    model_target_relation: object,
+    llm_pass: bool | None,
+    failure_tags: list[str],
+    mismatch_fields: list[str],
+    llm_reason: str,
+    target_match: float,
+    known_quantity_coverage: float,
+    law_match: float,
+) -> str | None:
+    normalized = _normalize_target_relation(model_target_relation)
+    if normalized is not None:
+        return normalized
+
+    tags_text = " ".join(failure_tags + mismatch_fields).lower()
+    reason = llm_reason.lower()
+    if "wrong_target" in tags_text or "off_topic" in tags_text or "law_drift" in tags_text:
+        return "drift"
+    if "special_case" in tags_text or "special_case_only" in tags_text:
+        return "special_case"
+    if "weaker" in tags_text or "partial" in tags_text:
+        return "weaker"
+    if any(phrase in reason for phrase in ["special case", "coordinate choice", "zero-initial-angle case"]):
+        return "special_case"
+    if any(phrase in reason for phrase in ["weaker", "partial answer", "partial version"]):
+        return "weaker"
+    if llm_pass is True and law_match >= 0.3:
+        if target_match >= 0.4:
+            return "exact"
+        if known_quantity_coverage >= 0.8:
+            return "equivalent"
+        return "drift"
+    return None
+
+
+def _derive_mismatch_fields(
+    *,
+    llm_fields: object,
+    hard_gate_reasons: list[str],
+    trivial_goal: bool,
+) -> list[str]:
+    fields = _as_str_list(llm_fields)
+    normalized = {item.lower(): item for item in fields}
+    if "target_mismatch" in hard_gate_reasons and "unknown_target" not in normalized:
+        fields.append("unknown_target")
+    if "law_mismatch" in hard_gate_reasons and "physical_laws" not in normalized:
+        fields.append("physical_laws")
+    if "known_quantity_mismatch" in hard_gate_reasons and "known_quantities" not in normalized:
+        fields.append("known_quantities")
+    if trivial_goal and "goal" not in normalized:
+        fields.append("goal")
+    return fields
+
+
+def _infer_semantic_sub_error_type(
+    *,
+    model_sub_error_type: str | None,
+    failure_tags: list[str],
+    mismatch_fields: list[str],
+    hard_gate_reasons: list[str],
+    trivial_goal: bool,
+    llm_reason: str,
+) -> str | None:
+    candidate = str(model_sub_error_type or "").strip()
+    if candidate in SEMANTIC_SUB_ERROR_TYPES:
+        return candidate
+
+    text = " ".join(failure_tags + mismatch_fields + hard_gate_reasons + [llm_reason.lower()])
+    lowered_reason = llm_reason.lower()
+    negative_trivial_claim = any(
+        phrase in lowered_reason
+        for phrase in [
+            "not a tautology",
+            "not tautological",
+            "not trivial",
+            "is not trivial",
+            "is not a tautology",
+            "not a trivial",
+        ]
+    )
+    if trivial_goal or "trivial_goal" in text or ("tautolog" in text and not negative_trivial_claim):
+        return "trivial_goal"
+    if (
+        "wrong_target" in text
+        or "target_mismatch" in text
+        or "unknown_target" in text
+        or "target quantity" in text
+    ):
+        return "wrong_target"
+    if "wrong_law" in text or "law_mismatch" in text or "physical_laws" in text or "law drift" in text:
+        return "wrong_law"
+    if "unit" in text or "sign" in text:
+        return "unit_or_sign_mismatch"
+    if "constraint" in text or "assumption" in text:
+        return "constraint_mismatch"
+    if "known_quantity_mismatch" in text or "known_quantities" in text or "missing_given" in text:
+        return "missing_given"
+    return None
+
+
 def _extract_goal_expr(theorem_decl: str) -> str:
     header = theorem_decl
     if ":=" in header:
@@ -308,12 +507,16 @@ def _hard_semantic_gate(
     known_quantity_coverage: float,
     law_match: float,
     trivial_goal: bool,
+    target_relation: str | None = None,
 ) -> tuple[bool, list[str]]:
     reasons: list[str] = []
     if trivial_goal:
         reasons.append("trivial_goal")
 
-    if _has_unknown_target(ir) and target_match < 0.4:
+    relation = _normalize_target_relation(target_relation)
+    if _has_unknown_target(ir) and relation in TARGET_RELATION_MISMATCH:
+        reasons.append("target_mismatch")
+    elif _has_unknown_target(ir) and relation not in TARGET_RELATION_EQUIVALENT and target_match < 0.4:
         reasons.append("target_mismatch")
 
     laws = ir.get("physical_laws")
@@ -398,6 +601,9 @@ class ModuleD:
                 selected_route_reason=None,
                 selected_route_fallback_used=False,
                 error="semantic_drift",
+                failure_summary="No compile-passed candidates available for semantic ranking.",
+                failure_tags=["no_compile_pass_candidates"],
+                failure_details={"ranking_stage": "skipped_due_to_no_compile_pass_candidates"},
             )
 
         ranking: list[dict[str, object]] = []
@@ -442,6 +648,13 @@ class ModuleD:
                     "semantic_pass": _semantic_pass(score_rule, t, l, self.pass_threshold),
                     "back_translation_text": "",
                     "semantic_reason": "",
+                    "failure_summary": "",
+                    "failure_tags": [],
+                    "mismatch_fields": [],
+                    "missing_or_incorrect_translations": [],
+                    "suggested_fix_direction": "",
+                    "target_relation": None,
+                    "sub_error_type": None,
                     "semantic_source": "rule_only",
                 }
             )
@@ -503,6 +716,10 @@ class ModuleD:
                 or llm_row.get("comparison")
                 or ""
             ).strip()
+            failure_summary = str(llm_row.get("failure_summary") or "").strip()
+            failure_tags = _normalize_failure_tags(llm_row.get("failure_tags"))
+            missing_translations = _as_str_list(llm_row.get("missing_or_incorrect_translations"))
+            suggested_fix_direction = str(llm_row.get("suggested_fix_direction") or "").strip()
             llm_score_raw = llm_row.get("semantic_score")
             if llm_score_raw is None:
                 llm_score_raw = llm_row.get("consistency_score")
@@ -524,16 +741,45 @@ class ModuleD:
             known_cov = _as_float(row.get("known_quantity_coverage"), 0.0)
             law_match = _as_float(row.get("law_match"), 0.0)
             trivial_goal = bool(row.get("trivial_goal"))
+            target_relation = _infer_target_relation(
+                model_target_relation=llm_row.get("target_relation"),
+                llm_pass=llm_pass,
+                failure_tags=failure_tags,
+                mismatch_fields=_as_str_list(llm_row.get("mismatch_fields")),
+                llm_reason=llm_reason,
+                target_match=target_match,
+                known_quantity_coverage=known_cov,
+                law_match=law_match,
+            )
             hard_gate_pass, hard_gate_reasons = _hard_semantic_gate(
                 ir=ir,
                 target_match=target_match,
                 known_quantity_coverage=known_cov,
                 law_match=law_match,
                 trivial_goal=trivial_goal,
+                target_relation=target_relation,
             )
             pass_by_score = _semantic_pass(final_score, target_match, law_match, self.pass_threshold)
             final_pass = pass_by_score if llm_pass is None else (pass_by_score and llm_pass)
             final_pass = final_pass and hard_gate_pass
+            mismatch_fields = _derive_mismatch_fields(
+                llm_fields=llm_row.get("mismatch_fields"),
+                hard_gate_reasons=hard_gate_reasons,
+                trivial_goal=trivial_goal,
+            )
+            if not failure_summary and not final_pass:
+                failure_summary = llm_reason or "Semantic checker rejected this candidate."
+            failure_tags = _normalize_failure_tags(failure_tags, hard_gate_reasons)
+            sub_error_type = _infer_semantic_sub_error_type(
+                model_sub_error_type=str(llm_row.get("sub_error_type") or "").strip() or None,
+                failure_tags=failure_tags,
+                mismatch_fields=mismatch_fields,
+                hard_gate_reasons=hard_gate_reasons,
+                trivial_goal=trivial_goal,
+                llm_reason=llm_reason,
+            )
+            if final_pass:
+                sub_error_type = None
 
             row["semantic_score"] = final_score
             backend_bias = _as_float(row.get("backend_bias"), 0.0)
@@ -545,6 +791,55 @@ class ModuleD:
             row["semantic_reason"] = llm_reason
             row["hard_gate_pass"] = hard_gate_pass
             row["hard_gate_reasons"] = hard_gate_reasons
+            row["failure_summary"] = failure_summary
+            row["failure_tags"] = failure_tags
+            row["mismatch_fields"] = mismatch_fields
+            row["missing_or_incorrect_translations"] = missing_translations
+            row["suggested_fix_direction"] = suggested_fix_direction
+            row["target_relation"] = target_relation
+            row["sub_error_type"] = sub_error_type
+
+        for row in ranking:
+            if "hard_gate_pass" not in row or "hard_gate_reasons" not in row:
+                target_match = _as_float(row.get("target_match"), 0.0)
+                known_cov = _as_float(row.get("known_quantity_coverage"), 0.0)
+                law_match = _as_float(row.get("law_match"), 0.0)
+                trivial_goal = bool(row.get("trivial_goal"))
+                hard_gate_pass, hard_gate_reasons = _hard_semantic_gate(
+                    ir=ir,
+                    target_match=target_match,
+                    known_quantity_coverage=known_cov,
+                    law_match=law_match,
+                    trivial_goal=trivial_goal,
+                    target_relation=str(row.get("target_relation") or "").strip() or None,
+                )
+                row["hard_gate_pass"] = hard_gate_pass
+                row["hard_gate_reasons"] = hard_gate_reasons
+                row["semantic_pass"] = bool(row.get("semantic_pass")) and hard_gate_pass
+            if not row.get("failure_tags"):
+                row["failure_tags"] = _normalize_failure_tags(row.get("hard_gate_reasons"))
+            if not row.get("mismatch_fields"):
+                row["mismatch_fields"] = _derive_mismatch_fields(
+                    llm_fields=row.get("mismatch_fields"),
+                    hard_gate_reasons=_as_str_list(row.get("hard_gate_reasons")),
+                    trivial_goal=bool(row.get("trivial_goal")),
+                )
+            if not row.get("failure_summary") and not bool(row.get("semantic_pass")):
+                row["failure_summary"] = (
+                    str(row.get("semantic_reason") or "").strip()
+                    or "Semantic checker rejected this candidate."
+                )
+            if not row.get("sub_error_type") and not bool(row.get("semantic_pass")):
+                row["sub_error_type"] = _infer_semantic_sub_error_type(
+                    model_sub_error_type=None,
+                    failure_tags=_normalize_failure_tags(row.get("failure_tags")),
+                    mismatch_fields=_as_str_list(row.get("mismatch_fields")),
+                    hard_gate_reasons=_as_str_list(row.get("hard_gate_reasons")),
+                    trivial_goal=bool(row.get("trivial_goal")),
+                    llm_reason=str(row.get("semantic_reason") or ""),
+                )
+            row.setdefault("missing_or_incorrect_translations", [])
+            row.setdefault("suggested_fix_direction", "")
 
         ranking.sort(
             key=lambda x: (
@@ -556,6 +851,17 @@ class ModuleD:
             reverse=True,
         )
         best = ranking[0]
+        best_failure_summary = str(best.get("failure_summary") or "").strip() or None
+        best_failure_tags = _normalize_failure_tags(best.get("failure_tags"))
+        best_failure_details = {
+            "mismatch_fields": _as_str_list(best.get("mismatch_fields")),
+            "missing_or_incorrect_translations": _as_str_list(best.get("missing_or_incorrect_translations")),
+            "suggested_fix_direction": str(best.get("suggested_fix_direction") or "").strip() or None,
+            "back_translation_text": str(best.get("back_translation_text") or "").strip() or None,
+            "semantic_reason": str(best.get("semantic_reason") or "").strip() or None,
+            "target_relation": str(best.get("target_relation") or "").strip() or None,
+            "hard_gate_reasons": _as_str_list(best.get("hard_gate_reasons")),
+        }
         return SemanticRankResult(
             sample_id=grounding.sample_id,
             selected_candidate_id=str(best["candidate_id"]),
@@ -566,4 +872,8 @@ class ModuleD:
             selected_route_reason=str(best.get("route_reason") or ""),
             selected_route_fallback_used=bool(best.get("route_fallback_used", False)),
             error=None if best["semantic_pass"] else "semantic_drift",
+            sub_error_type=None if bool(best["semantic_pass"]) else (str(best.get("sub_error_type") or "").strip() or None),
+            failure_tags=best_failure_tags,
+            failure_summary=best_failure_summary,
+            failure_details=best_failure_details,
         )

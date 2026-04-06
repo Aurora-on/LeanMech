@@ -1,0 +1,13 @@
+[
+  {
+    "Name": "university_mechanics_Mechanics_20_University",
+    "Level": "college_level",
+    "Category": "mechanics",
+    "Header": "import Mathlib\nimport Aesop\nimport Mathlib.Tactic\nimport PHYSlib.Foundations.SI\nimport PHYSlib.Foundations.SIDeriv\nimport PHYSlib.Mechanics.Displacement\nimport PHYSlib.Mechanics.Motion\nimport PHYSlib.Thermodynamics.Volume\nopen BigOperators Real Nat Topology Rat UnitsSystem SI SI.Mechanics SI.Thermodynamics\nunseal Rat.add Rat.mul Rat.sub Rat.inv\nvariable (m:Mass) (v:Speed) (F:Force) (p:Momentum) (E:Energy) (h:Length) (x:Displacement) (t:Time) (a:Acceleration)",
+    "Theorem": "theorem Mechanics_20_University\n  (t_0 t_1 dt : Time)(v_0 v_1 dv: Speed)(aa : Acceleration)\n  (ht0 : t_0 = 13 • second)\n  (ht1 : t_1 = 15 • second)\n  (ht : dt = t_1 - t_0)\n  (hv0 : v_0 = - (1.6 : ℚ) • meter / second)\n  (hv1 : v_1 = - (0.8 : ℚ) • meter / second)\n  (hdv: dv = v_1 - v_0)\n  (haa: aa= dv / dt):\n  (aa = (0.4 : ℚ) • meter / second**2) := by sorry",
+    "Statement": "import Mathlib\nimport Aesop\nimport Mathlib.Tactic\nimport PHYSlib.Foundations.SI\nimport PHYSlib.Foundations.SIDeriv\nimport PHYSlib.Mechanics.Displacement\nimport PHYSlib.Mechanics.Motion\nimport PHYSlib.Thermodynamics.Volume\nopen BigOperators Real Nat Topology Rat UnitsSystem SI SI.Mechanics SI.Thermodynamics\nunseal Rat.add Rat.mul Rat.sub Rat.inv\nvariable (m:Mass) (v:Speed) (F:Force) (p:Momentum) (E:Energy) (h:Length) (x:Displacement) (t:Time) (a:Acceleration)\ntheorem Mechanics_20_University\n  (t_0 t_1 dt : Time)(v_0 v_1 dv: Speed)(aa : Acceleration)\n  (ht0 : t_0 = 13 • second)\n  (ht1 : t_1 = 15 • second)\n  (ht : dt = t_1 - t_0)\n  (hv0 : v_0 = - (1.6 : ℚ) • meter / second)\n  (hv1 : v_1 = - (0.8 : ℚ) • meter / second)\n  (hdv: dv = v_1 - v_0)\n  (haa: aa= dv / dt):\n  (aa = (0.4 : ℚ) • meter / second**2) := by sorry",
+    "Proof": "simp [←Scalar.val_inj, ht0, ht1, ht, hv0, hv1, hdv, haa, meter, second]\n  field_simp\n  norm_num",
+    "Informal_statement": "Question 20 An astronaut has left an orbiting spacecraft to test a new personal maneuvering unit. As she moves along a straight line, her partner on the spacecraft measures her velocity every 2.0 s, starting at time t = 1.0 s: t     vx      t       vx 1.0 s 0.8 m/s 9.0 s  -0.4 m/s 3.0 s 1.2 m/s 11.0 s -1.0 m/s 5.0 s 1.6 m/s 13.0 s -1.6 m/s 7.0 s 1.2 m/s 15.0 s -0.8 m/s Find the average x-acceleration, and state whether the speed of the as- tronaut increases or decreases over each of these 2.0 s time intervals: (d) t1 = 13.0 s to t2 = 15.0 s.",
+    "Informal_proof": ""
+  }
+]

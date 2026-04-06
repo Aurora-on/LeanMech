@@ -70,6 +70,14 @@ class CompileCheckResult:
     route_reason: str | None = None
     route_fallback_used: bool = False
     round_index: int = 0
+    stderr_excerpt: str | None = None
+    error_line: int | None = None
+    error_message: str | None = None
+    error_snippet: str | None = None
+    sub_error_type: str | None = None
+    failure_tags: list[str] = field(default_factory=list)
+    failure_summary: str | None = None
+    failure_details: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -90,6 +98,10 @@ class SemanticRankResult:
     retry_triggered: bool = False
     retry_reason: str | None = None
     retry_feedback_summary: str | None = None
+    sub_error_type: str | None = None
+    failure_tags: list[str] = field(default_factory=list)
+    failure_summary: str | None = None
+    failure_details: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -111,6 +123,12 @@ class ProofAttemptResult:
     backend_used: str | None = None
     route_reason: str | None = None
     route_fallback_used: bool = False
+    sub_error_type: str | None = None
+    failure_tags: list[str] = field(default_factory=list)
+    failure_summary: str | None = None
+    failure_details: dict[str, Any] = field(default_factory=dict)
+    proof_body_excerpt: str | None = None
+    stderr_excerpt: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -126,6 +144,10 @@ class ProofCheckResult:
     final_log_path: str | None
     backend_used: str | None = None
     round_index: int = 0
+    sub_error_type: str | None = None
+    failure_tags: list[str] = field(default_factory=list)
+    failure_summary: str | None = None
+    failure_details: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -144,6 +166,9 @@ class SampleRunSummary:
     notes: str | None = None
     final_round_index: int = 0
     feedback_loop_used: bool = False
+    sub_error_type: str | None = None
+    failure_summary: str | None = None
+    failure_details: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

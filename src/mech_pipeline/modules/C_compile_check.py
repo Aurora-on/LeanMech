@@ -38,6 +38,22 @@ class ModuleC:
                     backend_used=str(result.get("backend_used") or ""),
                     route_reason=str(result.get("route_reason") or ""),
                     route_fallback_used=bool(result.get("route_fallback_used")),
+                    stderr_excerpt=str(result.get("stderr_excerpt") or "") or None,
+                    error_line=int(result["error_line"]) if result.get("error_line") is not None else None,
+                    error_message=str(result.get("error_message") or "") or None,
+                    error_snippet=str(result.get("error_snippet") or "") or None,
+                    sub_error_type=str(result.get("sub_error_type") or "") or None,
+                    failure_tags=([str(result["sub_error_type"])] if result.get("sub_error_type") else []),
+                    failure_summary=(
+                        str(result.get("error_message") or "").strip()
+                        or (str(result["error_type"]).strip() if result.get("error_type") else None)
+                    ),
+                    failure_details={
+                        "stderr_excerpt": str(result.get("stderr_excerpt") or "") or None,
+                        "error_line": result.get("error_line"),
+                        "error_message": str(result.get("error_message") or "") or None,
+                        "error_snippet": str(result.get("error_snippet") or "") or None,
+                    },
                 )
             )
         return rows

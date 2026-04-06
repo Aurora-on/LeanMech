@@ -54,6 +54,7 @@ Revision rules:
 7. If typed MechLib modeling is causing failures, switch to `Real`.
 8. Never output proof bodies.
 9. Keep output fully valid JSON.
+10. Treat `sub_error_type`, `failure_tags`, `mismatch_fields`, `missing_or_incorrect_translations`, and `suggested_fix_direction` as the highest-priority feedback signals when they are present.
 
 ProblemIR:
 {{problem_ir_json}}

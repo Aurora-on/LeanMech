@@ -1,14 +1,14 @@
 dataset:
   source: lean4phys
-  limit: 4
+  limit: 1
   category: Mechanics
   sample_policy: index_head
-  seed: 20260330
+  seed: 20260404
   local_archive:
     root: "F:/AI4Mechanics/datasets/archive"
     mode: text_only
   lean4phys:
-    bench_path: "F:/AI4Mechanics/coding/pipeline1/fixtures/bench_mechanics73_plus3_seed20260330.json"
+    bench_path: "F:/AI4Mechanics/coding/pipeline1/fixtures/bench_mechanics20_single_20260404.json"
     category: "mechanics"
     level: null
   single_image_only_for_mvp: true
@@ -16,9 +16,9 @@ dataset:
 model:
   provider: openai_compatible
   model_id: gpt-5.4
-  base_url: null
+  base_url: "https://api.openai-proxy.org/v1"
   api_key: null
-  api_key_env: OPENAI_API_KEY
+  api_key_env: OPENAI_PROXY_KEY
   supports_vision: false
   timeout_s: 120
   max_retries: 2
@@ -72,4 +72,4 @@ prompts:
 output:
   output_dir: outputs/latest
   runs_dir: runs
-  tag: codex-realapi-mechanics73-plus3-direct-20260330
+  tag: mechanics20-single-proxy-gpt54-20260404

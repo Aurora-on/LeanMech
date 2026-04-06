@@ -7,9 +7,25 @@ from typing import Any
 import yaml
 
 
+MAX_SAMPLE_CONCURRENCY = 10
+DEFAULT_LOCAL_ARCHIVE_ROOT = "F:/AI4Mechanics/datasets/archive"
+_MOJIBAKE_SUSPECT_FRAGMENTS = (
+    "鏁版嵁",
+    "褰掓",
+    "閺佺増",
+    "瑜版帗",
+    "鈩",
+    "鈫",
+    "鈭",
+    "锛",
+    "銆",
+    "\ufffd",
+)
+
+
 @dataclass
 class LocalArchiveConfig:
-    root: str = "F:/AI4Mechanics/\u6570\u636e\u96c6/\u5f52\u6863"
+    root: str = DEFAULT_LOCAL_ARCHIVE_ROOT
     mode: str = "text_only"
 
 
@@ -116,6 +132,11 @@ class OutputConfig:
 
 
 @dataclass
+class RuntimeConfig:
+    sample_concurrency: int = 1
+
+
+@dataclass
 class PipelineConfig:
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
@@ -126,6 +147,7 @@ class PipelineConfig:
     proof: ProofConfig = field(default_factory=ProofConfig)
     prompts: PromptConfig = field(default_factory=PromptConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -141,11 +163,15 @@ def _merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return merged
 
 
+def _looks_like_mojibake(text: str) -> bool:
+    return any(fragment in text for fragment in _MOJIBAKE_SUSPECT_FRAGMENTS)
+
+
 def load_config(path: Path) -> PipelineConfig:
     if not path.exists():
         raise FileNotFoundError(f"Config file does not exist: {path}")
 
-    with path.open("r", encoding="utf-8") as f:
+    with path.open("r", encoding="utf-8-sig") as f:
         payload = yaml.safe_load(f) or {}
     if not isinstance(payload, dict):
         raise ValueError("Config root must be a mapping")
@@ -168,6 +194,7 @@ def load_config(path: Path) -> PipelineConfig:
         proof=ProofConfig(**merged["proof"]),
         prompts=PromptConfig(**merged["prompts"]),
         output=OutputConfig(**merged["output"]),
+        runtime=RuntimeConfig(**merged["runtime"]),
     )
     validate_config(cfg)
     return cfg
@@ -218,3 +245,24 @@ def validate_config(cfg: PipelineConfig) -> None:
         raise ValueError("proof.max_attempts must be > 0")
     if cfg.semantic.pass_threshold < 0 or cfg.semantic.pass_threshold > 1:
         raise ValueError("semantic.pass_threshold must be in [0, 1]")
+    if cfg.runtime.sample_concurrency <= 0:
+        raise ValueError("runtime.sample_concurrency must be >= 1")
+    if cfg.runtime.sample_concurrency > MAX_SAMPLE_CONCURRENCY:
+        raise ValueError(f"runtime.sample_concurrency must be <= {MAX_SAMPLE_CONCURRENCY}")
+    path_like_fields = {
+        "dataset.local_archive.root": cfg.dataset.local_archive.root,
+        "dataset.lean4phys.bench_path": cfg.dataset.lean4phys.bench_path,
+        "lean.physlean_dir": cfg.lean.physlean_dir,
+        "lean.mechlib_dir": cfg.lean.mechlib_dir,
+        "knowledge.mechlib_dir": cfg.knowledge.mechlib_dir,
+        "knowledge.cache_path": cfg.knowledge.cache_path,
+        "knowledge.summary_corpus_path": cfg.knowledge.summary_corpus_path,
+        "prompts.dir": cfg.prompts.dir,
+        "output.output_dir": cfg.output.output_dir,
+        "output.runs_dir": cfg.output.runs_dir,
+    }
+    for field_name, value in path_like_fields.items():
+        if _looks_like_mojibake(value):
+            raise ValueError(
+                f"{field_name} contains likely mojibake; resave the config as UTF-8 and fix the path text"
+            )

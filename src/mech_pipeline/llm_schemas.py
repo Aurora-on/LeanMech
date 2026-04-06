@@ -49,6 +49,13 @@ class SemanticRankItemPayload(BasePayloadModel):
     reason: str | None = None
     semantic_analysis: str | None = None
     comparison: str | None = None
+    failure_summary: str | None = None
+    failure_tags: Any = Field(default_factory=list)
+    mismatch_fields: Any = Field(default_factory=list)
+    missing_or_incorrect_translations: Any = Field(default_factory=list)
+    suggested_fix_direction: str | None = None
+    target_relation: str | None = None
+    sub_error_type: str | None = None
 
 
 class SemanticRankPayload(BasePayloadModel):
@@ -66,6 +73,13 @@ class SemanticRankPayload(BasePayloadModel):
     reason: str | None = None
     semantic_analysis: str | None = None
     comparison: str | None = None
+    failure_summary: str | None = None
+    failure_tags: Any = Field(default_factory=list)
+    mismatch_fields: Any = Field(default_factory=list)
+    missing_or_incorrect_translations: Any = Field(default_factory=list)
+    suggested_fix_direction: str | None = None
+    target_relation: str | None = None
+    sub_error_type: str | None = None
 
 
 class ProofPayload(BasePayloadModel):

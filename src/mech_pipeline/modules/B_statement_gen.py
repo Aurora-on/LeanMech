@@ -35,6 +35,56 @@ MOJIBAKE_REPLACEMENTS = {
     "鈮?": "≠",
     "鈥?": "*",
 }
+GREEK_IDENTIFIER_REPLACEMENTS = {
+    "α": "alpha",
+    "β": "beta",
+    "γ": "gamma",
+    "δ": "delta",
+    "ε": "epsilon",
+    "ζ": "zeta",
+    "η": "eta",
+    "θ": "theta",
+    "ι": "iota",
+    "κ": "kappa",
+    "λ": "lambda",
+    "μ": "mu",
+    "ν": "nu",
+    "ξ": "xi",
+    "ο": "omicron",
+    "π": "pi",
+    "ρ": "rho",
+    "σ": "sigma",
+    "τ": "tau",
+    "υ": "upsilon",
+    "φ": "phi",
+    "χ": "chi",
+    "ψ": "psi",
+    "ω": "omega",
+    "Α": "Alpha",
+    "Β": "Beta",
+    "Γ": "Gamma",
+    "Δ": "Delta",
+    "Ε": "Epsilon",
+    "Ζ": "Zeta",
+    "Η": "Eta",
+    "Θ": "Theta",
+    "Ι": "Iota",
+    "Κ": "Kappa",
+    "Λ": "Lambda",
+    "Μ": "Mu",
+    "Ν": "Nu",
+    "Ξ": "Xi",
+    "Ο": "Omicron",
+    "Π": "Pi",
+    "Ρ": "Rho",
+    "Σ": "Sigma",
+    "Τ": "Tau",
+    "Υ": "Upsilon",
+    "Φ": "Phi",
+    "Χ": "Chi",
+    "Ψ": "Psi",
+    "Ω": "Omega",
+}
 LEAN_CORE_TOKENS = {
     "theorem",
     "lemma",
@@ -302,6 +352,13 @@ def _normalize_common_mojibake(text: str) -> str:
     return out
 
 
+def _normalize_unicode_identifiers(text: str) -> str:
+    out = text
+    for src, dst in GREEK_IDENTIFIER_REPLACEMENTS.items():
+        out = out.replace(src, dst)
+    return out
+
+
 def _render_real_literal(value: Fraction) -> str:
     abs_num = abs(value.numerator)
     if value.denominator == 1:
@@ -532,17 +589,6 @@ def _rewrite_known_mechlib_hallucinations(text: str) -> str:
     return out
 
 
-def _fallback_decl(sample_id: str, candidate_id: str) -> str:
-    name = lean_ident(f"{sample_id}_{candidate_id}_fallback_goal", prefix="thm")
-    return (
-        f"theorem {name}\n"
-        "  (F m a : Real)\n"
-        "  (hm : m ≠ 0)\n"
-        "  (h_force : F = m * a)\n"
-        "  : a = F / m"
-    )
-
-
 def _repair_decl_for_mechlib_safety(
     *,
     sample_id: str,
@@ -553,6 +599,7 @@ def _repair_decl_for_mechlib_safety(
     library_target: str,
 ) -> str | None:
     text = _normalize_common_mojibake(theorem_decl.replace("!=", "≠"))
+    text = _normalize_unicode_identifiers(text)
     text = _normalize_numeric_literals(text)
     if MOJIBAKE_PATTERN.search(text):
         return None
@@ -573,8 +620,6 @@ def _repair_decl_for_mechlib_safety(
             return None
         if _has_disallowed_non_ascii(text):
             return None
-        if library_target == "mechlib" and _find_unknown_library_symbols(text, mechlib_context):
-            return None
     if _contains_typed_mechlib_types(text):
         risky = "/" in text or "≠ 0" in text or ".val" in text
         if risky:
@@ -593,6 +638,7 @@ def _normalize_theorem_decl(
     library_target: str,
 ) -> str | None:
     text = normalize_lean_text(_declaration_only(str(value or "")))
+    text = _normalize_unicode_identifiers(text)
     text = text.replace("!=", "≠")
     if _is_meaningful_decl(text):
         parsed = _parse_decl_name(text)
@@ -734,23 +780,8 @@ class ModuleB:
         else:
             error = error or "statement_generation_parse_failed"
 
-        while len(payload) < 4:
-            cid = f"c{len(payload) + 1}"
-            fallback_target = "mechlib" if self.library_target in {"mechlib", "auto"} else "physlean"
-            payload.append(
-                {
-                    "candidate_id": cid,
-                    "lean_header": _required_header(fallback_target),
-                    "theorem_decl": _fallback_decl(grounding.sample_id, cid),
-                    "assumptions": [],
-                    "plan": "Fallback mechanics declaration after incomplete model output.",
-                }
-            )
-
         payload = payload[:4]
-        fallback_target = "mechlib" if self.library_target in {"mechlib", "auto"} else "physlean"
         prepared: list[dict[str, object]] = []
-        valid_templates: list[dict[str, object]] = []
 
         for item in payload:
             cid = str(item.get("candidate_id") or "c1")
@@ -788,41 +819,16 @@ class ModuleB:
                 "target": target,
             }
             prepared.append(prepared_item)
-            if decl is not None:
-                valid_templates.append(prepared_item)
 
         out: list[StatementCandidate] = []
-        clone_index = 0
         for item in prepared:
             cid = str(item["candidate_id"])
             decl = item["theorem_decl"]
+            if decl is None:
+                continue
             header = str(item["lean_header"])
             assumptions = list(item["assumptions"]) if isinstance(item["assumptions"], list) else []
             plan = item["plan"] if isinstance(item["plan"], str) else None
-            target = str(item["target"])
-
-            if decl is None and valid_templates:
-                source = valid_templates[clone_index % len(valid_templates)]
-                clone_index += 1
-                target = str(source["target"])
-                header = str(source["lean_header"])
-                assumptions = list(source["assumptions"]) if isinstance(source["assumptions"], list) else []
-                plan = f"Cloned from a valid candidate because the original {cid} declaration was invalid."
-                decl = _normalize_theorem_decl(
-                    grounding.sample_id,
-                    cid,
-                    source["theorem_decl"],
-                    grounding.problem_ir,
-                    mechlib_context=mechlib_context,
-                    library_target=target,
-                )
-
-            if decl is None:
-                target = fallback_target
-                header = _required_header(target)
-                decl = _fallback_decl(grounding.sample_id, cid)
-                assumptions = []
-                plan = "Catastrophic fallback declaration after unusable model output."
 
             out.append(
                 StatementCandidate(

@@ -1,0 +1,13 @@
+[
+  {
+    "Name": "competition_mechanics_Ch1_Q10",
+    "Level": "competition_hard",
+    "Category": "mechanics",
+    "Header": "import Mathlib\nimport Aesop\nimport Mathlib.Tactic\nimport PHYSlib.Foundations.SI\nimport PHYSlib.Foundations.SIDeriv\nopen BigOperators Real Nat Topology Filter Rat UnitsSystem SI\nunseal Rat.add Rat.mul Rat.sub Rat.inv",
+    "Theorem": "theorem Ch1_Q10\n  (v : Speed)\n  (ω : Scalar (-time_unit))\n  (t : Time)\n  (r_ring : Time → Length\n:=fun t => v * t)\n  (φ_ring : Time → Dimensionless\n:=fun t => ω * t)\n  (x_ring : Time → Length\n:=fun t => Real.cos ((φ_ring t).val) • r_ring t)\n  (y_ring : Time → Length\n:=fun t => Real.sin ((φ_ring t).val) • r_ring t )\n  (v_r : Time → Speed\n:=physderiv r_ring)\n  (v_φ : Time → Speed\n:=fun t => r_ring t * ω)\n  (a_r : Time → Acceleration\n:=fun t => ((physderiv v_r) t)  - ((r_ring t) * ω**2).cast (by module))\n  (a_φ : Time → Acceleration\n:=fun t => 2 • v * ω)\n  :\n  (∀ t, r_ring t = (v / ω) * φ_ring t) ∧\n  (∀ t, v_r t = v ∧ v_φ t = v * ω * t) ∧\n  (∀ t, a_r t = -v * ω**2 * t ∧ a_φ t = 2 • v * ω) := by sorry",
+    "Statement": "import Mathlib\nimport Aesop\nimport Mathlib.Tactic\nimport PHYSlib.Foundations.SI\nimport PHYSlib.Foundations.SIDeriv\nopen BigOperators Real Nat Topology Filter Rat UnitsSystem SI\nunseal Rat.add Rat.mul Rat.sub Rat.inv\ntheorem Ch1_Q10\n  (v : Speed)\n  (ω : Scalar (-time_unit))\n  (t : Time)\n  (r_ring : Time → Length\n:=fun t => v * t)\n  (φ_ring : Time → Dimensionless\n:=fun t => ω * t)\n  (x_ring : Time → Length\n:=fun t => Real.cos ((φ_ring t).val) • r_ring t)\n  (y_ring : Time → Length\n:=fun t => Real.sin ((φ_ring t).val) • r_ring t )\n  (v_r : Time → Speed\n:=physderiv r_ring)\n  (v_φ : Time → Speed\n:=fun t => r_ring t * ω)\n  (a_r : Time → Acceleration\n:=fun t => ((physderiv v_r) t)  - ((r_ring t) * ω**2).cast (by module))\n  (a_φ : Time → Acceleration\n:=fun t => 2 • v * ω)\n  :\n  (∀ t, r_ring t = (v / ω) * φ_ring t) ∧\n  (∀ t, v_r t = v ∧ v_φ t = v * ω * t) ∧\n  (∀ t, a_r t = -v * ω**2 * t ∧ a_φ t = 2 • v * ω) := by sorry",
+    "Proof": "",
+    "Informal_statement": "EXAMPLE Ch1_Q10 Q: A slender rod rotates uniformly with angular velocity ω around a fixed endpoint O in a plane. A small ring moves along the rod with constant speed v relative to the rod. At time t = 0, the ring is located at the endpoint O. Prove that the trajectory of the ring is an Archimedean spiral: r = (v / ω) φ where r is the distance from O and φ is the angle the rod makes with a fixed axis.",
+    "Informal_proof": ""
+  }
+]

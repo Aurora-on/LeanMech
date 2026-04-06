@@ -1,0 +1,93 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "pipeline: run selected config (unbuffered)",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "-u",
+        "-m",
+        "mech_pipeline.cli",
+        "run",
+        "--config",
+        "${input:pipelineConfig}",
+        "--sample-concurrency",
+        "${input:sampleConcurrency}"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PYTHONPATH": "${workspaceFolder}/src",
+          "PYTHONUNBUFFERED": "1",
+          "PYTHONIOENCODING": "utf-8"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": false,
+        "showReuseMessage": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "pipeline: 4-sample real api (unbuffered)",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "-u",
+        "-m",
+        "mech_pipeline.cli",
+        "run",
+        "--config",
+        "configs/mechanics73_plus3_proxy_gpt54_seed2026033001.yaml",
+        "--sample-concurrency",
+        "4"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PYTHONPATH": "${workspaceFolder}/src",
+          "PYTHONUNBUFFERED": "1",
+          "PYTHONIOENCODING": "utf-8"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": false,
+        "showReuseMessage": false
+      },
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "pipelineConfig",
+      "type": "pickString",
+      "description": "Choose pipeline config",
+      "default": "configs/default_mechanics73_openai.yaml",
+      "options": [
+        "configs/default_mechanics73_openai.yaml",
+        "configs/mechanics73_plus3_proxy_gpt54_seed2026033001.yaml",
+        "configs/mechanics73_plus3_proxy_gpt54.yaml",
+        "configs/mechanics73_plus3_openai_gpt54.yaml",
+        "configs/full_run_openai_proxy_lean.yaml"
+      ]
+    },
+    {
+      "id": "sampleConcurrency",
+      "type": "pickString",
+      "description": "Choose sample concurrency",
+      "default": "4",
+      "options": [
+        "1",
+        "2",
+        "4",
+        "8",
+        "10"
+      ]
+    }
+  ]
+}

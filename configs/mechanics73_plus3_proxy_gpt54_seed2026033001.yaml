@@ -5,7 +5,7 @@ dataset:
   sample_policy: index_head
   seed: 2026033001
   local_archive:
-    root: "F:/AI4Mechanics/鏁版嵁闆?褰掓。"
+    root: "F:/AI4Mechanics/datasets/archive"
     mode: text_only
   lean4phys:
     bench_path: "F:/AI4Mechanics/coding/pipeline1/fixtures/bench_mechanics73_plus3_seed2026033001.json"

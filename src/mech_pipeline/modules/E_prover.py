@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 
 from mech_pipeline.adapters.lean_runner import LeanRunner
 from mech_pipeline.llm_schemas import ProofPayload
@@ -71,6 +72,65 @@ Retrieved MechLib context:
 {{mechlib_context}}
 """
 
+_PROOF_DECIMAL_PATTERN = re.compile(r"(?<![A-Za-z0-9_])-?\d+\.\d+(?![A-Za-z0-9_])")
+
+
+def _excerpt(text: str, limit: int = 240) -> str | None:
+    out = normalize_lean_text(str(text or "").strip())
+    return out[:limit] if out else None
+
+
+def _proof_failure_tags(*values: object) -> list[str]:
+    tags: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if isinstance(value, str):
+            candidates = [value]
+        elif isinstance(value, list):
+            candidates = [str(item) for item in value]
+        else:
+            candidates = []
+        for item in candidates:
+            tag = str(item).strip().lower().replace(" ", "_")
+            if not tag or tag in seen:
+                continue
+            seen.add(tag)
+            tags.append(tag)
+    return tags
+
+
+def _classify_proof_sub_error(error_type: str | None, stderr_digest: str, proof_body: str) -> str | None:
+    et = str(error_type or "").strip()
+    text = str(stderr_digest or "").lower()
+    proof_text = str(proof_body or "")
+    if et == "proof_generation_failure":
+        return "proof_generation_failure"
+    if et == "proof_response_parse_failed":
+        return "proof_response_parse_failed"
+    if et == "proof_skipped_due_to_semantic_fail":
+        return "proof_skipped_due_to_semantic_fail"
+    if "rewrite tactic failed" in text or "did not find instance of the pattern" in text:
+        return "algebraic_rewrite_missing"
+    if "unsolved goals" in text:
+        return "missing_intermediate_fact"
+    if "type mismatch" in text or "application type mismatch" in text:
+        return "goal_shape_mismatch"
+    if _PROOF_DECIMAL_PATTERN.search(proof_text):
+        return "numeric_normalization_needed"
+    if et == "proof_search_failure":
+        return "wrong_tactic_strategy"
+    return None
+
+
+def _build_proof_failure_summary(error_type: str | None, stderr_digest: str) -> str | None:
+    excerpt = _excerpt(stderr_digest)
+    if excerpt:
+        return excerpt
+    et = str(error_type or "").strip()
+    if et:
+        return et.replace("_", " ")
+    return None
+
 
 class ModuleE:
     def __init__(
@@ -104,6 +164,10 @@ class ModuleE:
                     selected_candidate_id=None,
                     error_type="proof_search_failure",
                     final_log_path=None,
+                    sub_error_type="proof_generation_failure",
+                    failure_tags=["proof_generation_failure"],
+                    failure_summary="No selected candidate was available for proof generation.",
+                    failure_details={"selected_candidate_present": False},
                 ),
             )
 
@@ -160,6 +224,7 @@ class ModuleE:
             if not proof_body:
                 error_type = "proof_response_parse_failed" if raw else "proof_generation_failure"
                 stderr_digest = previous_error or error_type
+                sub_error_type = _classify_proof_sub_error(error_type, stderr_digest, proof_body)
                 attempt = ProofAttemptResult(
                     sample_id=grounding.sample_id,
                     attempt_index=idx,
@@ -172,6 +237,15 @@ class ModuleE:
                     error_type=error_type,
                     stderr_digest=stderr_digest,
                     log_path=None,
+                    sub_error_type=sub_error_type,
+                    failure_tags=_proof_failure_tags(error_type, sub_error_type),
+                    failure_summary=_build_proof_failure_summary(error_type, stderr_digest),
+                    failure_details={
+                        "attempt_index": idx,
+                        "previous_error": previous_error or None,
+                    },
+                    proof_body_excerpt=None,
+                    stderr_excerpt=_excerpt(stderr_digest),
                 )
                 attempts.append(attempt)
                 previous_proof = ""
@@ -208,6 +282,24 @@ class ModuleE:
                 backend_used=str(verify.get("backend_used") or ""),
                 route_reason=str(verify.get("route_reason") or ""),
                 route_fallback_used=bool(verify.get("route_fallback_used")),
+                sub_error_type=_classify_proof_sub_error(
+                    error_type,
+                    str(verify["stderr_digest"]),
+                    proof_body,
+                ),
+                failure_tags=_proof_failure_tags(
+                    error_type,
+                    _classify_proof_sub_error(error_type, str(verify["stderr_digest"]), proof_body),
+                ),
+                failure_summary=_build_proof_failure_summary(error_type, str(verify["stderr_digest"])),
+                failure_details={
+                    "error_line": verify.get("error_line"),
+                    "error_message": verify.get("error_message"),
+                    "error_snippet": verify.get("error_snippet"),
+                    "stderr_excerpt": verify.get("stderr_excerpt"),
+                },
+                proof_body_excerpt=_excerpt(proof_body),
+                stderr_excerpt=_excerpt(str(verify["stderr_digest"])),
             )
             attempts.append(attempt)
             final_log_path = attempt.log_path
@@ -223,6 +315,10 @@ class ModuleE:
                         error_type=None,
                         final_log_path=final_log_path,
                         backend_used=attempt.backend_used,
+                        sub_error_type=None,
+                        failure_tags=[],
+                        failure_summary=None,
+                        failure_details={},
                     ),
                 )
 
@@ -240,5 +336,9 @@ class ModuleE:
                 error_type=final_error,
                 final_log_path=final_log_path,
                 backend_used=(attempts[-1].backend_used if attempts else None),
+                sub_error_type=(attempts[-1].sub_error_type if attempts else None),
+                failure_tags=(attempts[-1].failure_tags if attempts else []),
+                failure_summary=(attempts[-1].failure_summary if attempts else None),
+                failure_details=(attempts[-1].failure_details if attempts else {}),
             ),
         )

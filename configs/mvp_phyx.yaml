@@ -8,7 +8,7 @@ dataset:
     - "https://hf-mirror.com/datasets/Cloudriver/PhyX/resolve/main/data_llms_eval/PhyX_mini_MC.parquet"
     - "https://huggingface.co/datasets/Cloudriver/PhyX/resolve/main/data_llms_eval/PhyX_mini_MC.parquet"
   local_archive:
-    root: "F:/AI4Mechanics/数据集/归档"
+    root: "F:/AI4Mechanics/datasets/archive"
     mode: text_only
   single_image_only_for_mvp: true
 

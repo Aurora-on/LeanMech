@@ -163,7 +163,7 @@ def test_statement_repairs_quantity_cast_and_hallucinated_mechlib_symbols(tmp_pa
     assert "dx = (x - x0)" in c2.theorem_decl
 
 
-def test_statement_clones_valid_candidate_when_unknown_mechlib_symbol_cannot_be_repaired(tmp_path: Path) -> None:
+def test_statement_preserves_unknown_mechlib_symbol_for_compile_stage_feedback(tmp_path: Path) -> None:
     prompt = tmp_path / "B_generate_statements.txt"
     prompt.write_text("__TASK_B_GENERATE_STATEMENTS__", encoding="utf-8")
     payload = """
@@ -204,9 +204,10 @@ def test_statement_clones_valid_candidate_when_unknown_mechlib_symbol_cannot_be_
     out = ModuleB(StaticStatementClient(payload), prompt).run(_grounding("s3"))
     c1 = next(x for x in out if x.candidate_id == "c1")
 
+    assert len(out) == 4
     assert "fallback_goal" not in c1.theorem_decl
-    assert ": a = F / m" in c1.theorem_decl
-    assert "mysteryConstAccel" not in c1.theorem_decl
+    assert "mysteryConstAccel" in c1.theorem_decl
+    assert "impossible_api_use" in c1.theorem_decl
 
 
 def test_statement_rejects_assumption_replay_goals(tmp_path: Path) -> None:
@@ -248,11 +249,58 @@ def test_statement_rejects_assumption_replay_goals(tmp_path: Path) -> None:
     """
 
     out = ModuleB(StaticStatementClient(payload), prompt).run(_grounding("s4"))
-    c1 = next(x for x in out if x.candidate_id == "c1")
 
-    assert "fallback_goal" not in c1.theorem_decl
-    assert ": y = x" not in c1.theorem_decl
-    assert ": a = F / m" in c1.theorem_decl
+    assert len(out) == 3
+    assert all(c.candidate_id != "c1" for c in out)
+    assert all("fallback_goal" not in c.theorem_decl for c in out)
+
+
+def test_statement_normalizes_greek_identifiers_instead_of_dropping_candidate(tmp_path: Path) -> None:
+    prompt = tmp_path / "B_generate_statements.txt"
+    prompt.write_text("__TASK_B_GENERATE_STATEMENTS__", encoding="utf-8")
+    payload = """
+    {
+      "candidates": [
+        {
+          "candidate_id": "c1",
+          "lean_header": "import MechLib",
+          "theorem_decl": "theorem archimedean_spiral_from_time_param (r phi : Real -> Real) (v omega : Real) (h_r : forall t, r t = v * t) (h_phi : forall t, phi t = omega * t) (hω : omega ≠ 0) : forall t, r t = (v / omega) * phi t",
+          "assumptions": [],
+          "plan": "test"
+        }
+      ]
+    }
+    """
+
+    out = ModuleB(StaticStatementClient(payload), prompt).run(_grounding("s5"))
+
+    assert len(out) == 1
+    assert "fallback_goal" not in out[0].theorem_decl
+    assert "homega" in out[0].theorem_decl
+
+
+def test_statement_does_not_invent_fallback_candidates_when_model_returns_too_few(tmp_path: Path) -> None:
+    prompt = tmp_path / "B_generate_statements.txt"
+    prompt.write_text("__TASK_B_GENERATE_STATEMENTS__", encoding="utf-8")
+    payload = """
+    {
+      "candidates": [
+        {
+          "candidate_id": "c1",
+          "lean_header": "import MechLib",
+          "theorem_decl": "theorem usable_candidate (F m a : Real) (hm : m ≠ 0) (h : F = m * a) : a = F / m",
+          "assumptions": [],
+          "plan": "test"
+        }
+      ]
+    }
+    """
+
+    out = ModuleB(StaticStatementClient(payload), prompt).run(_grounding("s6"))
+
+    assert len(out) == 1
+    assert out[0].candidate_id == "c1"
+    assert "fallback_goal" not in out[0].theorem_decl
 
 
 def test_statement_revision_prompt_includes_previous_candidates_and_feedback(tmp_path: Path) -> None:
@@ -266,10 +314,10 @@ def test_statement_revision_prompt_includes_previous_candidates_and_feedback(tmp
     payload = """
     {
       "candidates": [
-        {"candidate_id":"c1","lean_header":"import MechLib","theorem_decl":"theorem ok1 (x y : Real) (h : x = y) : y = x","assumptions":[],"plan":"test"},
-        {"candidate_id":"c2","lean_header":"import MechLib","theorem_decl":"theorem ok2 (x y : Real) (h : x = y) : y = x","assumptions":[],"plan":"test"},
-        {"candidate_id":"c3","lean_header":"import MechLib","theorem_decl":"theorem ok3 (x y : Real) (h : x = y) : y = x","assumptions":[],"plan":"test"},
-        {"candidate_id":"c4","lean_header":"import MechLib","theorem_decl":"theorem ok4 (x y : Real) (h : x = y) : y = x","assumptions":[],"plan":"test"}
+        {"candidate_id":"c1","lean_header":"import MechLib","theorem_decl":"theorem ok1 (F m a : Real) (hm : m ≠ 0) (h : F = m * a) : a = F / m","assumptions":[],"plan":"test"},
+        {"candidate_id":"c2","lean_header":"import MechLib","theorem_decl":"theorem ok2 (F m a : Real) (hm : m ≠ 0) (h : F = m * a) : a = F / m","assumptions":[],"plan":"test"},
+        {"candidate_id":"c3","lean_header":"import MechLib","theorem_decl":"theorem ok3 (F m a : Real) (hm : m ≠ 0) (h : F = m * a) : a = F / m","assumptions":[],"plan":"test"},
+        {"candidate_id":"c4","lean_header":"import MechLib","theorem_decl":"theorem ok4 (F m a : Real) (hm : m ≠ 0) (h : F = m * a) : a = F / m","assumptions":[],"plan":"test"}
       ]
     }
     """

@@ -9,6 +9,7 @@ from mech_pipeline.utils import ensure_dir, normalize_lean_text, safe_stem, trun
 
 _SUBPROCESS_TEXT_ENCODING = "utf-8"
 _SUBPROCESS_TEXT_ERRORS = "replace"
+_LEAN_ERROR_LOC_RE = re.compile(r":(?P<line>\d+):(?P<col>\d+):\s*error:\s*(?P<msg>[^\n]+)")
 
 
 def _indent(text: str, n: int = 2) -> str:
@@ -59,6 +60,60 @@ def is_strict_clean(code: str, blocklist: list[str]) -> bool:
         if re.search(rf"\b{re.escape(token.lower())}\b", lowered):
             return False
     return True
+
+
+def _stderr_excerpt(stdout: str, stderr: str, limit: int = 240) -> str:
+    merged = (stderr or "").strip()
+    if not merged:
+        merged = (stdout or "").strip()
+    return truncate(normalize_lean_text(merged), limit)
+
+
+def extract_lean_error_details(stdout: str, stderr: str) -> dict[str, str | int | None]:
+    normalized = normalize_lean_text((stderr or "").strip() or (stdout or "").strip())
+    excerpt = truncate(normalized, 240)
+    line: int | None = None
+    message: str | None = None
+    snippet: str | None = None
+
+    match = _LEAN_ERROR_LOC_RE.search(normalized)
+    if match:
+        line = int(match.group("line"))
+        message = match.group("msg").strip()
+        snippet = truncate(match.group(0).strip(), 240)
+    else:
+        first_line = next((part.strip() for part in normalized.splitlines() if part.strip()), "")
+        if first_line:
+            message = truncate(first_line, 240)
+            snippet = message
+
+    return {
+        "stderr_excerpt": excerpt or None,
+        "error_line": line,
+        "error_message": message,
+        "error_snippet": snippet,
+    }
+
+
+def classify_compile_sub_error(error_type: str | None, stderr: str) -> str | None:
+    text = (stderr or "").lower()
+    if "[pipeline_timeout]" in text or "[pipeline_exception]" in text:
+        return "timeout_or_tooling_block"
+    if error_type == "invalid_lean_syntax":
+        return "invalid_decl_shape"
+    if any(token in text for token in ["unknown namespace", "unknown package", "unknown module prefix"]) and "error:" in text:
+        return "namespace_or_import_issue"
+    if "unknown constant" in text or "unknown identifier" in text:
+        return "symbol_hallucination"
+    if "function expected at" in text or "invalid field notation" in text:
+        return "wrong_api_shape"
+    if "application type mismatch" in text or "type mismatch" in text:
+        return "type_mismatch"
+    if error_type == "missing_import_or_namespace":
+        return "namespace_or_import_issue"
+    if error_type == "elaboration_failure":
+        return "type_mismatch"
+    return None
 
 
 class LeanRunner:
@@ -250,9 +305,15 @@ class LeanRunner:
                 "stderr_digest": "",
                 "log_path": str(log_path),
                 "backend_used": backend,
+                "stderr_excerpt": None,
+                "error_line": None,
+                "error_message": None,
+                "error_snippet": None,
+                "sub_error_type": None,
             }
 
         syntax_ok, elaboration_ok, error_type = classify_lean_error(stderr)
+        details = extract_lean_error_details(stdout, stderr)
         return {
             "compile_pass": False,
             "syntax_ok": syntax_ok,
@@ -261,6 +322,11 @@ class LeanRunner:
             "stderr_digest": self._stderr_digest(stdout, stderr),
             "log_path": str(log_path),
             "backend_used": backend,
+            "stderr_excerpt": details["stderr_excerpt"],
+            "error_line": details["error_line"],
+            "error_message": details["error_message"],
+            "error_snippet": details["error_snippet"],
+            "sub_error_type": classify_compile_sub_error(error_type, stderr),
         }
 
     def _verify_once(
@@ -316,6 +382,10 @@ class LeanRunner:
                 "stderr_digest": "",
                 "log_path": str(log_path),
                 "backend_used": backend,
+                "stderr_excerpt": None,
+                "error_line": None,
+                "error_message": None,
+                "error_snippet": None,
             }
         if ok and not strict_pass:
             return {
@@ -325,9 +395,14 @@ class LeanRunner:
                 "stderr_digest": "",
                 "log_path": str(log_path),
                 "backend_used": backend,
+                "stderr_excerpt": None,
+                "error_line": None,
+                "error_message": None,
+                "error_snippet": None,
             }
 
         _syntax_ok, _elaboration_ok, error_type = classify_lean_error(stderr)
+        details = extract_lean_error_details(stdout, stderr)
         return {
             "compile_pass": False,
             "strict_pass": False,
@@ -335,6 +410,10 @@ class LeanRunner:
             "stderr_digest": self._stderr_digest(stdout, stderr),
             "log_path": str(log_path),
             "backend_used": backend,
+            "stderr_excerpt": details["stderr_excerpt"],
+            "error_line": details["error_line"],
+            "error_message": details["error_message"],
+            "error_snippet": details["error_snippet"],
         }
 
     def compile_statement(
@@ -360,6 +439,11 @@ class LeanRunner:
                 "backend_used": None,
                 "route_reason": "lean_disabled",
                 "route_fallback_used": False,
+                "stderr_excerpt": None,
+                "error_line": None,
+                "error_message": None,
+                "error_snippet": None,
+                "sub_error_type": "lean_disabled",
             }
 
         decl = _declaration_only(theorem_decl)
@@ -378,6 +462,11 @@ class LeanRunner:
                 "backend_used": None,
                 "route_reason": "invalid_decl",
                 "route_fallback_used": False,
+                "stderr_excerpt": "cannot parse theorem declaration",
+                "error_line": None,
+                "error_message": "invalid theorem declaration format",
+                "error_snippet": "invalid theorem declaration format",
+                "sub_error_type": "invalid_decl_shape",
             }
 
         backend, route_reason = self._route_backend(lean_header, decl)
@@ -443,6 +532,10 @@ class LeanRunner:
                 "backend_used": None,
                 "route_reason": "lean_disabled",
                 "route_fallback_used": False,
+                "stderr_excerpt": None,
+                "error_line": None,
+                "error_message": None,
+                "error_snippet": None,
             }
 
         decl = _declaration_only(theorem_decl)
