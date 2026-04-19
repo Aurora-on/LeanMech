@@ -136,28 +136,44 @@ Output JSON only:
       "lean_header":"...",
       "theorem_decl":"theorem ... : ...",
       "assumptions":[],
-      "plan":"short modeling plan"
+      "plan":"short modeling plan",
+      "supporting_facts":["..."],
+      "fact_sources":["problem","mechlib:SomeTheorem"],
+      "library_symbols_used":["SomeTheorem"],
+      "grounding_explanation":"why the statement is justified"
     },
     {
       "candidate_id":"c2",
       "lean_header":"...",
       "theorem_decl":"theorem ... : ...",
       "assumptions":[],
-      "plan":"short modeling plan"
+      "plan":"short modeling plan",
+      "supporting_facts":["..."],
+      "fact_sources":["problem"],
+      "library_symbols_used":[],
+      "grounding_explanation":"why the statement is justified"
     },
     {
       "candidate_id":"c3",
       "lean_header":"...",
       "theorem_decl":"theorem ... : ...",
       "assumptions":[],
-      "plan":"short modeling plan"
+      "plan":"short modeling plan",
+      "supporting_facts":["..."],
+      "fact_sources":["problem"],
+      "library_symbols_used":[],
+      "grounding_explanation":"why the statement is justified"
     },
     {
       "candidate_id":"c4",
       "lean_header":"...",
       "theorem_decl":"theorem ... : ...",
       "assumptions":[],
-      "plan":"short modeling plan"
+      "plan":"short modeling plan",
+      "supporting_facts":["..."],
+      "fact_sources":["problem"],
+      "library_symbols_used":[],
+      "grounding_explanation":"why the statement is justified"
     }
   ]
 }
@@ -191,6 +207,9 @@ Constraints:
 21) Avoid `Quantity.cast` unless you are certain the identifier and dimension lemma exist.
 22) Do not invent MechLib APIs or helper names. If uncertain, write direct algebraic equalities over binders.
 23) If typed MechLib modeling would require undocumented helper defs or `Quantity.cast`, back off to `Real`.
+24) Every nontrivial physical claim must be justified by either problem givens, definitions, or retrieved library theorems.
+25) `fact_sources` must align with `supporting_facts`; use `problem`, `definition`, or `mechlib:<theorem_name>`.
+26) `library_symbols_used` must only contain theorem/symbol names that appear in retrieved context.
 
 ProblemIR:
 {{problem_ir_json}}
@@ -221,28 +240,44 @@ Return exactly 4 candidates:
       "lean_header":"...",
       "theorem_decl":"theorem ... : ...",
       "assumptions":[],
-      "plan":"short revision plan"
+      "plan":"short revision plan",
+      "supporting_facts":["..."],
+      "fact_sources":["problem","mechlib:SomeTheorem"],
+      "library_symbols_used":["SomeTheorem"],
+      "grounding_explanation":"why the revised statement is justified"
     },
     {
       "candidate_id":"c2",
       "lean_header":"...",
       "theorem_decl":"theorem ... : ...",
       "assumptions":[],
-      "plan":"short revision plan"
+      "plan":"short revision plan",
+      "supporting_facts":["..."],
+      "fact_sources":["problem"],
+      "library_symbols_used":[],
+      "grounding_explanation":"why the revised statement is justified"
     },
     {
       "candidate_id":"c3",
       "lean_header":"...",
       "theorem_decl":"theorem ... : ...",
       "assumptions":[],
-      "plan":"short revision plan"
+      "plan":"short revision plan",
+      "supporting_facts":["..."],
+      "fact_sources":["problem"],
+      "library_symbols_used":[],
+      "grounding_explanation":"why the revised statement is justified"
     },
     {
       "candidate_id":"c4",
       "lean_header":"...",
       "theorem_decl":"theorem ... : ...",
       "assumptions":[],
-      "plan":"short revision plan"
+      "plan":"short revision plan",
+      "supporting_facts":["..."],
+      "fact_sources":["problem"],
+      "library_symbols_used":[],
+      "grounding_explanation":"why the revised statement is justified"
     }
   ]
 }
@@ -257,6 +292,8 @@ Revision rules:
 7) If typed MechLib modeling is causing failures, switch to `Real`.
 8) Never output proof bodies.
 9) Keep output fully valid JSON.
+10) Use structured feedback to remove unsupported claims and unresolved library references.
+11) Every nontrivial physical claim must have a source in `supporting_facts` / `fact_sources`.
 
 ProblemIR:
 {{problem_ir_json}}
@@ -389,6 +426,57 @@ def _extract_context_symbols(mechlib_context: str) -> set[str]:
     return symbols
 
 
+def _extract_context_theorem_names(mechlib_context: str) -> set[str]:
+    names: set[str] = set()
+    for match in re.finditer(r"theorem_name=([A-Za-z_][A-Za-z0-9_']*)", mechlib_context or ""):
+        names.add(match.group(1))
+    return names
+
+
+def _normalize_text_list(value: object) -> list[str]:
+    if isinstance(value, str):
+        text = str(value).strip()
+        return [text] if text else []
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = normalize_lean_text(str(item or "").strip())
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _normalize_library_symbol_list(value: object) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in _normalize_text_list(value):
+        symbol = lean_ident(item, prefix="sym")
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        out.append(symbol)
+    return out
+
+
+def _unsupported_fact_sources(fact_sources: list[str], mechlib_context: str) -> list[str]:
+    if not fact_sources:
+        return []
+    known_refs = _extract_context_symbols(mechlib_context) | _extract_context_theorem_names(mechlib_context)
+    unsupported: list[str] = []
+    for source in fact_sources:
+        lowered = source.strip()
+        if not lowered.lower().startswith("mechlib:"):
+            continue
+        ref = lowered.split(":", 1)[1].strip()
+        if ref and ref not in known_refs:
+            unsupported.append(f"unsupported_fact_source:{ref}")
+    return unsupported
+
+
 def _normalize_library_target(raw: str | None) -> str:
     value = (raw or "mechlib").strip().lower()
     if value in {"mechlib", "physlean", "auto"}:
@@ -497,6 +585,7 @@ def _looks_like_unknown_prefix_application(token: str, text: str) -> bool:
 
 def _find_unknown_library_symbols(text: str, mechlib_context: str) -> list[str]:
     known = _extract_context_symbols(mechlib_context)
+    known.update(_extract_context_theorem_names(mechlib_context))
     known.update(TYPED_MECHLIB_TYPES)
     known.update(LEAN_CORE_TOKENS)
     known.update(SAFE_FUNCTION_TOKENS)
@@ -509,6 +598,32 @@ def _find_unknown_library_symbols(text: str, mechlib_context: str) -> list[str]:
             continue
         unknown.add(token)
     return sorted(unknown)
+
+
+def _infer_unsupported_claims(
+    *,
+    theorem_decl: str,
+    fact_sources: list[str],
+    library_symbols_used: list[str],
+    mechlib_context: str,
+    library_target: str,
+) -> list[str]:
+    unsupported: list[str] = []
+    known_refs = _extract_context_symbols(mechlib_context) | _extract_context_theorem_names(mechlib_context)
+    for source in _unsupported_fact_sources(fact_sources, mechlib_context):
+        if source not in unsupported:
+            unsupported.append(source)
+    for symbol in library_symbols_used:
+        if known_refs and symbol not in known_refs:
+            tag = f"unsupported_library_symbol:{symbol}"
+            if tag not in unsupported:
+                unsupported.append(tag)
+    if library_target == "mechlib":
+        for symbol in _find_unknown_library_symbols(theorem_decl, mechlib_context):
+            tag = f"unknown_library_symbol_in_decl:{symbol}"
+            if tag not in unsupported:
+                unsupported.append(tag)
+    return unsupported
 
 
 def _strip_quantity_casts(text: str) -> str:
@@ -739,6 +854,11 @@ class ModuleB:
                 "theorem_decl": c.theorem_decl,
                 "assumptions": c.assumptions,
                 "plan": c.plan,
+                "supporting_facts": c.supporting_facts,
+                "fact_sources": c.fact_sources,
+                "library_symbols_used": c.library_symbols_used,
+                "grounding_explanation": c.grounding_explanation,
+                "unsupported_claims": c.unsupported_claims,
                 "round_index": c.round_index,
             }
             for c in (previous_candidates or [])
@@ -816,8 +936,20 @@ class ModuleB:
                 "theorem_decl": decl,
                 "assumptions": [str(x) for x in assumptions] if isinstance(assumptions, list) else [],
                 "plan": str(item.get("plan") or "").strip() or None,
+                "supporting_facts": _normalize_text_list(item.get("supporting_facts")),
+                "fact_sources": _normalize_text_list(item.get("fact_sources")),
+                "library_symbols_used": _normalize_library_symbol_list(item.get("library_symbols_used")),
+                "grounding_explanation": normalize_lean_text(str(item.get("grounding_explanation") or "").strip())
+                or None,
                 "target": target,
             }
+            prepared_item["unsupported_claims"] = _infer_unsupported_claims(
+                theorem_decl=str(decl or ""),
+                fact_sources=list(prepared_item["fact_sources"]),
+                library_symbols_used=list(prepared_item["library_symbols_used"]),
+                mechlib_context=mechlib_context,
+                library_target=target,
+            )
             prepared.append(prepared_item)
 
         out: list[StatementCandidate] = []
@@ -838,6 +970,17 @@ class ModuleB:
                     theorem_decl=decl,
                     assumptions=assumptions,
                     plan=plan,
+                    supporting_facts=list(item["supporting_facts"]) if isinstance(item["supporting_facts"], list) else [],
+                    fact_sources=list(item["fact_sources"]) if isinstance(item["fact_sources"], list) else [],
+                    library_symbols_used=(
+                        list(item["library_symbols_used"]) if isinstance(item["library_symbols_used"], list) else []
+                    ),
+                    grounding_explanation=(
+                        str(item["grounding_explanation"]) if item.get("grounding_explanation") else None
+                    ),
+                    unsupported_claims=(
+                        list(item["unsupported_claims"]) if isinstance(item["unsupported_claims"], list) else []
+                    ),
                     parse_ok=parse_ok,
                     raw_response=raw,
                     error=error,

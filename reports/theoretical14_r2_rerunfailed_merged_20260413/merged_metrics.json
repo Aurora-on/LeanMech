@@ -1,0 +1,23 @@
+{
+  "num_total_samples": 14,
+  "grounding_success_rate": 0.857143,
+  "statement_generation_success_rate": 0.857143,
+  "lean_compile_success_rate": 1.0,
+  "semantic_consistency_pass_rate": 0.833333,
+  "proof_success_rate": 0.416667,
+  "end_to_end_verified_solve_rate": 0.357143,
+  "mechlib_header_rate": 1.0,
+  "mechlib_compile_pass_rate": 0.886364,
+  "selected_mechlib_candidate_rate": 1.0,
+  "statement_mechlib_usage_rate": 0.113636,
+  "selected_statement_mechlib_usage_rate": 0.0,
+  "proof_mechlib_usage_rate": 0.2,
+  "library_grounded_selection_rate": 0.0,
+  "feedback_loop_used_rate": 0.5,
+  "error_type_distribution": {
+    "proof_search_failure": 4,
+    "semantic_drift": 2,
+    "wrong_target_extraction": 2,
+    "proof_generation_failure": 1
+  }
+}

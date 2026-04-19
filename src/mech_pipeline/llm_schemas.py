@@ -32,6 +32,10 @@ class StatementCandidatePayload(BasePayloadModel):
     theorem_decl: str | None = None
     assumptions: list[Any] = Field(default_factory=list)
     plan: str | None = None
+    supporting_facts: list[Any] = Field(default_factory=list)
+    fact_sources: list[Any] = Field(default_factory=list)
+    library_symbols_used: list[Any] = Field(default_factory=list)
+    grounding_explanation: str | None = None
 
 
 class StatementCandidatesPayload(BasePayloadModel):
@@ -89,3 +93,19 @@ class ProofPayload(BasePayloadModel):
     subgoals: list[str] = Field(default_factory=list)
     fix_notes: list[str] = Field(default_factory=list)
     plan: str | None = None
+
+
+class ProofPlanPayload(BasePayloadModel):
+    plan: str | None = None
+    theorems_to_apply: list[str] = Field(default_factory=list)
+    givens_to_use: list[str] = Field(default_factory=list)
+    intermediate_claims: list[str] = Field(default_factory=list)
+    algebraic_cleanup_only: bool = False
+    used_facts: list[str] = Field(default_factory=list)
+
+
+class DirectFormalizationPayload(BasePayloadModel):
+    theorem_decl: str = ""
+    proof_body: str | None = None
+    plan: str | None = None
+    used_facts: list[str] = Field(default_factory=list)

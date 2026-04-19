@@ -1,7 +1,6 @@
 __TASK_B_GENERATE_STATEMENTS__
 You are a Lean4 statement generator for mechanics formalization.
 
-First learn the library context, then generate declarations.
 Output JSON only.
 
 Target library policy:
@@ -17,28 +16,11 @@ Return exactly 4 candidates:
       "lean_header": "...",
       "theorem_decl": "theorem ... : ...",
       "assumptions": [],
-      "plan": "short modeling plan"
-    },
-    {
-      "candidate_id": "c2",
-      "lean_header": "...",
-      "theorem_decl": "theorem ... : ...",
-      "assumptions": [],
-      "plan": "short modeling plan"
-    },
-    {
-      "candidate_id": "c3",
-      "lean_header": "...",
-      "theorem_decl": "theorem ... : ...",
-      "assumptions": [],
-      "plan": "short modeling plan"
-    },
-    {
-      "candidate_id": "c4",
-      "lean_header": "...",
-      "theorem_decl": "theorem ... : ...",
-      "assumptions": [],
-      "plan": "short modeling plan"
+      "plan": "short modeling plan",
+      "supporting_facts": ["..."],
+      "fact_sources": ["problem", "mechlib:SomeTheorem"],
+      "library_symbols_used": ["SomeTheorem"],
+      "grounding_explanation": "why the statement is justified"
     }
   ]
 }
@@ -46,30 +28,15 @@ Return exactly 4 candidates:
 Hard constraints:
 1. No proof body; never output `:= by`.
 2. Reject trivial targets (`True`, `False`, `Prop`, `x = x`, `1 = 1`).
-3. Reject assumption-replay goals: do not output theorems whose conclusion is just an assumption restated or symmetry-flipped, such as `h : x = y ⊢ y = x`.
+3. Reject assumption-replay goals: do not output theorems whose conclusion is just an assumption restated or symmetry-flipped.
 4. Keep unknown_target, known_quantities, constraints, and physical_laws aligned with ProblemIR.
-5. Read "Domain Summary Context" first, then generate theorem declarations.
-6. Reject law drift (for example Newton-force equations for pure kinematics).
-7. Stay inside the selected domain tags in the context; do not mix unrelated mechanics domains.
-8. Prefer symbol naming and theorem semantics that are consistent with MechLib domain summary entries.
-9. Use domain context as modeling guidance; do not copy any theorem declaration verbatim.
-10. Prefer MechLib typed quantities (Mass, Force, Acceleration, Length, Time) only when algebra stays type-safe.
-11. If you need division of physical quantities (e.g., m2 / (m1 + m2)) or nonzero assumptions, switch to `Real` modeling for that candidate.
-12. Do not use `!=` in theorem propositions; use `≠` or `Not (...)`.
-13. Avoid `Quantity.cast` unless you are certain identifiers and dimension lemmas exist in MechLib.
-14. Use readable multiline declaration format:
-   theorem name
-     (arg1 : Type)
-     (arg2 : Type)
-     ...
-     : goal
-15. Use one binder per line with 2-space indentation.
-16. Use meaningful variable/hypothesis names.
-17. If library_target is `mechlib`, do not import PhysLean.
-18. If library_target is `physlean`, do not import MechLib.
-19. Keep output fully valid JSON.
-20. Do not invent MechLib APIs or helper names. If uncertain, write direct algebraic equalities over binders.
-21. If typed MechLib modeling would require undocumented helper defs or `Quantity.cast`, back off to `Real`.
+5. Reject law drift and stay inside the selected mechanics domain.
+6. Every nontrivial physical claim must be justified by problem givens, definitions, or retrieved MechLib theorems.
+7. `fact_sources` must align with `supporting_facts`; use only `problem`, `definition`, or `mechlib:<theorem_name>`.
+8. `library_symbols_used` may contain only theorem or symbol names that actually appear in retrieved context.
+9. Do not invent MechLib APIs or helper names. If uncertain, write direct algebraic equalities over binders.
+10. If typed MechLib modeling would require undocumented helper definitions or unstable `Quantity.cast` usage, back off to `Real`.
+11. Keep output fully valid JSON.
 
 ProblemIR:
 {{problem_ir_json}}

@@ -449,3 +449,165 @@ def test_semantic_rank_does_not_mark_not_tautology_as_trivial_goal(tmp_path: Pat
     row = rank.ranking[0]
     assert row["sub_error_type"] is None
     assert rank.semantic_pass is True
+
+
+def test_semantic_rank_allows_implicit_function_target_when_other_semantics_align(tmp_path: Path) -> None:
+    prompt = tmp_path / "D_semantic_rank.txt"
+    prompt.write_text("__TASK_D_SEMANTIC_RANK__", encoding="utf-8")
+    payload = """
+    {
+      "results": [
+        {
+          "candidate_id": "c1",
+          "back_translation": "The derivative of the position function is 6t - 2.",
+          "semantic_score": 0.98,
+          "semantic_pass": true,
+          "target_relation": "equivalent",
+          "reason": "This gives the instantaneous velocity through the derivative of position.",
+          "failure_summary": "",
+          "failure_tags": [],
+          "mismatch_fields": [],
+          "missing_or_incorrect_translations": [],
+          "suggested_fix_direction": "Restate the conclusion explicitly as v(t) = 6t - 2."
+        }
+      ]
+    }
+    """
+    mod = ModuleD(model_client=DetailedSemanticLLM(payload), prompt_path=prompt, pass_threshold=0.7)
+
+    grounding = GroundingResult(
+        sample_id="s7",
+        model_id="m",
+        problem_ir={
+            "unknown_target": {"name": "instantaneous_velocity_function", "symbol": "v(t)"},
+            "goal_statement": "Find the instantaneous velocity as a function of time.",
+            "known_quantities": [{"symbol": "x(t)"}, {"symbol": "t"}],
+            "physical_laws": ["Kinematics"],
+            "assumptions": ["x(t) is differentiable"],
+        },
+        parse_ok=True,
+        raw_response="",
+        error=None,
+    )
+    candidates = [
+        StatementCandidate(
+            sample_id="s7",
+            candidate_id="c1",
+            lean_header="import PhysLean",
+            theorem_decl="theorem c1 (t : Real) : deriv (fun τ : Real => 3 * τ^2 - 2 * τ) t = 6 * t - 2",
+        )
+    ]
+    compile_rows = [
+        CompileCheckResult(
+            sample_id="s7",
+            candidate_id="c1",
+            compile_pass=True,
+            syntax_ok=True,
+            elaboration_ok=True,
+            error_type=None,
+            stderr_digest="",
+            log_path=None,
+        )
+    ]
+
+    rank = mod.run(grounding, candidates, compile_rows, problem_text="Find the instantaneous velocity as a function of time.")
+    row = rank.ranking[0]
+    assert rank.semantic_pass is True
+    assert row["target_relation"] == "equivalent"
+    assert row["target_symbol_match"] == 0.0
+    assert "target_not_explicit" not in row["hard_gate_reasons"]
+    assert row["sub_error_type"] is None
+
+
+def test_semantic_rank_prefers_library_grounded_candidate_over_pure_algebraic_variant(tmp_path: Path) -> None:
+    prompt = tmp_path / "D_semantic_rank.txt"
+    prompt.write_text("__TASK_D_SEMANTIC_RANK__", encoding="utf-8")
+    payload = """
+    {
+      "results": [
+        {
+          "candidate_id": "c1",
+          "back_translation": "Uses Newton second law to solve for acceleration.",
+          "semantic_score": 0.9,
+          "semantic_pass": true,
+          "target_relation": "exact",
+          "reason": "Aligned with the target and law."
+        },
+        {
+          "candidate_id": "c2",
+          "back_translation": "Gives the same algebraic result a = F / m.",
+          "semantic_score": 0.9,
+          "semantic_pass": true,
+          "target_relation": "exact",
+          "reason": "Aligned with the target but stated as a pure algebraic result."
+        }
+      ]
+    }
+    """
+    mod = ModuleD(model_client=DetailedSemanticLLM(payload), prompt_path=prompt, pass_threshold=0.7)
+
+    grounding = GroundingResult(
+        sample_id="s8",
+        model_id="m",
+        problem_ir={
+            "unknown_target": {"symbol": "a", "description": "acceleration"},
+            "known_quantities": [{"symbol": "F"}, {"symbol": "m"}],
+            "physical_laws": ["NewtonSecondLaw"],
+            "goal_statement": "Use Newton's second law to find acceleration.",
+        },
+        parse_ok=True,
+        raw_response="",
+        error=None,
+    )
+    candidates = [
+        StatementCandidate(
+            sample_id="s8",
+            candidate_id="c1",
+            lean_header="import MechLib",
+            theorem_decl="theorem c1 (F m a : Real) (hm : m 鈮?0) (h : F = m * a) : a = F / m",
+            library_symbols_used=["NewtonSecondLaw"],
+            supporting_facts=["Newton second law"],
+            fact_sources=["problem", "mechlib:NewtonSecondLaw"],
+        ),
+        StatementCandidate(
+            sample_id="s8",
+            candidate_id="c2",
+            lean_header="import MechLib",
+            theorem_decl="theorem c2 (F m a : Real) (hm : m 鈮?0) (h : F = m * a) : a = F / m",
+        ),
+    ]
+    compile_rows = [
+        CompileCheckResult(
+            sample_id="s8",
+            candidate_id="c1",
+            compile_pass=True,
+            syntax_ok=True,
+            elaboration_ok=True,
+            error_type=None,
+            stderr_digest="",
+            log_path=None,
+        ),
+        CompileCheckResult(
+            sample_id="s8",
+            candidate_id="c2",
+            compile_pass=True,
+            syntax_ok=True,
+            elaboration_ok=True,
+            error_type=None,
+            stderr_digest="",
+            log_path=None,
+        ),
+    ]
+
+    rank = mod.run(
+        grounding,
+        candidates,
+        compile_rows,
+        problem_text="Use Newton's second law to compute acceleration.",
+        mechlib_context="Law-Matched Declarations:\n[1] theorem_name=NewtonSecondLaw symbol=NewtonSecondLaw score=1.0",
+    )
+    row_c1 = next(x for x in rank.ranking if x["candidate_id"] == "c1")
+    row_c2 = next(x for x in rank.ranking if x["candidate_id"] == "c2")
+
+    assert row_c1["library_grounding_score"] > row_c2["library_grounding_score"]
+    assert rank.selected_candidate_id == "c1"

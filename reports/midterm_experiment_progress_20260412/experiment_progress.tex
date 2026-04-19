@@ -1,0 +1,355 @@
+\documentclass[12pt,a4paper]{ctexart}
+
+\usepackage[a4paper,margin=2.5cm]{geometry}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{caption}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{setspace}
+\usepackage{tabularx}
+\usepackage{titlesec}
+
+\hypersetup{hidelinks}
+\setstretch{1.35}
+\emergencystretch=2em
+\setcounter{tocdepth}{3}
+\setcounter{secnumdepth}{3}
+
+\titleformat{\section}{\heiti\zihao{-3}}{\thesection}{1em}{}
+\titleformat{\subsection}{\heiti\zihao{4}}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}{\heiti\zihao{-4}}{\thesubsubsection}{1em}{}
+
+\captionsetup[table]{skip=6pt}
+\newfontfamily\codefont{Consolas}
+
+\lstdefinestyle{lean}{
+    basicstyle=\codefont\small,
+    columns=fullflexible,
+    keepspaces=true,
+    breaklines=true,
+    showstringspaces=false,
+    frame=single,
+    rulecolor=\color{black!30},
+    framerule=0.4pt,
+    xleftmargin=0.5em,
+    aboveskip=8pt,
+    belowskip=8pt,
+    captionpos=b,
+    literate=
+        {≠}{{$\neq$}}1
+        {∧}{{$\wedge$}}1
+        {·}{{$\cdot$}}1
+        {μ}{{$\mu$}}1
+        {π}{{$\pi$}}1
+        {θ}{{$\theta$}}1
+        {α}{{$\alpha$}}1
+}
+
+\begin{document}
+
+\begin{center}
+    {\zihao{3}\heiti 中期报告工作进展：实验部分}
+\end{center}
+
+\section{实验工作进展}
+
+\subsection{实验目的与评价思路}
+
+中期阶段实验的核心目标，并非单纯追求更高的单次数值结果，而是围绕以下三个问题建立可复现实证依据：第一，当前自动形式化流水线在标准力学 benchmark 上是否已经具备稳定运行能力；第二，系统在理论力学专题样本上的适用范围和主要瓶颈分别位于何处；第三，知识检索与分阶段流水线设计是否相较于简单对照方案具有实际价值。基于这一目标，当前实验设计强调“真实 API 调用、真实 Lean 环境验证、阶段结果全量归档”三项原则，从而保证实验结论能够被追溯、比较和复查。
+
+在评价口径上，中期阶段沿用分阶段成功率统计方法，分别记录结构化理解、命题生成、Lean 编译、语义一致性、证明成功以及端到端验证成功等指标。对于直接 theorem 基线，则以“形式化成功率”表示其在编译检查和语义检查双重约束下的通过比例，而不与完整流水线的端到端成功率作未经说明的简单混同比较。这样的评价方式能够更准确地反映系统在不同环节上的能力边界，并为后续改进提供明确指向。
+
+\subsection{实验设置}
+
+\subsubsection{数据集与任务设置}
+
+中期阶段已完成的主要实验使用了两类数据集。
+
+\paragraph{（1）标准力学 benchmark。}
+第一类是 \texttt{LeanPhysBench} 中的 \texttt{mechanics} 子集，共 101 题。该数据集用于评估系统在较大规模、较多题型条件下的整体稳定性和端到端能力，是当前阶段最主要的综合测试集。
+
+\paragraph{（2）理论力学专题样本集。}
+第二类是自建的 14 题理论力学样本集，覆盖动量定理、动能定理、角动量定理、动量矩定理、达朗贝尔原理、拉格朗日方程和机械振动基础等主题。该数据集规模较小，但主题集中、结构清晰，更适合观察当前系统在理论力学方向的适应能力和失败模式。
+
+\subsubsection{系统设置与实验类型}
+
+围绕上述数据集，中期阶段已经完成三类实验。
+
+\begin{enumerate}
+    \item \textbf{完整流水线实验}：使用主流程对题目执行结构化理解、候选命题生成、编译检查、语义排序和证明验证，得到端到端结果。
+    \item \textbf{MechLib 检索消融实验}：保留运行环境不变，仅关闭检索注入，用于区分“知识环境存在”与“知识上下文参与”对结果的影响。
+    \item \textbf{直接形式化基线实验}：绕开主流程中的分阶段候选构造与证明修复机制，直接生成 theorem 候选，并仅进行编译与语义检查，用于验证分阶段流水线设计的必要性。
+\end{enumerate}
+
+从实验环境上看，中期阶段的主要正式实验均基于真实 API 和真实 Lean 环境完成，而非离线 mock 或人工修正结果。这一点使得当前实验结论能够较为真实地反映系统在实际运行条件下的性能上限与工程边界。
+
+\subsection{完整流水线实验结果}
+
+\subsubsection{101 题标准力学 benchmark 结果}
+
+在 101 题 \texttt{mechanics} 全量测试中，主流水线已完成一次正式运行。其主要指标如表~\ref{tab:main-101} 所示。
+
+\begin{table}[htbp]
+    \centering
+    \caption{101 题标准力学 benchmark 正式结果}
+    \label{tab:main-101}
+    \begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}X >{\centering\arraybackslash}p{3cm}}
+        \toprule
+        指标 & 数值 \\
+        \midrule
+        样本总数 & 101 \\
+        结构化理解成功率 & 0.970297 \\
+        命题生成成功率 & 0.960396 \\
+        Lean 编译通过率 & 0.886427 \\
+        语义一致性通过率 & 0.765957 \\
+        证明成功率 & 0.428571 \\
+        端到端验证成功率 & 0.415842 \\
+        反馈闭环触发率 & 0.584158 \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+从该结果可以得到两个直接结论。首先，当前流水线已经能够在百题量级 benchmark 上稳定运行，且在编译层面和语义层面均取得较高通过率，这说明前半段自动形式化链路已经基本打通。其次，端到端成功率为 41.5842\%，明显低于语义一致性通过率，说明当前系统的主瓶颈已经从早期的命题构造问题逐步转移到证明阶段。
+
+进一步观察最终失败分布可以发现，该次运行中主要错误类型包括 \texttt{proof\_search\_failure} 30 题、\texttt{semantic\_drift} 22 题、\texttt{elaboration\_failure} 3 题、\texttt{wrong\_target\_extraction} 3 题以及 \texttt{statement\_generation\_parse\_failed} 1 题。由此可见，当前系统的主要限制因素已不再是“完全无法形成 Lean 命题”，而是“命题虽大体正确，但仍难以稳定进入最终证明成功状态”。
+
+\subsubsection{14 题理论力学专题结果}
+
+在理论力学 14 题专题样本上，主流水线也已完成正式运行，其主要结果如表~\ref{tab:main-14} 所示。
+
+\begin{table}[htbp]
+    \centering
+    \caption{14 题理论力学专题样本正式结果}
+    \label{tab:main-14}
+    \begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}X >{\centering\arraybackslash}p{3cm}}
+        \toprule
+        指标 & 数值 \\
+        \midrule
+        样本总数 & 14 \\
+        结构化理解成功率 & 0.928571 \\
+        命题生成成功率 & 0.928571 \\
+        Lean 编译通过率 & 0.884615 \\
+        语义一致性通过率 & 0.923077 \\
+        证明成功率 & 0.384615 \\
+        端到端验证成功率 & 0.357143 \\
+        反馈闭环触发率 & 0.500000 \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+这一结果表明，当前系统已经具有初步处理理论力学题目的能力，但该能力仍明显不稳定。一方面，编译通过率和语义通过率均处于较高水平，说明系统在理论力学样本上并非完全失效；另一方面，最终端到端成功率仅为 35.7143\%，且证明成功率显著低于语义一致性通过率，这说明理论力学方向的主要困难同样集中在证明阶段，而不是题目理解或命题外壳构造本身。
+
+\subsection{MechLib 检索消融实验结果}
+
+\subsubsection{101 题 benchmark 上的检索消融}
+
+为区分“知识环境可用”与“知识上下文被注入”之间的差异，中期阶段对 101 题 benchmark 进行了检索消融实验。该实验保留运行环境不变，仅关闭 MechLib 检索上下文，结果如表~\ref{tab:ablation-101} 所示。
+
+\begin{table}[htbp]
+    \centering
+    \caption{101 题 benchmark 检索消融结果}
+    \label{tab:ablation-101}
+    \begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}X >{\centering\arraybackslash}p{2.2cm} >{\centering\arraybackslash}p{2.2cm} >{\centering\arraybackslash}p{2.2cm}}
+        \toprule
+        指标 & 启用检索 & 关闭检索 & 差值 \\
+        \midrule
+        端到端验证成功率 & 0.415842 & 0.376238 & -0.039604 \\
+        证明成功率 & 0.428571 & 0.387755 & -0.040816 \\
+        语义一致性通过率 & 0.765957 & 0.757895 & -0.008062 \\
+        Lean 编译通过率 & 0.886427 & 0.870879 & -0.015548 \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+由此可以看出，在百题量级的标准 benchmark 上，检索上下文对最终结果具有一定正向作用。虽然这一收益尚不足以说明系统已经稳定复用了检索到的库定理，但至少能够表明知识上下文在建模偏置、语义引导和候选选择方面提供了实际帮助。
+
+\subsubsection{理论力学专题上的检索消融}
+
+在 14 题理论力学专题样本上，关闭检索前后的结果如表~\ref{tab:ablation-14} 所示。
+
+\begin{table}[htbp]
+    \centering
+    \caption{14 题理论力学专题检索消融结果}
+    \label{tab:ablation-14}
+    \begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}X >{\centering\arraybackslash}p{2.2cm} >{\centering\arraybackslash}p{2.2cm} >{\centering\arraybackslash}p{2.2cm}}
+        \toprule
+        指标 & 启用检索 & 关闭检索 & 差值 \\
+        \midrule
+        端到端验证成功率 & 0.357143 & 0.357143 & 0 \\
+        证明成功率 & 0.384615 & 0.454545 & +0.069930 \\
+        语义一致性通过率 & 0.923077 & 0.909091 & -0.013986 \\
+        Lean 编译通过率 & 0.884615 & 0.906977 & +0.022362 \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+这一结果说明，在当前理论力学样本集上，检索上下文尚未表现出稳定、显著的正向收益。其可能原因并不在于知识环境完全无效，而更可能在于：当前检索到的定理、生成候选、语义排序和证明策略之间尚未形成稳定闭环，导致知识注入尚未可靠地转化为最终 theorem 与 proof 中的显式定理复用。
+
+\subsection{直接形式化基线实验结果}
+
+为考察分阶段流水线设计的必要性，中期阶段还构建了“直接 theorem 生成”基线。该基线绕过主流程中的候选构造、反馈闭环和证明修复，仅直接生成形式化命题，并在编译和语义两层进行检查。其在 101 题标准力学 benchmark 上的结果如表~\ref{tab:baseline-101} 所示。
+
+\begin{table}[htbp]
+    \centering
+    \caption{101 题 benchmark 直接形式化基线结果}
+    \label{tab:baseline-101}
+    \begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}X >{\centering\arraybackslash}p{3cm}}
+        \toprule
+        指标 & 数值 \\
+        \midrule
+        样本总数 & 101 \\
+        结构化理解成功率 & 0.980198 \\
+        直接生成成功率 & 0.980198 \\
+        Lean 编译通过率 & 0.333333 \\
+        语义一致性通过率 & 0.393939 \\
+        形式化成功率 & 0.128713 \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+需要指出的是，该基线与完整流水线在评价口径上并不完全相同，因为其不包含后续证明阶段，因此这里的“形式化成功率”仅指候选在编译和语义两重约束下通过的比例。然而，即便在这一较为宽松的定义下，基线结果仍明显低于完整流水线前半段的表现。这说明当前主流程中分阶段的结构化理解、候选构造、编译筛选和语义排序并非冗余设计，而是对提高整体形式化质量具有实际必要性。
+
+\subsection{近期探索性实验}
+
+除正式 benchmark 与消融实验之外，中期阶段还围绕 B 阶段的依据化生成进行了小规模探索性验证。相关实验选择理论力学小样本中的前 4 题，目的是观察在命题生成阶段引入 few-shot 示例后，候选是否更倾向于显式引用理论库中的定理名称与支持事实。结果表明，候选生成的风格确有变化，模型开始更频繁地产生包含多个定理线索的候选。然而，这些改动尚未稳定传导到最终被选中的 theorem 和 proof 中，说明当前系统在“生成候选更像用库”与“最终结果真正复用库定理”之间仍存在明显断层。
+
+这一探索性实验虽然规模较小，尚不足以单独构成正式 benchmark 结论，但其方法学意义在于：它为后续改进提供了更明确的方向，即单纯扩大检索上下文并不足够，真正关键的是如何让“带依据的候选”在编译、排序和证明阶段持续保留下来。
+
+
+\subsection{代表性样例展示}
+
+为更直观地说明当前流水线在复杂题目上的实际表现，本节选取两道具有代表性的成功样例进行展示。选取标准主要包括：题目本身并非简单代入计算；最终 theorem 与 proof 具有较清晰的推导层次；能够较好地体现系统从题意到形式化结论的完整链路。需要说明的是，这两道样例均在 \texttt{MechLib} 后端环境下完成验证，但其最终成功仍主要依赖题干条件的结构化表达与可解释的代数推导，尚不能视为“稳定显式复用 MechLib 力学定理”的充分证据。
+
+\subsubsection{圆柱绕绳静力平衡问题}
+
+第一道样例选自标准力学 benchmark 中的 \texttt{competition\_mechanics\_Ch2\_Q1}。题目讨论一根均匀、无质量绳绕过固定圆柱，两端分别悬挂质量为 $M$ 和 $m$ 的重物，在静摩擦系数为 $\mu$ 的条件下，求使系统保持平衡所需的最小缠绕圈数 $n$。该题的难点不在于单步代入，而在于需要将几何关系、指数型平衡关系和对数变换联合起来，形成一条完整的数学推导链。
+
+流水线在该题上的最终选中命题可概括为：
+\[
+  n = \frac{\log(M/m)}{2\pi\mu},
+\]
+其中同时保留了包角关系 $\theta = 2\pi n$ 以及张力比关系
+\[
+  \frac{M}{m} = \exp(\mu \theta)
+\]
+作为关键前提。该命题在前两轮中分别经历了“无可编译候选”和“仅覆盖部分目标”的失败后，于第三轮被修正为与题意一致的完整 theorem，因而也体现了反馈闭环对复杂样例的实际价值。
+
+从证明过程看，系统生成的证明主线较为清晰：首先利用 $\theta = 2\pi n$ 将指数关系改写为关于 $n$ 的方程；随后对等式两边取对数，将指数关系转化为线性关系；最后利用分母非零条件完成除法化简，从而解出目标变量 $n$。这一证明过程不仅逻辑完整，而且与人工求解该题的标准数学推导高度一致，具有较强的可解释性。尽管该样例运行在 \texttt{MechLib} 环境中，证明中实际显式调用的核心对象主要仍是 \texttt{Real.log}、\texttt{Real.exp} 与 $\pi$ 的基本性质，因此它更适合作为“复杂题目上推导链完整、证明结构清晰”的展示样例。
+
+\begin{lstlisting}[style=lean,caption={圆柱绕绳静力平衡样例的完整 Lean 代码},label={lst:ch2q1-lean}]
+import MechLib
+open MechLib
+open MechLib.SI
+open MechLib.Mechanics
+
+theorem lean4phys_competition_mechanics_Ch2_Q1_c2_lean4phys_competition_mechanics_rope_cylinder_turns_c2
+  (M m mu theta n : Real)
+  (hM : M = 1000)
+  (hm : m = 10)
+  (hmu : mu = ((1 : Real) / 20))
+  (htheta : theta = 2 * Real.pi * n)
+  (hposM : 0 < M)
+  (hposm : 0 < m)
+  (hposmu : 0 < mu)
+  (hcapstan : M / m = Real.exp (mu * theta)) :
+  n = Real.log (M / m) / (2 * Real.pi * mu) := by
+  have hdivpos : 0 < M / m := by
+    exact div_pos hposM hposm
+  have hcapstan' : M / m = Real.exp ((2 * Real.pi * mu) * n) := by
+    rw [htheta] at hcapstan
+    have hmul : mu * (2 * Real.pi * n) = (2 * Real.pi * mu) * n := by
+      calc
+        mu * (2 * Real.pi * n) = (mu * (2 * Real.pi)) * n := by ring
+        _ = (2 * Real.pi * mu) * n := by ring
+    rw [hmul] at hcapstan
+    exact hcapstan
+  have hlog : Real.log (M / m) = (2 * Real.pi * mu) * n := by
+    have hlogeq := congrArg Real.log hcapstan'
+    rw [Real.log_exp] at hlogeq
+    exact hlogeq
+  have hdenom_ne : 2 * Real.pi * mu ≠ 0 := by
+    have htwo_pi_pos : 0 < 2 * Real.pi := by
+      have hpi : 0 < Real.pi := Real.pi_pos
+      positivity
+    have hdenom_pos : 0 < 2 * Real.pi * mu := by
+      exact mul_pos htwo_pi_pos hposmu
+    linarith
+  apply (eq_div_iff hdenom_ne).2
+  calc
+    n * (2 * Real.pi * mu) = (2 * Real.pi * mu) * n := by ring
+    _ = Real.log (M / m) := by exact hlog.symm
+\end{lstlisting}
+
+\subsubsection{达朗贝尔原理斜面双质点系统问题}
+
+第二道样例选自理论力学专题中的 \texttt{theoretical\_mechanics\_dalembert\_principle\_complex\_10}。题目给定粗糙斜面上的质点 $m_1$ 与悬挂质点 $m_2$ 通过轻绳和光滑滑轮相连，在已知系统加速度、斜面倾角和摩擦系数的条件下，要求依据达朗贝尔原理确定绳张力 $T$ 与法向反力 $N$。该题比基础力学中的单变量求解更复杂，因为它同时包含法向方向和沿斜面方向的两个平衡关系，并要求最终给出两个未知量的联合结论。
+
+流水线最终给出的 theorem 可以概括为如下合取形式：
+\[
+  N = m_1 g \cos \alpha
+  \quad \wedge \quad
+  T = m_1 a + m_1 g \sin \alpha + \mu\bigl(m_1 g \cos \alpha\bigr).
+\]
+这一结果并非在首轮即被正确选中。首轮候选仅覆盖了张力的显式表达式，因而被语义阶段判定为目标不完整；在失败样例重跑后，系统将候选修正为同时覆盖 $N$ 和 $T$ 的完整命题，并最终通过编译、语义筛选和证明验证。
+
+该题的证明结构尤其适合展示当前系统的可解释性。证明首先通过法向方向的平衡式直接推出
+\[
+  N = m_1 g \cos \alpha;
+\]
+随后将上述结果代回沿斜面方向的平衡式，得到
+\[
+ T = m_1 a + m_1 g \sin \alpha + \mu N,
+\]
+再进一步替换 $N$，即可得到最终的张力公式。整个证明采用“先求法向反力、再求绳张力、最后构造合取结论”的分步策略，与人工书写的解题过程高度一致，说明当前流水线在某些理论力学题目上已能够形成较自然的推导顺序与结果组织方式。与前一道样例类似，该题虽然在 \texttt{MechLib} 后端环境下通过验证，但最终成功主要依赖题干关系的正确保留与推导顺序的合理安排，而非对库中现成力学定理的稳定显式复用。这一现象也从反面说明，后续工作的关键仍在于进一步打通“检索到理论库内容”与“最终 theorem/proof 真正调用库定理”之间的链路。
+
+\begin{lstlisting}[style=lean,caption={达朗贝尔原理样例的完整 Lean 代码},label={lst:dalembert-lean}]
+import MechLib
+open MechLib
+open MechLib.SI
+open MechLib.Mechanics
+
+theorem lean4phys_theoretical_mechanics_dalembert_principle_complex_10_c2_lean4phys_theoretical_mechanics_dalembert_principle_complex_10_c2_full_system_with_m2_balance
+  (m1 m2 alpha mu a g T N : Real)
+  (h_m1_normal : N - m1 * g * Real.cos alpha = 0)
+  (h_m1_along : T - m1 * g * Real.sin alpha - mu * N - m1 * a = 0)
+  (h_m2 : m2 * g - T - m2 * a = 0) :
+  And (N = m1 * g * Real.cos alpha)
+      (T = m1 * a + m1 * g * Real.sin alpha + mu * (m1 * g * Real.cos alpha)) := by
+  constructor
+  · have hN : N = m1 * g * Real.cos alpha := by
+      have h := h_m1_normal
+      linarith
+    exact hN
+  · have hN : N = m1 * g * Real.cos alpha := by
+      have h := h_m1_normal
+      linarith
+    have hT_with_N : T = m1 * a + m1 * g * Real.sin alpha + mu * N := by
+      have h := h_m1_along
+      linarith
+    calc
+      T = m1 * a + m1 * g * Real.sin alpha + mu * N := hT_with_N
+      _ = m1 * a + m1 * g * Real.sin alpha + mu * (m1 * g * Real.cos alpha) := by
+        rw [hN]
+\end{lstlisting}
+
+\subsection{阶段性实验认识}
+
+\subsubsection{主流水线已经具备稳定实验能力}
+
+从 101 题标准 benchmark 和 14 题理论力学专题实验可以看出，当前系统已经具备了在真实 API 和真实 Lean 环境下稳定完成中等规模乃至较大规模实验的能力。特别是 101 题全量实验说明，项目已经超出“少量样例验证”的早期原型阶段，进入到可以使用 benchmark 数据给出阶段性结论的研究状态。
+
+\subsubsection{当前主瓶颈已从编译转向语义与证明}
+
+实验结果显示，当前流水线前半段的编译通过率已相对较高，而端到端成功率与证明成功率之间仍存在明显差距。这表明当前最需要解决的问题，不再是“能否生成 Lean 壳层”，而是“能否生成真正对应题意且最终可证的形式化对象”。换言之，研究重点已经从命题外壳构造逐渐转向语义保持与证明规划。
+
+\subsubsection{知识检索具有一定价值，但其作用机制仍偏间接}
+
+检索消融结果说明，知识上下文对大规模 benchmark 具有一定正向作用，但收益幅度有限，且在理论力学专题上尚未形成稳定优势。这一现象意味着，当前检索模块更多地充当建模偏置和语义提示的来源，而尚未稳定转化为最终 theorem 与 proof 中的显式定理复用。后续实验应继续围绕这一问题展开更有针对性的验证。
+
+\subsection{小结}
+
+总体而言，中期阶段实验已经形成较完整的证据链条：完整流水线实验说明系统已具备在真实环境中稳定运行的能力；检索消融实验说明知识上下文具有一定实际价值，但作用仍偏间接；直接形式化基线实验则从反面证明了分阶段流水线设计的必要性。由此可以得出一个较为稳妥的中期结论：\emph{当前系统已经建立起可复现、可比较、可诊断的实验框架，并在标准力学 benchmark 上取得了具有研究意义的阶段性结果；但在理论力学样本、知识复用和证明阶段方面，仍存在明确且尚未解决的能力瓶颈。}
+
+\end{document}

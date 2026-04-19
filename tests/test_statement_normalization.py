@@ -337,3 +337,37 @@ def test_statement_revision_prompt_includes_previous_candidates_and_feedback(tmp
     assert "unknown_constant" in client.last_prompt
     assert 'candidate_id": "c1"' in client.last_prompt
     assert "context-text" in client.last_prompt
+
+
+def test_statement_preserves_grounding_metadata_and_marks_unsupported_library_refs(tmp_path: Path) -> None:
+    prompt = tmp_path / "B_generate_statements.txt"
+    prompt.write_text("__TASK_B_GENERATE_STATEMENTS__", encoding="utf-8")
+    payload = """
+    {
+      "candidates": [
+        {
+          "candidate_id": "c1",
+          "lean_header": "import MechLib",
+          "theorem_decl": "theorem usable_candidate (F m a : Real) (hm : m 鈮?0) (h : F = m * a) : a = F / m",
+          "assumptions": [],
+          "plan": "test",
+          "supporting_facts": ["Newton second law"],
+          "fact_sources": ["problem", "mechlib:UnknownTheorem"],
+          "library_symbols_used": ["UnknownTheorem"],
+          "grounding_explanation": "Uses an unsupported theorem name."
+        }
+      ]
+    }
+    """
+
+    out = ModuleB(StaticStatementClient(payload), prompt).run(
+        _grounding("s7"),
+        mechlib_context="Law-Matched Declarations:\n[1] theorem_name=NewtonSecondLaw symbol=NewtonSecondLaw score=1.0",
+    )
+
+    assert len(out) == 1
+    assert out[0].supporting_facts == ["Newton second law"]
+    assert out[0].fact_sources == ["problem", "mechlib:UnknownTheorem"]
+    assert out[0].library_symbols_used == ["UnknownTheorem"]
+    assert "unsupported_fact_source:UnknownTheorem" in out[0].unsupported_claims
+    assert "unsupported_library_symbol:UnknownTheorem" in out[0].unsupported_claims

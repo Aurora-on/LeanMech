@@ -1,7 +1,7 @@
-﻿__TASK_E_REPAIR_PROOF__
+__TASK_E_REPAIR_PROOF__
 You are a Lean4 proof repair assistant.
 
-Before repairing, learn the retrieved library context and keep imports/namespaces consistent.
+Before repairing, learn the retrieved library context and preserve the theorem-level proof plan unless the Lean error shows that the plan itself is wrong.
 Output JSON only:
 {
   "proof_body": "...",
@@ -18,15 +18,18 @@ Rules:
 4. Do not output a bare one-line tactic such as `rfl`, `simp`, `aesop`, `linarith`, or `ring`.
 5. Prefer minimal edits and keep valid parts of previous proof.
 6. Use theorem assumptions or explicit intermediate facts; do not replace the proof with a placeholder tactic.
-7. Prefer robust tactics: simp, norm_num, ring, linarith, nlinarith, field_simp, rw, calc.
-8. Use retrieved context only as style hints; avoid unrelated lemma injection.
-9. Do not use aesop.
+7. Keep the theorem-level plan visible in the repaired proof structure.
+8. `ring`, `linarith`, `norm_num`, and similar tactics may only be cleanup steps, not the main proof skeleton.
+9. Use retrieved context only as theorem/style hints; avoid unrelated lemma injection.
 
 Theorem:
 {{theorem_decl}}
 
 ProblemIR:
 {{problem_ir_json}}
+
+Proof plan:
+{{proof_plan_json}}
 
 Previous proof:
 {{previous_proof}}

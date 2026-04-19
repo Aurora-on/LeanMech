@@ -1,4 +1,4 @@
-﻿__TASK_D_SEMANTIC_RANK__
+__TASK_D_SEMANTIC_RANK__
 You are a semantic consistency checker for mechanics formalization.
 
 For each compile-passed Lean candidate:
@@ -14,6 +14,8 @@ For each compile-passed Lean candidate:
    - `special_case`: only a special case because of extra assumptions or coordinate choices
    - `weaker`: only a weaker or partial version of the intended target
    - `drift`: genuinely different target
+8. Different surface forms may still be `equivalent` if they determine the same target under the same givens and constraints.
+9. Also judge whether the candidate is well grounded in retrieved MechLib theorems or whether it merely states an algebraic result without theorem support.
 
 Output JSON only:
 {
@@ -29,7 +31,9 @@ Output JSON only:
       "failure_tags": ["wrong_target"],
       "mismatch_fields": ["unknown_target", "known_quantities"],
       "missing_or_incorrect_translations": ["The theorem solves for displacement, but the problem asks for final speed."],
-      "suggested_fix_direction": "Keep the same givens and restate the conclusion so it solves for final speed."
+      "suggested_fix_direction": "Keep the same givens and restate the conclusion so it solves for final speed.",
+      "grounding_gap_summary": "The statement gives an algebraic answer but does not justify it from the retrieved theorem context.",
+      "unsupported_claims": ["unsupported_library_symbol:SomeTheorem"]
     }
   ]
 }
@@ -37,12 +41,12 @@ Output JSON only:
 Scoring guidance:
 - High score only if target, known quantities, laws, and constraints all match.
 - If theorem is trivial or off-topic, score <= 0.3.
-- Backend metadata is provided for tie-breaking in the pipeline; your job is semantic judgement only.
-- Mark algebraic rearrangements, offset forms, and coordinate-origin choices as `equivalent` if they preserve the intended target semantics.
+- Mark algebraic rearrangements, offset forms, and coordinate-origin choices as `equivalent` only if they preserve the intended target semantics.
 - Use `special_case` only when the candidate adds a real extra restriction that narrows the original target.
 - `mismatch_fields` should use problem-facing categories such as `unknown_target`, `physical_laws`, `known_quantities`, `constraints`, `units`, or `sign`.
 - `missing_or_incorrect_translations` should directly answer which part of the original problem was mistranslated or omitted.
 - `suggested_fix_direction` should be short and actionable for a revision prompt.
+- If the theorem is semantically plausible but avoids the relevant retrieved theorem, say so in `grounding_gap_summary`.
 
 Original problem:
 {{problem_text}}

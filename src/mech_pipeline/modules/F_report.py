@@ -16,6 +16,9 @@ class ModuleF:
         compile_rows: list[CompileCheckResult],
         semantic_rows: list[SemanticRankResult],
         proof_rows: list[ProofCheckResult],
+        retrieval_rows: list[dict[str, Any]] | None = None,
+        proof_attempt_rows: list[dict[str, Any]] | None = None,
+        run_metadata: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], str]:
         metrics = build_metrics(
             summaries=summaries,
@@ -24,6 +27,8 @@ class ModuleF:
             compile_rows=compile_rows,
             semantic_rows=semantic_rows,
             proof_rows=proof_rows,
+            retrieval_rows=retrieval_rows,
+            proof_attempt_rows=proof_attempt_rows,
         )
 
         counter: Counter[str] = Counter()
@@ -43,9 +48,30 @@ class ModuleF:
         failed_ids = [s.sample_id for s in summaries if not s.end_to_end_ok][:10]
         feedback_loop_used = sum(1 for s in summaries if s.feedback_loop_used)
         feedback_loop_success = sum(1 for s in summaries if s.feedback_loop_used and s.end_to_end_ok)
+        compile_sub_counter: Counter[str] = Counter()
+        proof_sub_counter: Counter[str] = Counter()
+        for row in compile_rows:
+            if not row.compile_pass and row.sub_error_type:
+                compile_sub_counter[row.sub_error_type] += 1
+        for row in proof_rows:
+            if not row.proof_success and row.sub_error_type:
+                proof_sub_counter[row.sub_error_type] += 1
+        env_health = str((run_metadata or {}).get("environment_health") or "unknown")
+        env_warnings = (run_metadata or {}).get("environment_warnings") if isinstance(run_metadata, dict) else []
+        if not isinstance(env_warnings, list):
+            env_warnings = []
 
         lines = [
             "# Baseline V1 Analysis",
+            "",
+            "## Runtime Environment",
+            f"- environment_health: {env_health}",
+            f"- environment_warnings_count: {len(env_warnings)}",
+        ]
+        if env_warnings:
+            lines.extend([f"- warning: {str(item)}" for item in env_warnings[:5]])
+
+        lines.extend([
             "",
             "## Metrics",
             f"- num_total_samples: {metrics['num_total_samples']}",
@@ -58,6 +84,10 @@ class ModuleF:
             f"- mechlib_header_rate: {metrics['mechlib_header_rate']}",
             f"- mechlib_compile_pass_rate: {metrics['mechlib_compile_pass_rate']}",
             f"- selected_mechlib_candidate_rate: {metrics['selected_mechlib_candidate_rate']}",
+            f"- statement_mechlib_usage_rate: {metrics['statement_mechlib_usage_rate']}",
+            f"- selected_statement_mechlib_usage_rate: {metrics['selected_statement_mechlib_usage_rate']}",
+            f"- proof_mechlib_usage_rate: {metrics['proof_mechlib_usage_rate']}",
+            f"- library_grounded_selection_rate: {metrics['library_grounded_selection_rate']}",
             f"- feedback_loop_used_rate: {metrics.get('feedback_loop_used_rate', 0)}",
             "",
             "## Feedback Loop",
@@ -65,7 +95,7 @@ class ModuleF:
             f"- feedback_loop_success_count: {feedback_loop_success}",
             "",
             "## Error Distribution",
-        ]
+        ])
         if counter:
             for key, value in counter.most_common():
                 lines.append(f"- {key}: {value}")
@@ -80,6 +110,30 @@ class ModuleF:
         )
         if sub_counter:
             for key, value in sub_counter.most_common():
+                lines.append(f"- {key}: {value}")
+        else:
+            lines.append("- none")
+
+        lines.extend(
+            [
+                "",
+                "## Compile Sub Error Distribution",
+            ]
+        )
+        if compile_sub_counter:
+            for key, value in compile_sub_counter.most_common():
+                lines.append(f"- {key}: {value}")
+        else:
+            lines.append("- none")
+
+        lines.extend(
+            [
+                "",
+                "## Proof Sub Error Distribution",
+            ]
+        )
+        if proof_sub_counter:
+            for key, value in proof_sub_counter.most_common():
                 lines.append(f"- {key}: {value}")
         else:
             lines.append("- none")

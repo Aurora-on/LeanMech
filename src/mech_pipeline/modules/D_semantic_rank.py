@@ -53,7 +53,10 @@ Output JSON only:
       "failure_tags": ["wrong_target"],
       "mismatch_fields": ["unknown_target", "known_quantities"],
       "missing_or_incorrect_translations": ["The target quantity should be final speed, not displacement."],
-      "suggested_fix_direction": "Keep the same givens, but restate the theorem so the conclusion solves for final speed."
+      "suggested_fix_direction": "Keep the same givens, but restate the theorem so the conclusion solves for final speed.",
+      "library_grounding_judgment": "weak",
+      "grounding_gap_summary": "The candidate states the right algebraic result but does not cite the retrieved theorem.",
+      "unsupported_claims": ["unsupported_library_symbol:SomeLemma"]
     }
   ]
 }
@@ -142,6 +145,23 @@ def _target_match(ir: dict[str, object], theorem_decl: str) -> float:
             overlap = len(goal_tokens.intersection(tokens))
             score += min(0.2, round(0.2 * overlap / len(goal_tokens), 4))
         return min(1.0, score)
+    return 0.0
+
+
+def _target_symbol_match(ir: dict[str, object], theorem_decl: str) -> float:
+    unknown = ir.get("unknown_target")
+    if not isinstance(unknown, dict):
+        return 1.0
+    symbol = str(unknown.get("symbol") or "").strip()
+    if not symbol:
+        return 1.0
+    tokens = _tokenize(theorem_decl)
+    head = symbol.split("(", 1)[0].strip()
+    if head:
+        normalized_head = head.lower()
+        if len(normalized_head) <= 2:
+            return 1.0 if normalized_head in tokens else 0.0
+        return 1.0 if _symbol_hits(normalized_head, tokens) else 0.0
     return 0.0
 
 
@@ -335,6 +355,73 @@ def _normalize_failure_tags(*values: object) -> list[str]:
     return tags
 
 
+def _extract_context_refs(mechlib_context: str) -> set[str]:
+    refs: set[str] = set()
+    patterns = [
+        r"theorem_name=([A-Za-z_][A-Za-z0-9_']*)",
+        r"symbol=([A-Za-z_][A-Za-z0-9_']*)",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, mechlib_context or ""):
+            refs.add(match.group(1))
+    return refs
+
+
+def _looks_like_direct_translation(
+    *,
+    target_match: float,
+    known_quantity_coverage: float,
+    law_match: float,
+    unsupported_claims: list[str],
+) -> bool:
+    return (
+        target_match >= 0.75
+        and known_quantity_coverage >= 0.5
+        and law_match >= 0.3
+        and not unsupported_claims
+    )
+
+
+def _library_grounding_score(
+    *,
+    ir: dict[str, object],
+    mechlib_context: str,
+    library_symbols_used: list[str],
+    unsupported_claims: list[str],
+    target_match: float,
+    known_quantity_coverage: float,
+    law_match: float,
+) -> tuple[float, list[str], bool, str | None]:
+    refs = _extract_context_refs(mechlib_context)
+    matched = [sym for sym in library_symbols_used if sym in refs]
+    direct_translation = _looks_like_direct_translation(
+        target_match=target_match,
+        known_quantity_coverage=known_quantity_coverage,
+        law_match=law_match,
+        unsupported_claims=unsupported_claims,
+    )
+    has_law_problem = isinstance(ir.get("physical_laws"), list) and bool(ir.get("physical_laws"))
+    score = 0.0
+    if matched:
+        score += min(0.22, 0.1 + 0.06 * len(matched))
+    elif has_law_problem and refs and not direct_translation:
+        score -= 0.12
+    if unsupported_claims:
+        score -= min(0.25, 0.05 + 0.06 * len(unsupported_claims))
+    if matched and law_match >= 0.25:
+        score += 0.06
+    if not has_law_problem and score < 0:
+        score = 0.0
+    score = round(score, 4)
+    if unsupported_claims:
+        gap = "Candidate contains unsupported library-grounding claims."
+    elif has_law_problem and refs and not matched and not direct_translation:
+        gap = "Semantic content is plausible, but the candidate does not ground the law with retrieved library theorems."
+    else:
+        gap = None
+    return score, matched, direct_translation, gap
+
+
 def _normalize_target_relation(value: object) -> str | None:
     text = str(value or "").strip().lower()
     if not text:
@@ -504,6 +591,7 @@ def _hard_semantic_gate(
     *,
     ir: dict[str, object],
     target_match: float,
+    target_symbol_match: float,
     known_quantity_coverage: float,
     law_match: float,
     trivial_goal: bool,
@@ -611,6 +699,7 @@ class ModuleD:
             goal_expr = _extract_goal_expr(candidate.theorem_decl)
             trivial_goal = _is_trivial_goal(goal_expr)
             t = _target_match(ir, candidate.theorem_decl)
+            target_symbol_match = _target_symbol_match(ir, candidate.theorem_decl)
             k = _known_quantity_coverage(ir, candidate.theorem_decl)
             l = _law_match(ir, candidate.theorem_decl)
             u = _unit_consistency(ir, candidate.theorem_decl)
@@ -618,6 +707,15 @@ class ModuleD:
             score_rule = round(0.35 * t + 0.25 * k + 0.2 * l + 0.1 * u + 0.1 * a, 4)
             if trivial_goal:
                 score_rule = min(score_rule, 0.2)
+            library_grounding_score, grounded_symbols, direct_translation, grounding_gap_summary = _library_grounding_score(
+                ir=ir,
+                mechlib_context=mechlib_context,
+                library_symbols_used=list(candidate.library_symbols_used),
+                unsupported_claims=list(candidate.unsupported_claims),
+                target_match=t,
+                known_quantity_coverage=k,
+                law_match=l,
+            )
             status = status_map.get(candidate.candidate_id)
             backend_used = str(getattr(status, "backend_used", "") or "")
             route_reason = str(getattr(status, "route_reason", "") or "")
@@ -633,9 +731,19 @@ class ModuleD:
                     "route_fallback_used": route_fallback_used,
                     "backend_bias": backend_bias,
                     "proofability_bias": proofability_bias,
+                    "supporting_facts": list(candidate.supporting_facts),
+                    "fact_sources": list(candidate.fact_sources),
+                    "library_symbols_used": list(candidate.library_symbols_used),
+                    "grounding_explanation": candidate.grounding_explanation,
+                    "unsupported_claims": list(candidate.unsupported_claims),
+                    "grounded_library_symbols": grounded_symbols,
+                    "direct_translation": direct_translation,
+                    "library_grounding_score": library_grounding_score,
+                    "grounding_gap_summary": grounding_gap_summary,
                     "goal_expr": goal_expr,
                     "trivial_goal": trivial_goal,
                     "target_match": t,
+                    "target_symbol_match": target_symbol_match,
                     "known_quantity_coverage": k,
                     "law_match": l,
                     "unit_consistency": u,
@@ -643,7 +751,7 @@ class ModuleD:
                     "semantic_score_rule": score_rule,
                     "semantic_score_llm": None,
                     "semantic_score": score_rule,
-                    "semantic_rank_score": score_rule + backend_bias + proofability_bias,
+                    "semantic_rank_score": score_rule + backend_bias + proofability_bias + library_grounding_score,
                     "semantic_pass_llm": None,
                     "semantic_pass": _semantic_pass(score_rule, t, l, self.pass_threshold),
                     "back_translation_text": "",
@@ -738,6 +846,7 @@ class ModuleD:
                 row["semantic_source"] = "llm_plus_rule"
 
             target_match = _as_float(row.get("target_match"), 0.0)
+            target_symbol_match = _as_float(row.get("target_symbol_match"), 1.0)
             known_cov = _as_float(row.get("known_quantity_coverage"), 0.0)
             law_match = _as_float(row.get("law_match"), 0.0)
             trivial_goal = bool(row.get("trivial_goal"))
@@ -754,6 +863,7 @@ class ModuleD:
             hard_gate_pass, hard_gate_reasons = _hard_semantic_gate(
                 ir=ir,
                 target_match=target_match,
+                target_symbol_match=target_symbol_match,
                 known_quantity_coverage=known_cov,
                 law_match=law_match,
                 trivial_goal=trivial_goal,
@@ -769,6 +879,8 @@ class ModuleD:
             )
             if not failure_summary and not final_pass:
                 failure_summary = llm_reason or "Semantic checker rejected this candidate."
+            if not failure_summary and row.get("grounding_gap_summary"):
+                failure_summary = str(row.get("grounding_gap_summary") or "").strip() or failure_summary
             failure_tags = _normalize_failure_tags(failure_tags, hard_gate_reasons)
             sub_error_type = _infer_semantic_sub_error_type(
                 model_sub_error_type=str(llm_row.get("sub_error_type") or "").strip() or None,
@@ -784,7 +896,11 @@ class ModuleD:
             row["semantic_score"] = final_score
             backend_bias = _as_float(row.get("backend_bias"), 0.0)
             proofability_bias = _as_float(row.get("proofability_bias"), 0.0)
-            row["semantic_rank_score"] = round(final_score + backend_bias + proofability_bias, 4)
+            library_grounding_score = _as_float(row.get("library_grounding_score"), 0.0)
+            row["semantic_rank_score"] = round(
+                final_score + backend_bias + proofability_bias + library_grounding_score,
+                4,
+            )
             row["semantic_pass_llm"] = llm_pass
             row["semantic_pass"] = final_pass
             row["back_translation_text"] = back_translation
@@ -802,12 +918,14 @@ class ModuleD:
         for row in ranking:
             if "hard_gate_pass" not in row or "hard_gate_reasons" not in row:
                 target_match = _as_float(row.get("target_match"), 0.0)
+                target_symbol_match = _as_float(row.get("target_symbol_match"), 1.0)
                 known_cov = _as_float(row.get("known_quantity_coverage"), 0.0)
                 law_match = _as_float(row.get("law_match"), 0.0)
                 trivial_goal = bool(row.get("trivial_goal"))
                 hard_gate_pass, hard_gate_reasons = _hard_semantic_gate(
                     ir=ir,
                     target_match=target_match,
+                    target_symbol_match=target_symbol_match,
                     known_quantity_coverage=known_cov,
                     law_match=law_match,
                     trivial_goal=trivial_goal,
@@ -818,6 +936,8 @@ class ModuleD:
                 row["semantic_pass"] = bool(row.get("semantic_pass")) and hard_gate_pass
             if not row.get("failure_tags"):
                 row["failure_tags"] = _normalize_failure_tags(row.get("hard_gate_reasons"))
+            if row.get("unsupported_claims"):
+                row["failure_tags"] = _normalize_failure_tags(row.get("failure_tags"), ["unsupported_claim"])
             if not row.get("mismatch_fields"):
                 row["mismatch_fields"] = _derive_mismatch_fields(
                     llm_fields=row.get("mismatch_fields"),
@@ -827,6 +947,7 @@ class ModuleD:
             if not row.get("failure_summary") and not bool(row.get("semantic_pass")):
                 row["failure_summary"] = (
                     str(row.get("semantic_reason") or "").strip()
+                    or str(row.get("grounding_gap_summary") or "").strip()
                     or "Semantic checker rejected this candidate."
                 )
             if not row.get("sub_error_type") and not bool(row.get("semantic_pass")):
@@ -840,9 +961,17 @@ class ModuleD:
                 )
             row.setdefault("missing_or_incorrect_translations", [])
             row.setdefault("suggested_fix_direction", "")
+            has_law_problem = isinstance(ir.get("physical_laws"), list) and bool(ir.get("physical_laws"))
+            has_context_refs = bool(_extract_context_refs(mechlib_context))
+            row["grounding_preferred"] = bool(
+                row.get("grounded_library_symbols")
+                or row.get("direct_translation")
+                or not (has_law_problem and has_context_refs)
+            )
 
         ranking.sort(
             key=lambda x: (
+                bool(x.get("grounding_preferred")),
                 bool(x.get("semantic_pass")),
                 _as_float(x.get("semantic_rank_score"), 0.0),
                 -assumptions_len_map.get(str(x["candidate_id"]), 0),
@@ -861,6 +990,10 @@ class ModuleD:
             "semantic_reason": str(best.get("semantic_reason") or "").strip() or None,
             "target_relation": str(best.get("target_relation") or "").strip() or None,
             "hard_gate_reasons": _as_str_list(best.get("hard_gate_reasons")),
+            "library_grounding_score": best.get("library_grounding_score"),
+            "grounded_library_symbols": _as_str_list(best.get("grounded_library_symbols")),
+            "unsupported_claims": _as_str_list(best.get("unsupported_claims")),
+            "grounding_gap_summary": str(best.get("grounding_gap_summary") or "").strip() or None,
         }
         return SemanticRankResult(
             sample_id=grounding.sample_id,

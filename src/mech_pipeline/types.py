@@ -46,6 +46,11 @@ class StatementCandidate:
     theorem_decl: str
     assumptions: list[str] = field(default_factory=list)
     plan: str | None = None
+    supporting_facts: list[str] = field(default_factory=list)
+    fact_sources: list[str] = field(default_factory=list)
+    library_symbols_used: list[str] = field(default_factory=list)
+    grounding_explanation: str | None = None
+    unsupported_claims: list[str] = field(default_factory=list)
     parse_ok: bool = False
     raw_response: str = ""
     error: str | None = None
@@ -129,6 +134,11 @@ class ProofAttemptResult:
     failure_details: dict[str, Any] = field(default_factory=dict)
     proof_body_excerpt: str | None = None
     stderr_excerpt: str | None = None
+    proof_plan: str | None = None
+    theorems_to_apply: list[str] = field(default_factory=list)
+    givens_to_use: list[str] = field(default_factory=list)
+    intermediate_claims: list[str] = field(default_factory=list)
+    plan_grounding_ok: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -148,6 +158,22 @@ class ProofCheckResult:
     failure_tags: list[str] = field(default_factory=list)
     failure_summary: str | None = None
     failure_details: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class DirectFormalizationResult:
+    sample_id: str
+    lean_header: str
+    theorem_decl: str
+    proof_body: str
+    parse_ok: bool
+    raw_response: str
+    error: str | None
+    plan: str | None = None
+    used_facts: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

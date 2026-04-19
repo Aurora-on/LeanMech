@@ -599,6 +599,9 @@ def test_cli_runs_samples_concurrently_and_preserves_output_order(tmp_path: Path
     assert sum(1 for row in statement_rows if row["sample_id"] == "archive-1-2") == 4
     assert [row["round_index"] for row in proof_rows] == [1, 0]
     assert "- sample_concurrency: 2" in readme_text
+    assert "**MechLib Retrieval**" not in readme_text
+    assert "log=" not in readme_text
+    assert "final_log_path" not in readme_text
     assert call_log.count(("archive-1-1", 0)) == 1
     assert call_log.count(("archive-1-1", 1)) == 1
     assert call_log.count(("archive-1-2", 0)) == 1
@@ -723,6 +726,122 @@ def test_cli_reports_progress_before_failure(tmp_path: Path, monkeypatch, capsys
     captured = capsys.readouterr()
     assert "progress: 1/2 completed, sample=archive-1-1" in captured.out
     assert "progress: failed after 1/2 completed, sample=archive-1-2" in captured.out
+
+
+def test_cli_writes_environment_health_into_outputs(tmp_path: Path, monkeypatch) -> None:
+    config_path, output_latest = _write_config(
+        tmp_path,
+        tag="test-environment-health",
+        extra_yaml="""
+lean:
+  enabled: true
+  preflight_enabled: true
+""".strip(),
+    )
+
+    class StubRunner:
+        def preflight_details(self) -> dict[str, object]:
+            return {
+                "ok": True,
+                "error_type": None,
+                "message": "ok: physlean+mechlib",
+                "environment_health": "dirty_packages",
+                "environment_warnings": ["warning: batteries: repository 'X' has local changes"],
+            }
+
+    class StubModuleA:
+        def __init__(self, *args, **kwargs) -> None:
+            _ = (args, kwargs)
+
+        def run(self, sample) -> GroundingResult:
+            return GroundingResult(
+                sample_id=sample.sample_id,
+                model_id="stub-a",
+                problem_ir={"unknown_target": {"symbol": "a", "description": "acceleration"}},
+                parse_ok=True,
+                raw_response="",
+                error=None,
+            )
+
+    class StubModuleB:
+        def __init__(self, *args, **kwargs) -> None:
+            _ = (args, kwargs)
+
+        def run(self, grounding: GroundingResult, **kwargs) -> list[StatementCandidate]:
+            round_index = int(kwargs.get("round_index", 0))
+            return [
+                StatementCandidate(
+                    sample_id=grounding.sample_id,
+                    candidate_id="c1",
+                    lean_header="import PhysLean",
+                    theorem_decl="theorem ok (F m a : Real) : a = F / m",
+                    round_index=round_index,
+                )
+            ]
+
+    class StubModuleC:
+        def __init__(self, *args, **kwargs) -> None:
+            _ = (args, kwargs)
+
+        def run(self, sample_id: str, candidates: list[StatementCandidate], run_dir: Path) -> list[CompileCheckResult]:
+            _ = (sample_id, candidates, run_dir)
+            return [
+                CompileCheckResult(
+                    sample_id="archive-1-1",
+                    candidate_id="c1",
+                    compile_pass=True,
+                    syntax_ok=True,
+                    elaboration_ok=True,
+                    error_type=None,
+                    stderr_digest="",
+                    log_path=None,
+                )
+            ]
+
+    class StubModuleD:
+        def __init__(self, *args, **kwargs) -> None:
+            _ = (args, kwargs)
+
+        def run(self, grounding: GroundingResult, candidates: list[StatementCandidate], compile_checks: list[CompileCheckResult], **kwargs) -> SemanticRankResult:
+            _ = (grounding, compile_checks, kwargs)
+            return SemanticRankResult(
+                sample_id=candidates[0].sample_id,
+                selected_candidate_id="c1",
+                selected_theorem_decl=candidates[0].theorem_decl,
+                semantic_pass=True,
+                ranking=[{"candidate_id": "c1", "semantic_score": 0.9, "semantic_pass": True, "semantic_reason": "aligned", "back_translation_text": "aligned", "hard_gate_reasons": [], "semantic_rank_score": 0.9}],
+                error=None,
+            )
+
+    class StubModuleE:
+        def __init__(self, *args, **kwargs) -> None:
+            _ = (args, kwargs)
+
+        def run(self, grounding: GroundingResult, selected_candidate: StatementCandidate | None, run_dir: Path, mechlib_context: str = "(none)"):
+            _ = (run_dir, mechlib_context)
+            return [], ProofCheckResult(
+                sample_id=grounding.sample_id,
+                proof_success=True,
+                attempts_used=1,
+                selected_candidate_id=selected_candidate.candidate_id if selected_candidate else None,
+                error_type=None,
+                final_log_path=None,
+            )
+
+    monkeypatch.setattr(cli, "_build_lean_runner", lambda cfg: StubRunner())
+    monkeypatch.setattr(cli, "_build_worker_modules", lambda cfg, prompt_dir: (StubModuleA(), StubModuleB(), StubModuleC(), StubModuleD(), StubModuleE()))
+
+    code = cli.main(["run", "--config", str(config_path)])
+    assert code == 0
+
+    readme_text = (output_latest / "README.md").read_text(encoding="utf-8")
+    analysis_text = (output_latest / "analysis.md").read_text(encoding="utf-8")
+    config_payload = json.loads((output_latest / "config.json").read_text(encoding="utf-8"))
+
+    assert "- environment_health: dirty_packages" in readme_text
+    assert "## Runtime Environment" in analysis_text
+    assert "- environment_health: dirty_packages" in analysis_text
+    assert config_payload["preflight"]["environment_health"] == "dirty_packages"
 
 
 def _install_feedback_loop_stubs(monkeypatch, *, trigger: str, call_log: list[dict[str, object]]) -> None:
@@ -954,3 +1073,181 @@ def test_cli_feedback_loop_retries_after_no_compile_pass(tmp_path: Path, monkeyp
     assert summary_rows[0]["feedback_loop_used"] is True
     assert summary_rows[0]["final_round_index"] == 1
     assert metrics["lean_compile_success_rate"] == 1.0
+
+
+def test_cli_feedback_loop_honors_two_revision_rounds(tmp_path: Path, monkeypatch) -> None:
+    config_path, output_latest = _write_config(
+        tmp_path,
+        tag="test-feedback-loop-two-rounds",
+        extra_yaml="""
+statement:
+  feedback_loop_enabled: true
+  max_revision_rounds: 2
+""".strip(),
+    )
+    call_log: list[dict[str, object]] = []
+
+    class StubModuleA:
+        def __init__(self, *args, **kwargs) -> None:
+            _ = (args, kwargs)
+
+        def run(self, sample) -> GroundingResult:
+            return GroundingResult(
+                sample_id=sample.sample_id,
+                model_id="stub-a",
+                problem_ir={
+                    "unknown_target": {"symbol": "a", "description": "acceleration"},
+                    "known_quantities": [{"symbol": "F"}, {"symbol": "m"}],
+                    "physical_laws": ["NewtonSecondLaw"],
+                },
+                parse_ok=True,
+                raw_response="",
+                error=None,
+            )
+
+    class StubModuleB:
+        def __init__(self, *args, **kwargs) -> None:
+            _ = (args, kwargs)
+
+        def run(
+            self,
+            grounding: GroundingResult,
+            mechlib_context: str = "(none)",
+            revision_feedback: str = "(none)",
+            round_index: int = 0,
+            previous_candidates: list[StatementCandidate] | None = None,
+        ) -> list[StatementCandidate]:
+            call_log.append(
+                {
+                    "round_index": round_index,
+                    "revision_feedback": revision_feedback,
+                    "previous_candidates_count": len(previous_candidates or []),
+                }
+            )
+            return [
+                StatementCandidate(
+                    sample_id=grounding.sample_id,
+                    candidate_id=f"c{i}",
+                    lean_header="import PhysLean",
+                    theorem_decl=f"theorem round_{round_index}_candidate_{i} (a F m : Real) : a = F / m",
+                    assumptions=[],
+                    plan=f"round {round_index} plan {i}",
+                    round_index=round_index,
+                    source_round_index=(round_index - 1) if round_index > 0 else None,
+                )
+                for i in range(1, 5)
+            ]
+
+    class StubModuleC:
+        def __init__(self, *args, **kwargs) -> None:
+            _ = (args, kwargs)
+
+        def run(self, sample_id: str, candidates: list[StatementCandidate], run_dir: Path) -> list[CompileCheckResult]:
+            _ = (sample_id, run_dir)
+            return [
+                CompileCheckResult(
+                    sample_id=candidate.sample_id,
+                    candidate_id=candidate.candidate_id,
+                    compile_pass=True,
+                    syntax_ok=True,
+                    elaboration_ok=True,
+                    error_type=None,
+                    stderr_digest="",
+                    log_path=None,
+                )
+                for candidate in candidates
+            ]
+
+    class StubModuleD:
+        def __init__(self, *args, **kwargs) -> None:
+            _ = (args, kwargs)
+
+        def run(
+            self,
+            grounding: GroundingResult,
+            candidates: list[StatementCandidate],
+            compile_checks: list[CompileCheckResult],
+            problem_text: str | None = None,
+            mechlib_context: str = "(none)",
+        ) -> SemanticRankResult:
+            _ = (grounding, compile_checks, problem_text, mechlib_context)
+            round_index = candidates[0].round_index
+            if round_index < 2:
+                return SemanticRankResult(
+                    sample_id=candidates[0].sample_id,
+                    selected_candidate_id="c1",
+                    selected_theorem_decl=candidates[0].theorem_decl,
+                    semantic_pass=False,
+                    ranking=[
+                        {
+                            "candidate_id": "c1",
+                            "semantic_score": 0.3,
+                            "semantic_pass": False,
+                            "semantic_reason": f"round {round_index} still wrong target",
+                            "back_translation_text": "wrong target",
+                            "hard_gate_reasons": ["target_mismatch"],
+                            "semantic_rank_score": 0.3,
+                        }
+                    ],
+                    error="semantic_drift",
+                )
+            return SemanticRankResult(
+                sample_id=candidates[0].sample_id,
+                selected_candidate_id="c2",
+                selected_theorem_decl=candidates[1].theorem_decl,
+                semantic_pass=True,
+                ranking=[
+                    {
+                        "candidate_id": "c2",
+                        "semantic_score": 0.95,
+                        "semantic_pass": True,
+                        "semantic_reason": "aligned after two revisions",
+                        "back_translation_text": "correct acceleration law",
+                        "hard_gate_reasons": [],
+                        "semantic_rank_score": 0.95,
+                    }
+                ],
+                selected_backend="physlean",
+                error=None,
+            )
+
+    class StubModuleE:
+        def __init__(self, *args, **kwargs) -> None:
+            _ = (args, kwargs)
+
+        def run(self, grounding: GroundingResult, selected_candidate: StatementCandidate | None, run_dir: Path, mechlib_context: str = "(none)"):
+            _ = (run_dir, mechlib_context)
+            return [], ProofCheckResult(
+                sample_id=grounding.sample_id,
+                proof_success=True,
+                attempts_used=1,
+                selected_candidate_id=selected_candidate.candidate_id if selected_candidate else None,
+                error_type=None,
+                final_log_path=None,
+            )
+
+    monkeypatch.setattr(cli, "ModuleA", StubModuleA)
+    monkeypatch.setattr(cli, "ModuleB", StubModuleB)
+    monkeypatch.setattr(cli, "ModuleC", StubModuleC)
+    monkeypatch.setattr(cli, "ModuleD", StubModuleD)
+    monkeypatch.setattr(cli, "ModuleE", StubModuleE)
+
+    code = cli.main(["run", "--config", str(config_path)])
+    assert code == 0
+    assert [row["round_index"] for row in call_log] == [0, 1, 2]
+    assert call_log[1]["previous_candidates_count"] == 4
+    assert call_log[2]["previous_candidates_count"] == 4
+    assert '"retry_reason": "semantic_fail"' in str(call_log[1]["revision_feedback"])
+    assert '"retry_reason": "semantic_fail"' in str(call_log[2]["revision_feedback"])
+
+    semantic_rows = _read_jsonl(output_latest / "semantic_rank.jsonl")
+    summary_rows = _read_jsonl(output_latest / "sample_summary.jsonl")
+    proof_rows = _read_jsonl(output_latest / "proof_checks.jsonl")
+
+    assert len(semantic_rows) == 3
+    assert semantic_rows[0]["retry_triggered"] is True
+    assert semantic_rows[1]["retry_triggered"] is True
+    assert semantic_rows[2]["retry_triggered"] is False
+    assert summary_rows[0]["feedback_loop_used"] is True
+    assert summary_rows[0]["final_round_index"] == 2
+    assert proof_rows[0]["round_index"] == 2

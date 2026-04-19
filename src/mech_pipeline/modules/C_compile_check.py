@@ -45,15 +45,20 @@ class ModuleC:
                     sub_error_type=str(result.get("sub_error_type") or "") or None,
                     failure_tags=([str(result["sub_error_type"])] if result.get("sub_error_type") else []),
                     failure_summary=(
-                        str(result.get("error_message") or "").strip()
+                        str(result.get("failure_summary") or "").strip()
+                        or str(result.get("error_message") or "").strip()
                         or (str(result["error_type"]).strip() if result.get("error_type") else None)
                     ),
-                    failure_details={
-                        "stderr_excerpt": str(result.get("stderr_excerpt") or "") or None,
-                        "error_line": result.get("error_line"),
-                        "error_message": str(result.get("error_message") or "") or None,
-                        "error_snippet": str(result.get("error_snippet") or "") or None,
-                    },
+                    failure_details=(
+                        dict(result.get("failure_details"))
+                        if isinstance(result.get("failure_details"), dict)
+                        else {
+                            "stderr_excerpt": str(result.get("stderr_excerpt") or "") or None,
+                            "error_line": result.get("error_line"),
+                            "error_message": str(result.get("error_message") or "") or None,
+                            "error_snippet": str(result.get("error_snippet") or "") or None,
+                        }
+                    ),
                 )
             )
         return rows

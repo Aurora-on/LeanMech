@@ -7,6 +7,8 @@ from typing import Any
 
 from mech_pipeline.utils import build_run_name, ensure_dir, write_json, write_jsonl, write_text
 
+LATEST_EXCLUDED_DIRS = {".pipeline1_tmp", "lean_compile", "lean_proof"}
+
 
 def create_run_dir(runs_dir: Path, tag: str | None) -> Path:
     ensure_dir(runs_dir)
@@ -68,6 +70,8 @@ def write_outputs(
                 shutil.rmtree(child)
     ensure_dir(latest_dir)
     for p in run_dir.iterdir():
+        if p.is_dir() and p.name in LATEST_EXCLUDED_DIRS:
+            continue
         target = latest_dir / p.name
         if p.is_file():
             shutil.copy2(p, target)

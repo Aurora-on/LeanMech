@@ -459,15 +459,23 @@ class MechLibRetriever:
         scored.sort(key=lambda x: (-x[0], x[1].module, x[1].symbol_name))
         rows: list[dict[str, Any]] = []
         for score, entry in scored[:k]:
+            applicability_hint = (
+                f"module={entry.module}; law_tags={entry.law_tags}"
+                if entry.law_tags
+                else f"module={entry.module}"
+            )
             rows.append(
                 {
                     "score": score,
+                    "theorem_name": entry.symbol_name,
                     "symbol_name": entry.symbol_name,
                     "kind": entry.kind,
                     "module": entry.module,
                     "import_hint": entry.import_hint,
                     "declaration_signature": entry.declaration_signature,
                     "law_tags": entry.law_tags,
+                    "applicability_hint": applicability_hint,
+                    "proof_usage_hint": truncate(entry.proof_style_example, 220),
                     "tactic_hints": entry.tactic_hints[:5],
                     "proof_style_example": truncate(entry.proof_style_example, 220),
                     "path": entry.path,
@@ -505,12 +513,15 @@ class MechLibRetriever:
         for row in rows:
             law_matched_items.append(
                 {
+                    "theorem_name": row.get("theorem_name") or row.get("symbol_name"),
                     "module": row.get("module"),
                     "symbol_name": row.get("symbol_name"),
                     "kind": row.get("kind"),
                     "score": row.get("score"),
                     "law_tags": row.get("law_tags"),
                     "declaration_signature": truncate(str(row.get("declaration_signature") or ""), 200),
+                    "applicability_hint": truncate(str(row.get("applicability_hint") or ""), 220),
+                    "proof_usage_hint": truncate(str(row.get("proof_usage_hint") or ""), 220),
                 }
             )
 
@@ -571,10 +582,17 @@ class MechLibRetriever:
         lines.append("Law-Matched Declarations:")
         for idx, row in enumerate(pack["law_matched_items"], start=1):
             lines.append(
-                f"[{idx}] module={row.get('module')} kind={row.get('kind')} "
-                f"symbol={row.get('symbol_name')} score={row.get('score')} law_tags={row.get('law_tags')}"
+                f"[{idx}] theorem_name={row.get('theorem_name')} module={row.get('module')} "
+                f"kind={row.get('kind')} symbol={row.get('symbol_name')} "
+                f"score={row.get('score')} law_tags={row.get('law_tags')}"
             )
             lines.append(f"signature: {truncate(str(row.get('declaration_signature') or ''), 260)}")
+            applicability_hint = str(row.get("applicability_hint") or "").strip()
+            if applicability_hint:
+                lines.append(f"applicability_hint: {truncate(applicability_hint, 260)}")
+            proof_usage_hint = str(row.get("proof_usage_hint") or "").strip()
+            if proof_usage_hint:
+                lines.append(f"proof_usage_hint: {truncate(proof_usage_hint, 260)}")
         if pack["proof_style_examples"]:
             lines.append("")
             lines.append("Proof-Style Examples (style only):")
@@ -636,10 +654,17 @@ class MechLibRetriever:
         lines.append("Law-Matched Declarations:")
         for idx, row in enumerate(source_pack["law_matched_items"], start=1):
             lines.append(
-                f"[{idx}] module={row.get('module')} kind={row.get('kind')} "
-                f"symbol={row.get('symbol_name')} score={row.get('score')} law_tags={row.get('law_tags')}"
+                f"[{idx}] theorem_name={row.get('theorem_name')} module={row.get('module')} "
+                f"kind={row.get('kind')} symbol={row.get('symbol_name')} "
+                f"score={row.get('score')} law_tags={row.get('law_tags')}"
             )
             lines.append(f"signature: {truncate(str(row.get('declaration_signature') or ''), 260)}")
+            applicability_hint = str(row.get("applicability_hint") or "").strip()
+            if applicability_hint:
+                lines.append(f"applicability_hint: {truncate(applicability_hint, 260)}")
+            proof_usage_hint = str(row.get("proof_usage_hint") or "").strip()
+            if proof_usage_hint:
+                lines.append(f"proof_usage_hint: {truncate(proof_usage_hint, 260)}")
         if source_pack["proof_style_examples"]:
             lines.append("Proof-Style Examples (style only):")
             for idx, ex in enumerate(source_pack["proof_style_examples"], start=1):

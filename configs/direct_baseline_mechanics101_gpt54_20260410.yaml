@@ -1,0 +1,78 @@
+dataset:
+  source: lean4phys
+  limit: 101
+  category: Mechanics
+  sample_policy: index_head
+  seed: 42
+  local_archive:
+    root: "F:/AI4Mechanics/datasets/archive"
+    mode: text_only
+  lean4phys:
+    bench_path: "F:/AI4Mechanics/coding/Lean4PHYS/LeanPhysBench/LeanPhysBench_v0.json"
+    category: "mechanics"
+    level: null
+  single_image_only_for_mvp: true
+
+model:
+  provider: openai_compatible
+  model_id: gpt-5.4
+  base_url: "https://api.openai-proxy.org/v1"
+  api_key: null
+  api_key_env: OPENAI_PROXY_KEY
+  supports_vision: false
+  timeout_s: 120
+  max_retries: 2
+  extra: {}
+
+lean:
+  enabled: true
+  physlean_dir: "F:/AI4Mechanics/PhysLean-master"
+  mechlib_dir: "F:/AI4Mechanics/coding/MechLib"
+  timeout_s: 120
+  strict_blocklist: ["sorry", "admit", "axiom"]
+  lean_header: "import PhysLean"
+  preflight_enabled: true
+  route_policy: force_physlean
+  default_backend: "physlean"
+  route_fallback: true
+
+knowledge:
+  enabled: false
+  mechlib_dir: "F:/AI4Mechanics/coding/MechLib"
+  scope: "mechanics_si"
+  top_k: 6
+  cache_path: "tmp/mechlib_index.jsonl"
+  inject_modules: []
+  context_source: "hybrid"
+  summary_corpus_path: "F:/AI4Mechanics/coding/MechLib/theorem_corpus.jsonl"
+  summary_injection_mode: "domain_full"
+  always_include_core_tags: ["SI", "Units"]
+
+statement:
+  library_target: "physlean"
+  with_mechlib_context: false
+  feedback_loop_enabled: false
+  max_revision_rounds: 0
+
+semantic:
+  pass_threshold: 0.7
+
+proof:
+  max_attempts: 1
+
+prompts:
+  dir: prompts
+  a_extract_ir: A_extract_ir.txt
+  b_generate_statements: B_generate_statements.txt
+  b_revise_statements: B_revise_statements.txt
+  d_semantic_rank: D_semantic_rank.txt
+  e_generate_proof: E_generate_proof.txt
+  e_repair_proof: E_repair_proof.txt
+
+output:
+  output_dir: outputs/latest
+  runs_dir: runs
+  tag: "direct-baseline-mechanics101-gpt54-20260410"
+
+runtime:
+  sample_concurrency: 10

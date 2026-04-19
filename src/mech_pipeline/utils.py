@@ -14,8 +14,6 @@ LEAKAGE_LINE_PATTERNS = [
     re.compile(r"^\s*(\u7b54\u6848|\u53c2\u8003\u7b54\u6848)\s*[:：]"),
     re.compile(r"^\s*(solution|explanation|analysis)\s*[:：]", re.IGNORECASE),
     re.compile(r"^\s*(\u89e3\u6790|\u89e3\u7b54)\s*[:：]"),
-    re.compile(r"^\s*(proof)\s*[:：]", re.IGNORECASE),
-    re.compile(r"^\s*(\u8bc1\u660e)\s*[:：]"),
 ]
 INLINE_LEAKAGE_CUTOFF_PATTERNS = [
     re.compile(r"\bfinal\s+answer\s*[:：]", re.IGNORECASE),
@@ -24,12 +22,10 @@ INLINE_LEAKAGE_CUTOFF_PATTERNS = [
     re.compile(r"\bsolution\s*[:：]", re.IGNORECASE),
     re.compile(r"\bexplanation\s*[:：]", re.IGNORECASE),
     re.compile(r"\banalysis\s*[:：]", re.IGNORECASE),
-    re.compile(r"\bproof\s*[:：]", re.IGNORECASE),
     re.compile(r"答案\s*[:：]"),
     re.compile(r"参考答案\s*[:：]"),
     re.compile(r"解析\s*[:：]"),
     re.compile(r"解答\s*[:：]"),
-    re.compile(r"证明\s*[:：]"),
 ]
 ALLOWED_IR_KEYS = {
     "objects",

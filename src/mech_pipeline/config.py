@@ -72,7 +72,7 @@ class LeanConfig:
     enabled: bool = True
     physlean_dir: str = r"F:/AI4Mechanics/PhysLean-master"
     mechlib_dir: str = r"F:/AI4Mechanics/coding/MechLib"
-    timeout_s: int = 90
+    timeout_s: int = 120
     strict_blocklist: list[str] = field(default_factory=lambda: ["sorry", "admit", "axiom"])
     lean_header: str = "import PhysLean"
     preflight_enabled: bool = True
@@ -120,6 +120,7 @@ class PromptConfig:
     b_generate_statements: str = "B_generate_statements.txt"
     b_revise_statements: str = "B_revise_statements.txt"
     d_semantic_rank: str = "D_semantic_rank.txt"
+    e_plan_proof: str = "E_plan_proof.txt"
     e_generate_proof: str = "E_generate_proof.txt"
     e_repair_proof: str = "E_repair_proof.txt"
 

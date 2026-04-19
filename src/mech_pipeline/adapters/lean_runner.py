@@ -5,6 +5,7 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+from mech_pipeline.decl_validation import prevalidate_theorem_decl
 from mech_pipeline.utils import ensure_dir, normalize_lean_text, safe_stem, truncate
 
 _SUBPROCESS_TEXT_ENCODING = "utf-8"
@@ -39,6 +40,58 @@ def _is_decl_shape_valid(theorem_decl: str) -> bool:
         return False
     return ":" in decl
 
+
+def _strip_pipeline_markers(text: str) -> str:
+    out = normalize_lean_text(str(text or ""))
+    out = out.replace("[PIPELINE_TIMEOUT]", "")
+    out = re.sub(r"\[PIPELINE_EXCEPTION][^\n]*", "", out)
+    return out.strip()
+
+
+def _warning_lines(stdout: str, stderr: str) -> list[str]:
+    merged = normalize_lean_text("\n".join(part for part in [stderr, stdout] if part).strip())
+    lines: list[str] = []
+    for raw in merged.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if "warning:" in lowered or "local changes" in lowered:
+            lines.append(line)
+    return lines
+
+
+def classify_timeout_sub_error(stdout: str, stderr: str) -> str:
+    body = _strip_pipeline_markers(stderr or stdout)
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    if not lines:
+        return "empty_stderr_timeout"
+    lowered = [line.lower() for line in lines]
+    warning_only = all("warning:" in line or "local changes" in line for line in lowered)
+    if warning_only:
+        return "timeout_after_warning"
+    return "timeout_or_tooling_block"
+
+
+def _timeout_failure_details(
+    *,
+    stdout: str,
+    stderr: str,
+    timeout_s: int,
+    backend: str | None,
+    route_fallback_used: bool,
+) -> dict[str, object]:
+    body = _strip_pipeline_markers(stderr or stdout)
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    lowered = [line.lower() for line in lines]
+    return {
+        "timeout_s": timeout_s,
+        "backend_used": backend,
+        "stderr_was_empty": not bool(lines),
+        "stderr_had_warning_before_timeout": bool(lines)
+        and all("warning:" in line or "local changes" in line for line in lowered),
+        "route_fallback_used": route_fallback_used,
+    }
 
 def classify_lean_error(stderr: str) -> tuple[bool, bool, str]:
     text = stderr.lower()
@@ -97,7 +150,9 @@ def extract_lean_error_details(stdout: str, stderr: str) -> dict[str, str | int 
 
 def classify_compile_sub_error(error_type: str | None, stderr: str) -> str | None:
     text = (stderr or "").lower()
-    if "[pipeline_timeout]" in text or "[pipeline_exception]" in text:
+    if "[pipeline_timeout]" in text:
+        return classify_timeout_sub_error("", stderr)
+    if "[pipeline_exception]" in text:
         return "timeout_or_tooling_block"
     if error_type == "invalid_lean_syntax":
         return "invalid_decl_shape"
@@ -225,46 +280,102 @@ class LeanRunner:
         return header
 
     def preflight(self) -> tuple[bool, str | None, str]:
-        if not self.enabled:
-            return (True, None, "lean disabled by config")
-        if not self._backend_exists("physlean"):
-            return (False, "physlean_missing", f"missing or invalid path: {self.physlean_dir}")
+        details = self.preflight_details()
+        return (
+            bool(details["ok"]),
+            str(details["error_type"]) if details.get("error_type") else None,
+            str(details["message"]),
+        )
 
-        ok, _stdout, stderr = self._run_lean(
+    def preflight_details(self) -> dict[str, object]:
+        if not self.enabled:
+            return {
+                "ok": True,
+                "error_type": None,
+                "message": "lean disabled by config",
+                "environment_health": "clean",
+                "environment_warnings": [],
+            }
+        if not self._backend_exists("physlean"):
+            return {
+                "ok": False,
+                "error_type": "physlean_missing",
+                "message": f"missing or invalid path: {self.physlean_dir}",
+                "environment_health": "warning_only",
+                "environment_warnings": [],
+            }
+
+        ok, stdout, stderr = self._run_lean(
             root_dir=self.physlean_dir,
             rel_file=self._backend_probe("physlean"),
         )
+        warnings = _warning_lines(stdout, stderr)
         if not ok:
-            return (False, "physlean_env_error", f"physlean preflight failed: {truncate(stderr, 800)}")
+            return {
+                "ok": False,
+                "error_type": "physlean_env_error",
+                "message": f"physlean preflight failed: {truncate(stderr, 800)}",
+                "environment_health": "dirty_packages"
+                if any("local changes" in line.lower() for line in warnings)
+                else ("warning_only" if warnings else "clean"),
+                "environment_warnings": warnings,
+            }
 
         if self.route_policy == "force_mechlib":
             if not self._backend_exists("mechlib"):
-                return (
-                    False,
-                    "physlean_env_error",
-                    f"mechlib backend required but missing: {self.mechlib_dir}",
-                )
-            ok_m, _stdout_m, stderr_m = self._run_lean(
+                return {
+                    "ok": False,
+                    "error_type": "physlean_env_error",
+                    "message": f"mechlib backend required but missing: {self.mechlib_dir}",
+                    "environment_health": "warning_only" if warnings else "clean",
+                    "environment_warnings": warnings,
+                }
+            ok_m, stdout_m, stderr_m = self._run_lean(
                 root_dir=self._backend_root("mechlib"),
                 rel_file=self._backend_probe("mechlib"),
             )
+            warnings.extend(_warning_lines(stdout_m, stderr_m))
             if not ok_m:
-                return (False, "physlean_env_error", f"mechlib preflight failed: {truncate(stderr_m, 800)}")
+                return {
+                    "ok": False,
+                    "error_type": "physlean_env_error",
+                    "message": f"mechlib preflight failed: {truncate(stderr_m, 800)}",
+                    "environment_health": "dirty_packages"
+                    if any("local changes" in line.lower() for line in warnings)
+                    else ("warning_only" if warnings else "clean"),
+                    "environment_warnings": warnings,
+                }
             self._mechlib_ready = True
-            return (True, None, "ok: physlean+mechlib")
+            return {
+                "ok": True,
+                "error_type": None,
+                "message": "ok: physlean+mechlib",
+                "environment_health": "dirty_packages"
+                if any("local changes" in line.lower() for line in warnings)
+                else ("warning_only" if warnings else "clean"),
+                "environment_warnings": warnings,
+            }
 
         if self._backend_exists("mechlib"):
-            ok_m, _stdout_m, _stderr_m = self._run_lean(
+            ok_m, stdout_m, stderr_m = self._run_lean(
                 root_dir=self._backend_root("mechlib"),
                 rel_file=self._backend_probe("mechlib"),
             )
+            warnings.extend(_warning_lines(stdout_m, stderr_m))
             self._mechlib_ready = ok_m
         else:
             self._mechlib_ready = False
 
-        if self._mechlib_ready:
-            return (True, None, "ok: physlean+mechlib")
-        return (True, None, "ok: physlean (mechlib unavailable)")
+        message = "ok: physlean+mechlib" if self._mechlib_ready else "ok: physlean (mechlib unavailable)"
+        return {
+            "ok": True,
+            "error_type": None,
+            "message": message,
+            "environment_health": "dirty_packages"
+            if any("local changes" in line.lower() for line in warnings)
+            else ("warning_only" if warnings else "clean"),
+            "environment_warnings": warnings,
+        }
 
     def _compile_once(
         self,
@@ -314,6 +425,23 @@ class LeanRunner:
 
         syntax_ok, elaboration_ok, error_type = classify_lean_error(stderr)
         details = extract_lean_error_details(stdout, stderr)
+        sub_error_type = classify_compile_sub_error(error_type, stderr)
+        failure_details: dict[str, object] = {
+            "stderr_excerpt": details["stderr_excerpt"],
+            "error_line": details["error_line"],
+            "error_message": details["error_message"],
+            "error_snippet": details["error_snippet"],
+        }
+        if sub_error_type in {"empty_stderr_timeout", "timeout_after_warning", "timeout_or_tooling_block"}:
+            failure_details.update(
+                _timeout_failure_details(
+                    stdout=stdout,
+                    stderr=stderr,
+                    timeout_s=self.timeout_s,
+                    backend=backend,
+                    route_fallback_used=False,
+                )
+            )
         return {
             "compile_pass": False,
             "syntax_ok": syntax_ok,
@@ -326,7 +454,13 @@ class LeanRunner:
             "error_line": details["error_line"],
             "error_message": details["error_message"],
             "error_snippet": details["error_snippet"],
-            "sub_error_type": classify_compile_sub_error(error_type, stderr),
+            "sub_error_type": sub_error_type,
+            "failure_summary": (
+                "Lean timed out before returning diagnostics."
+                if sub_error_type == "empty_stderr_timeout"
+                else ("Lean timed out after emitting warnings." if sub_error_type == "timeout_after_warning" else details["error_message"])
+            ),
+            "failure_details": failure_details,
         }
 
     def _verify_once(
@@ -403,6 +537,23 @@ class LeanRunner:
 
         _syntax_ok, _elaboration_ok, error_type = classify_lean_error(stderr)
         details = extract_lean_error_details(stdout, stderr)
+        sub_error_type = classify_compile_sub_error(error_type, stderr)
+        failure_details: dict[str, object] = {
+            "error_line": details["error_line"],
+            "error_message": details["error_message"],
+            "error_snippet": details["error_snippet"],
+            "stderr_excerpt": details["stderr_excerpt"],
+        }
+        if sub_error_type in {"empty_stderr_timeout", "timeout_after_warning", "timeout_or_tooling_block"}:
+            failure_details.update(
+                _timeout_failure_details(
+                    stdout=stdout,
+                    stderr=stderr,
+                    timeout_s=self.timeout_s,
+                    backend=backend,
+                    route_fallback_used=False,
+                )
+            )
         return {
             "compile_pass": False,
             "strict_pass": False,
@@ -414,6 +565,13 @@ class LeanRunner:
             "error_line": details["error_line"],
             "error_message": details["error_message"],
             "error_snippet": details["error_snippet"],
+            "sub_error_type": sub_error_type,
+            "failure_summary": (
+                "Lean timed out before returning diagnostics."
+                if sub_error_type == "empty_stderr_timeout"
+                else ("Lean timed out after emitting warnings." if sub_error_type == "timeout_after_warning" else details["error_message"])
+            ),
+            "failure_details": failure_details,
         }
 
     def compile_statement(
@@ -447,26 +605,35 @@ class LeanRunner:
             }
 
         decl = _declaration_only(theorem_decl)
-        if not _is_decl_shape_valid(decl):
+        validation = prevalidate_theorem_decl(theorem_decl)
+        if validation is not None:
             compile_dir = run_dir / "lean_compile"
             ensure_dir(compile_dir)
             log_path = compile_dir / f"{safe_stem(f'{sample_id}_{candidate_id}')}.log"
-            log_path.write_text("invalid theorem declaration format\n", encoding="utf-8")
+            log_path.write_text(
+                f"pre-lean declaration validation failed\nreason={validation['validation_reason']}\nexcerpt={validation['validation_excerpt']}\n",
+                encoding="utf-8",
+            )
             return {
                 "compile_pass": False,
                 "syntax_ok": False,
                 "elaboration_ok": False,
-                "error_type": "invalid_lean_syntax",
-                "stderr_digest": "cannot parse theorem declaration",
+                "error_type": "elaboration_failure",
+                "stderr_digest": "pre-lean declaration validation failed",
                 "log_path": str(log_path),
                 "backend_used": None,
-                "route_reason": "invalid_decl",
+                "route_reason": "prelean_validation",
                 "route_fallback_used": False,
-                "stderr_excerpt": "cannot parse theorem declaration",
+                "stderr_excerpt": validation["validation_excerpt"],
                 "error_line": None,
-                "error_message": "invalid theorem declaration format",
-                "error_snippet": "invalid theorem declaration format",
+                "error_message": "pre-lean declaration validation failed",
+                "error_snippet": validation["validation_excerpt"],
                 "sub_error_type": "invalid_decl_shape",
+                "failure_summary": "pre-lean declaration validation failed",
+                "failure_details": {
+                    "validation_reason": validation["validation_reason"],
+                    "validation_excerpt": validation["validation_excerpt"],
+                },
             }
 
         backend, route_reason = self._route_backend(lean_header, decl)
@@ -507,6 +674,10 @@ class LeanRunner:
             ).strip()
 
         first["route_fallback_used"] = fallback_used
+        if first.get("sub_error_type") in {"empty_stderr_timeout", "timeout_after_warning", "timeout_or_tooling_block"}:
+            failure_details = dict(first.get("failure_details") or {})
+            failure_details["route_fallback_used"] = fallback_used
+            first["failure_details"] = failure_details
         return first
 
     def verify_proof(
@@ -536,6 +707,9 @@ class LeanRunner:
                 "error_line": None,
                 "error_message": None,
                 "error_snippet": None,
+                "sub_error_type": "lean_disabled",
+                "failure_summary": "Lean verification disabled by config.",
+                "failure_details": {},
             }
 
         decl = _declaration_only(theorem_decl)
@@ -580,4 +754,8 @@ class LeanRunner:
             ).strip()
 
         first["route_fallback_used"] = fallback_used
+        if first.get("sub_error_type") in {"empty_stderr_timeout", "timeout_after_warning", "timeout_or_tooling_block"}:
+            failure_details = dict(first.get("failure_details") or {})
+            failure_details["route_fallback_used"] = fallback_used
+            first["failure_details"] = failure_details
         return first

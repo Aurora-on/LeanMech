@@ -1,0 +1,186 @@
+\documentclass[12pt,a4paper]{ctexart}
+
+\usepackage[a4paper,margin=2.5cm]{geometry}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{caption}
+\usepackage{graphicx}
+\usepackage{longtable}
+\usepackage{setspace}
+\usepackage{hyperref}
+\usepackage{tabularx}
+\usepackage{titlesec}
+
+\hypersetup{hidelinks}
+\setstretch{1.35}
+\emergencystretch=2em
+\setcounter{tocdepth}{3}
+\setcounter{secnumdepth}{3}
+
+\titleformat{\section}{\heiti\zihao{-3}}{\thesection}{1em}{}
+\titleformat{\subsection}{\heiti\zihao{4}}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}{\heiti\zihao{-4}}{\thesubsubsection}{1em}{}
+
+\captionsetup[table]{skip=6pt}
+
+\begin{document}
+
+\begin{titlepage}
+    \centering
+    \vspace*{1.5cm}
+    {\zihao{2}\heiti 毕业设计（中期报告）\par}
+    \vspace{1.6cm}
+    {\zihao{2}\bfseries 力学系统自动建模与多模态推理方法研究\par}
+    \vspace{2.2cm}
+    \renewcommand{\arraystretch}{1.6}
+    \begin{tabular}{p{3.2cm}p{8.5cm}}
+        学院名称 & 宇航学院 \\
+        专业名称 & 工程力学 \\
+        学生姓名 & 危志欣 \\
+        学\hspace{1em}号 & 22230513 \\
+        指导教师 & 师鹏 \\
+    \end{tabular}
+    \vfill
+    {\zihao{-3}2026年4月\par}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+\section{研究内容}
+
+\subsection{力学系统形式化基础}
+
+本课题围绕“力学问题能否由自然语言描述逐步转化为机器可验证的形式化对象”这一核心问题展开研究。与单纯依赖符号计算工具完成公式代换不同，本文更关注力学系统中对象、约束、已知量、未知目标与物理规律之间的逻辑关系，并尝试在 Lean~4 的形式化环境下建立一套可复用、可检查、可回放的表达框架。结合开题阶段的调研与当前实现情况，课题并未直接从大规模训练出发，而是优先构建一条端到端的可复现实验链路，将自然语言题目、结构化问题表示、Lean 命题候选、编译校验、语义筛选和证明验证连接起来，从而为后续更强的自动推理方法提供可依赖的基础设施。
+
+在当前实现中，形式化基础并不是以手工编写大量静态定理为唯一目标，而是通过 \texttt{Problem IR} 这一中间层，将题目中的物理对象、已知条件、求解目标、单位信息和定律线索转写为统一的数据结构。该中间表示使得不同数据源、不同题型与不同后端之间能够共享同一套语义接口，也使后续的命题生成、语义判别与错误分析具备了统一的输入基准。从研究目标上看，这一部分工作承担的是“力学知识形式化接口”的角色；从工程实现上看，它对应的是整个系统能够稳定运行的前提。
+
+\subsection{力学系统自动形式化}
+
+力学系统自动形式化的任务是将题面描述自动转化为 Lean 环境中的命题候选，并尽量保持题意、目标量和约束条件的一致性。根据当前项目代码与历史实验结果，自动形式化流程已经形成较明确的分层结构：首先由 A 阶段完成题目理解与结构化抽取，其次由检索模块根据题目主题从 MechLib 中提供相关上下文，再由 B 阶段生成 Lean theorem 候选，并通过 C 阶段的真实 Lean 编译器进行检查。与开题报告中较为宏观的“训练一个端到端模型”表述相比，中期阶段的工作更强调在未进行专项训练的条件下验证这条自动形式化链路的可行性和误差边界，即先回答“系统能否稳定完成自然语言到形式语言的转换”，再继续讨论模型训练与能力增强。
+
+项目目前支持 \texttt{Lean4Phys}、本地归档集和 \texttt{PhyX} 三类数据源，并保留了图文题兼容接口，因此课题标题中的“多模态推理”在当前阶段体现为“以文本题为主、具备图文输入兼容能力的基线系统”，而非已经完成大规模视觉推理研究。这样的阶段划分与毕业设计的实际推进节奏是一致的：先解决形式化链路搭建、数据接入与错误归因问题，再在后续阶段集中提升图文场景与复杂题型下的推理能力。
+
+\subsection{自动推理与验证}
+
+自动推理与验证是本课题区别于一般符号求解脚本的关键所在。当前系统并不把模型生成的 Lean 命题直接当作答案，而是进一步通过 D 阶段的语义排序与 E 阶段的证明生成、修复和 Lean 验证，对命题是否真正对应原题进行筛选，并将整次运行的过程数据写入报告、日志和 Lean 导出工作区。这一机制使系统具备了“生成之后仍要接受验证”的双层约束，也使研究对象从“模型是否会生成一个看似合理的表达式”转向“生成结果能否在形式系统中被实际检验”。
+
+从中期阶段的结果来看，这一验证链路已经足以支撑小规模和中等规模基准测试，且能够揭示系统当前的真实瓶颈位置。特别是在近期实验中，系统的主要瓶颈已由早期的命题语义漂移逐步转移至证明阶段的策略不足，这说明前半段自动形式化工作已经取得实质进展，而后续研究的重心需要进一步转向 proof planning、库定理复用和复杂目标下的证明修复。
+
+\section{研究计划及预期成果}
+
+\subsection{研究方法与技术途径}
+
+结合开题阶段提出的“形式化建模、自动形式化、自动推理与验证”三部分研究内容，当前课题采用的技术路径可以概括为：以 Lean~4 为形式化后端，以 MechLib/Mathlib 提供的力学与数学环境为知识基础，以大语言模型承担自然语言到形式语言的生成任务，并以真实 Lean 编译与验证结果作为外部判据，对系统行为进行分阶段筛选和误差归因。具体而言，系统将题目输入转化为结构化 \texttt{Problem IR}，随后在命题生成阶段引入面向力学主题的检索上下文，再通过编译检查、语义排序与证明验证形成“生成—检查—修复—归档”的闭环。
+
+需要说明的是，开题报告中曾设想通过构建数据集和训练模型来提升自动形式化能力，但在中期阶段，项目组根据工程实现成本、验证优先级与研究风险的综合考虑，选择先完成无专项训练条件下的可复现实验基线。这一调整并不改变课题总体目标，而是将原定工作拆分为两个更稳妥的阶段：中期以前重点解决系统架构、数据通道、形式化表示和验证流程；中期以后再围绕 proof 策略、库定理复用、专项样本扩充以及必要的模型增强展开工作。这样的路线能够保证后续任何性能提升都建立在已可回放、可比较、可解释的基线上。
+
+\subsection{研究计划}
+
+根据开题报告的总体安排，并结合目前已完成的系统实现与实验状态，后续计划如表~\ref{tab:plan} 所示。表中所谓“已完成”，指已经形成稳定代码、实验记录或可验证输出；所谓“进行中”，指代码或实验已起步但尚未达到可作为最终结论写入论文的稳定状态。
+
+\begin{table}[htbp]
+    \centering
+    \caption{课题阶段计划与当前进度}
+    \label{tab:plan}
+    \begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{3cm} >{\raggedright\arraybackslash}p{2cm} X}
+        \toprule
+        阶段任务 & 当前状态 & 说明 \\
+        \midrule
+        文献调研与开题论证 & 已完成 & 已完成形式化方法、PhysLean/Lean4Phys、AI 自动形式化与力学题推理方向的文献调研，并形成开题报告。 \\
+        形式化基础与数据通道搭建 & 已完成 & 已完成多数据源接入、统一配置系统、\texttt{Problem IR} 中间表示和 Lean 运行环境联通。 \\
+        自动形式化与语义筛选基线 & 已完成 & 已完成 A--F 模块化流水线、B/C/D 单轮反馈闭环、MechLib 检索注入和样本级并发执行。 \\
+        证明阶段能力增强 & 进行中 & 已定位 proof 阶段为当前主瓶颈，下一阶段将围绕 proof planning、repair 分流和可证形式偏置继续迭代。 \\
+        MechLib 真实复用与专题扩展 & 进行中 & 已完成环境接入与检索适配，但尚未形成稳定的库符号显式复用，需要继续优化检索、候选生成与证明策略。 \\
+        论文写作与结题整理 & 后续开展 & 在系统能力进一步稳定后，完成论文正文撰写、实验整合和答辩材料准备。 \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+\subsection{预期成果}
+
+从毕业设计的总体目标出发，本课题最终希望形成三类成果。其一，是一套能够在力学题场景中完成自然语言理解、命题生成、形式化验证与错误归因的可复现实验系统，为后续研究和教学使用提供基础平台。其二，是围绕 \texttt{LeanPhysBench} 力学子集与自建理论力学样本集形成的阶段性实验结论，用以回答系统在哪些类型的问题上已经具备求解能力、在哪些环节仍存在显著短板。其三，是在上述系统与实验基础上完成学士学位论文，对力学系统自动建模与多模态推理方法的可行性、实现路径和局限性作出系统总结。
+
+在中期节点上，课题已基本实现第一类成果的主体框架，并获得了初步的第二类成果；第三类成果即论文写作仍将依赖后续 proof 能力提升、专题样本扩展和系统性实验整理来进一步完成。
+
+\section{工作完成情况}
+
+\subsection{研究进展}
+
+截至目前，课题已经从开题阶段的方案论证与文献调研，推进到“系统可运行、实验可复现、结果可分析”的中期状态。项目仓库当前以 \texttt{src/mech\_pipeline} 为核心，围绕自动形式化与验证任务形成了较完整的工程结构：\texttt{modules} 目录负责 A--F 六个阶段模块，\texttt{adapters} 目录负责数据接入与 Lean 执行，\texttt{knowledge} 目录负责面向 MechLib 的检索与上下文构造，\texttt{model} 目录封装模型接口，\texttt{eval} 与 \texttt{reports} 则承担指标计算和实验分析功能；此外，\texttt{configs}、\texttt{fixtures} 与 \texttt{tests} 分别提供实验配置、固定样本与回归测试支撑。项目已经不再是若干离散脚本的组合，而是形成了具有清晰职责分层的实验系统。
+
+从研究材料上看，当前仓库中已经积累了较为系统的核心报告，包括 2026 年 3 月的项目综合报告、2026 年 4 月 5 日的 \texttt{mechanics} 全量实测分析、2026 年 4 月 9 日的 MechLib 使用情况与消融实验分析，以及 2026 年 4 月 10 日形成的中期草稿。这些文档与运行目录中的 \texttt{metrics.json}、\texttt{sample\_summary.jsonl}、\texttt{semantic\_rank.jsonl} 等结果文件共同构成了本次中期报告的事实依据。基于这些材料可以确认，项目当前已经完成的不仅是代码开发，还包括 benchmark 运行、消融实验、错误分析和阶段性结论沉淀。
+
+\subsection{阶段成果}
+
+\subsubsection{端到端形式化流水线已经建成}
+
+项目当前已经形成从题目输入到 Lean 导出工作区的完整流水线。主入口位于 \texttt{src/mech\_pipeline/cli.py}，核心流程为“题目输入 $\rightarrow$ A~Grounding $\rightarrow$ MechLib 检索 $\rightarrow$ B~Statement Generation $\rightarrow$ C~Lean Compile Check $\rightarrow$ D~Semantic Rank $\rightarrow$ E~Proof Search / Repair $\rightarrow$ F~Metrics / Analysis / Export”。其中，A 阶段负责构造统一的 \texttt{Problem IR}；B 阶段负责生成 Lean 命题候选；C 阶段调用真实 Lean 环境执行编译检查；D 阶段结合规则分与语言模型输出进行语义筛选；E 阶段对最终候选进行证明生成与修复；F 阶段则负责输出 \texttt{metrics.json}、分析报告、样本汇总与 Lean 工作区。
+
+与早期原型相比，当前流水线最重要的进展不在于“多生成几个候选”，而在于形成了明确的质量控制边界。其一，B 阶段已经移除了伪造性 fallback theorem，不再用无研究价值的占位命题掩盖失败；其二，D 阶段已经能够区分 \texttt{exact}、\texttt{equivalent}、\texttt{special\_case}、\texttt{weaker} 与 \texttt{drift} 等不同语义关系，从而避免将表面形式差异误判为完全错误；其三，B/C/D 之间已经形成单轮结构化反馈闭环，当编译阶段全部失败或语义阶段未通过时，系统能够将错误摘要重新反馈给候选生成模块，进行一轮有针对性的修订。这些设计使项目从“能够生成 Lean 片段”进一步推进为“能够解释为何成功或失败”的研究型系统。
+
+此外，系统已经支持题目级并发执行与实时进度输出。相关逻辑被独立封装在 \texttt{orchestrator.py} 中，而不再堆叠在单个超大 CLI 文件中。运行结束后，系统会自动将结果整理到 \texttt{runs/<timestamp>\_<tag>/} 并复制至 \texttt{outputs/latest/}，同时导出可直接打开的 Lean workspace。这意味着当前阶段已经完成了自动形式化研究中最关键的工程前提：任何一次实验均可以依据配置、日志和导出文件被重复检查和复盘。
+
+\subsubsection{MechLib 接入与知识检索已经具备研究支撑能力}
+
+当前项目已经成功接入本地 MechLib 环境，并在 LeanRunner 中支持 \texttt{mechlib} backend、头文件路由与 preflight 检查。静态统计表明，本地 MechLib 代码树中可见核心 Lean 文件共 15 个，涵盖 \texttt{AnalyticalMechanics}、\texttt{CentralForce}、\texttt{Dynamics}、\texttt{Rotation}、\texttt{WorkEnergy}、\texttt{SHM} 等主要模块；\texttt{theorem\_corpus.jsonl} 中目前包含 182 条索引项，其中 MechLib.SI、MechLib.Mechanics.Kinematics、MechLib.Mechanics.DampedSHM 与 MechLib.Units.Quantity 等模块的条目数相对较多。这说明课题已经拥有一个具备初步规模的形式化力学知识环境，而非空壳式后端。
+
+在此基础上，项目实现了 \texttt{src/mech\_pipeline/knowledge/mechlib.py} 中的 MechLib 检索器，可以根据题目文本和 A 阶段抽取的物理规律信息，生成领域标签、摘要上下文、源条目、导入提示与 proof style 示例，并将结果写入 \texttt{mechlib\_retrieval.jsonl}。从系统设计角度看，这一步已经完成了“题目语义 $\rightarrow$ 形式化知识库上下文”的桥接，为后续利用库定理改进命题生成和证明搜索创造了条件。
+
+不过，中期阶段也明确暴露出这一部分工作的边界：MechLib 的环境接入与检索注入已经完成，但“生成结果是否真正复用了检索到的库定理”尚未被充分证明。根据 2026 年 4 月 9 日的核查结果，在最近一次 14 题理论力学运行中，虽然所有样本都运行在 MechLib 环境中，且 D 阶段最终选中的候选也全部走 \texttt{mechlib} backend，但尚未发现检索得到的符号名在最终 theorem 或 proof 正文中被稳定调用的证据。因此，当前更准确的阶段结论应当是“系统已经接入并利用了 MechLib 的运行环境与检索提示”，而不是“系统已经稳定复用了 MechLib 定理完成形式化和证明”。
+
+\subsubsection{基准测试、消融实验与阶段性性能结论已经形成}
+
+目前项目已经完成两组最重要的实证测试。第一组是 \texttt{LeanPhysBench\_v0.json} 中 \texttt{mechanics} 子集的 101 题全量运行，对应运行目录为 \path{runs/20260405_214834_mechanics101-realapi-par10-20260405-full}。从 \texttt{sample\_summary.jsonl} 的样本级统计可知，该次运行共完成 101 题，其中 Grounding 成功 98 题，Statement Generation 成功 97 题，Compile 成功 94 题，Semantic 成功 72 题，最终 Proof 成功和端到端验证成功均为 42 题，对应端到端成功率为 41.5842\%。这一结果说明，系统已经具备在较完整 benchmark 上稳定跑通并取得中等规模成功数的能力。
+
+第二组是自建的 14 题理论力学样本集，对应运行目录为 \path{runs/20260407_123429_theoretical-mechanics-14-realapi-par10-20260407}。样本级统计表明，该数据集上 Grounding、Statement 和 Compile 均成功 13 题，Semantic 成功 12 题，Proof 成功与端到端成功均为 5 题，端到端成功率为 35.7143\%。该结果表明，项目已经不仅停留在通用大学物理题层面，也开始对理论力学方向建立起初步的处理能力，但证明阶段仍明显偏弱。
+
+为了进一步分析检索模块的实际作用，项目又完成了“关闭 MechLib 检索信息、保留 Lean/MechLib 运行环境不变”的消融实验。对 101 题 \texttt{mechanics} 集而言，去除检索信息后端到端成功数由 42 题下降为 38 题；对 14 题理论力学集而言，端到端成功数维持在 5 题不变。这表明 MechLib 检索提示在较大 benchmark 上确有一定帮助，但帮助幅度有限，且现阶段更像是提供了题目主题和建模偏置，而不是直接驱动库定理复用。相关样本级结果汇总见表~\ref{tab:benchmark-summary}。
+
+\begin{table}[htbp]
+    \centering
+    \caption{阶段性基准与消融实验样本级结果汇总}
+    \label{tab:benchmark-summary}
+    \resizebox{\textwidth}{!}{
+    \begin{tabular}{lcccccc}
+        \toprule
+        数据集与设置 & Grounding & Statement & Compile & Semantic & Proof & End-to-end \\
+        \midrule
+        \texttt{mechanics} 基线（101题） & 98/101 & 97/101 & 94/101 & 72/101 & 42/101 & 42/101 \\
+        理论力学基线（14题） & 13/14 & 13/14 & 13/14 & 12/14 & 5/14 & 5/14 \\
+        \texttt{mechanics} 去检索消融（101题） & 98/101 & 96/101 & 95/101 & 72/101 & 38/101 & 38/101 \\
+        理论力学去检索消融（14题） & 11/14 & 11/14 & 11/14 & 10/14 & 5/14 & 5/14 \\
+        \bottomrule
+    \end{tabular}
+    }
+\end{table}
+
+进一步地，101 题全量运行的失败分布已经表现出清晰的阶段性特征：最终错误中 \texttt{proof\_search\_failure} 为 30 题，\texttt{semantic\_drift} 为 22 题，\texttt{elaboration\_failure} 与 \texttt{wrong\_target\_extraction} 各为 3 题，\texttt{statement\_generation\_parse\_failed} 为 1 题。这表明项目当前的主瓶颈已经从单纯的编译失败转移到证明阶段和复杂语义对齐阶段。与此同时，闭环机制在 101 题运行中被触发了 59 次，说明系统已经具备对大量边界样本进行二次修正的能力，但其主要收益仍集中在较基础的 \texttt{university} 子集上。
+
+\subsubsection{工程化支撑与可复现性建设已经基本完成}
+
+在研究型系统中，性能数值之外同样重要的是结果的可重现与可诊断性。当前项目已经完成一套较完整的工程化支撑体系。首先，配置层通过 \texttt{PipelineConfig} 实现了数据源、模型、Lean 环境、知识检索、候选生成、证明策略和并发参数的统一管理，并对样本并发上限、反馈轮数、阈值范围等关键参数进行校验。其次，系统在每次运行后都会保留分阶段的 \texttt{jsonl} 日志、样本汇总、分析报告和 Lean 导出工作区，使实验结论不再依赖人工记录，而是能够从原始运行产物中直接追溯。再次，项目针对 archive 写盘、CLI、statement normalization、semantic ranking、proof 检查、配置解析等关键模块建立了自动化测试文件，为后续迭代提供了回归基础。
+
+并发能力的加入进一步提升了系统的实验吞吐。根据 2026 年 3 月 31 日的题目级并发基准，在 4 题 workload 上，将 \texttt{sample\_concurrency} 从 1 提升到 4 后，整次运行墙钟时间由 866.42 秒降至 414.51 秒，总降幅达到 52.16\%，加速比约为 2.09 倍。这说明当前架构不仅在逻辑上可用，也已经在实验效率上具备支持较大规模 benchmark 的现实条件。
+
+从中期节点来看，项目还出现了一个值得记录但不宜夸大的现象：当前仓库仍处于活跃迭代状态，部分新增功能和测试仍在收敛之中，因此工程层面的局部回归清理仍需继续开展。这一现象并不影响本报告已经引用的既有运行结果，但提示后续论文写作和最终结题阶段仍需进一步稳定工作区、固化基线版本并补齐最终回归验证。
+
+\section{目前存在的问题及拟解决方法}
+
+\subsection{存在的问题}
+
+结合当前代码实现、实验报告与样本级结果，可以将本课题中期阶段的主要问题概括为以下三个方面。首先，MechLib 虽然已经在环境层面和检索层面接入系统，但“检索结果能否实质性转化为 theorem/proof 中的库符号复用”这一关键问题尚未解决。当前模型在不少样本上仍倾向于将题目转写为纯 \texttt{Real} 代数关系，再依赖通用 tactic 完成证明，这使得课题关于“利用形式化力学知识库提升自动建模与推理质量”的研究主线尚未真正落实到最终产物层面。
+
+其次，证明阶段已经成为当前系统最突出的性能瓶颈。以 101 题全量 \texttt{mechanics} 运行为例，语义通过样本达到 72 题，但最终 proof 成功只有 42 题，说明至少有 30 题处于“命题基本对题，但证明未能完成”的状态。现有 proof 失败主要集中在 tactic 路线不合适、目标形状不匹配以及缺乏中间结论三个方面。对于 \texttt{competition} 类或理论力学类题目，这一问题表现得更为突出，说明项目已经不能仅靠继续增加候选数量或修补编译错误来获得显著收益。
+
+再次，理论力学专题样本与多模态场景的研究仍处于起步状态。虽然项目已经建立 14 题理论力学小样本集，并保留了图文题兼容路径，但样本规模尚不足以支撑更细粒度的能力分层分析，多模态输入目前也主要作为接口兼容而非大规模实验对象。这意味着课题标题所包含的“多模态推理”与“力学系统自动建模”方向在后续仍需要更系统的专题扩展，才能形成更完整的论文结论。
+
+\subsection{拟解决方法}
+
+针对上述问题，下一阶段的工作将围绕“让系统真正用到库、让证明阶段真正变强、让专题实验真正站稳”三条主线展开。对于 MechLib 的真实复用问题，首先需要在评测侧加入更直接的指标，例如检索符号命中率、最终选中候选与检索结果的重合度，以及实际库符号使用率；随后在命题生成阶段显式鼓励模型优先产生引用检索到的定义或定理的候选，并在语义排序阶段将“语义正确且使用了库符号”的候选置于更高优先级。只有这样，MechLib 才能从环境标签和背景提示转变为真正参与推理的形式化知识库。
+
+对于证明阶段的瓶颈，后续将不再简单依赖增加尝试次数，而是根据失败类型重构 proof 生成与修复策略。具体而言，可将当前 proof 失败样本按代数化简、中间结论缺失、目标形状不匹配、库定理可调用但未调用等模式进行聚类，并针对不同模式设计更明确的 repair 提示与 proof planning 结构；同时，D 阶段也需要在候选排序时进一步引入“proof-friendly 形式偏置”，使最终被送往 E 阶段的命题不仅语义正确，而且更适合被 Lean tactic 接住。
+
+对于理论力学与多模态方向，下一阶段将继续扩充理论力学专题样本，尤其增加动量定理、角动量、拉格朗日方程、振动等主题的不同表述与不同难度层次，并在稳定基线的基础上逐步推进图文题实验。只有在样本覆盖更加充分之后，后续关于专项训练、模型增强或多模态推理的讨论才具备坚实依据。换言之，当前中期阶段已经完成的是一个可复现、可验证、可诊断的研究基线，而下一阶段的重点将是把这一基线进一步转化为“能够稳定复用形式化知识、能够处理更复杂力学问题”的研究型系统。
+
+\end{document}

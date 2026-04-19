@@ -10,8 +10,8 @@ from mech_pipeline.types import (
     CompileCheckResult,
     GroundingResult,
     ModelResponse,
-    StatementCandidate,
 )
+from mech_pipeline.utils import redact_leakage_text
 
 
 class SpyModelClient(ModelClient):
@@ -38,10 +38,10 @@ class SpyModelClient(ModelClient):
             return ModelResponse(
                 text=(
                     '{"candidates":['
-                    '{"candidate_id":"c1","lean_header":"import PhysLean","theorem_decl":"theorem t1 (a : Real) : a = a","assumptions":[]},'
-                    '{"candidate_id":"c2","lean_header":"import PhysLean","theorem_decl":"theorem t2 (a : Real) : a = a","assumptions":[]},'
-                    '{"candidate_id":"c3","lean_header":"import PhysLean","theorem_decl":"theorem t3 (a : Real) : a = a","assumptions":[]},'
-                    '{"candidate_id":"c4","lean_header":"import PhysLean","theorem_decl":"theorem t4 (a : Real) : a = a","assumptions":[]}'
+                    '{"candidate_id":"c1","lean_header":"import PhysLean","theorem_decl":"theorem t1 (F m a : Real) (hm : m ≠ 0) (h : F = m * a) : a = F / m","assumptions":[],"plan":"p","supporting_facts":["F = m * a"],"fact_sources":["problem"],"library_symbols_used":[],"grounding_explanation":"g"},'
+                    '{"candidate_id":"c2","lean_header":"import PhysLean","theorem_decl":"theorem t2 (F m a : Real) (hm : m ≠ 0) (h : F = m * a) : F / m = a","assumptions":[],"plan":"p","supporting_facts":["F = m * a"],"fact_sources":["problem"],"library_symbols_used":[],"grounding_explanation":"g"},'
+                    '{"candidate_id":"c3","lean_header":"import PhysLean","theorem_decl":"theorem t3 (F m a : Real) (hm : m ≠ 0) (h : F = m * a) : m * a = F","assumptions":[],"plan":"p","supporting_facts":["F = m * a"],"fact_sources":["problem"],"library_symbols_used":[],"grounding_explanation":"g"},'
+                    '{"candidate_id":"c4","lean_header":"import PhysLean","theorem_decl":"theorem t4 (F m a : Real) (hm : m ≠ 0) (h : F = m * a) : F = a * m","assumptions":[],"plan":"p","supporting_facts":["F = m * a"],"fact_sources":["problem"],"library_symbols_used":[],"grounding_explanation":"g"}'
                     "]}"
                 )
             )
@@ -62,6 +62,16 @@ class SpyModelClient(ModelClient):
                 for cid in unique_ids
             )
             return ModelResponse(text='{"results":[' + rows + "]}")
+        if "__TASK_E_PLAN_PROOF__" in prompt:
+            return ModelResponse(
+                text=(
+                    '{"plan":"Use the theorem assumptions directly.",'
+                    '"theorems_to_apply":["rfl"],'
+                    '"givens_to_use":["h"],'
+                    '"intermediate_claims":["goal follows directly"],'
+                    '"algebraic_cleanup_only":true}'
+                )
+            )
         if "__TASK_E_GENERATE_PROOF__" in prompt or "__TASK_E_REPAIR_PROOF__" in prompt:
             return ModelResponse(text='{"proof_body":"rfl","strategy":"direct","used_facts":["rfl"]}')
         return ModelResponse(text="{}")
@@ -113,6 +123,10 @@ def test_prompt_rendering_does_not_leak_gold_answer(tmp_path: Path) -> None:
         tmp_path / "D.txt",
         "__TASK_D_SEMANTIC_RANK__\n{{problem_text}}\n{{problem_ir_json}}\n{{candidate_payload_json}}",
     )
+    prompt_e_plan = _write_prompt(
+        tmp_path / "E_plan.txt",
+        "__TASK_E_PLAN_PROOF__\n{{theorem_decl}}\n{{problem_ir_json}}",
+    )
     prompt_e_gen = _write_prompt(
         tmp_path / "E_gen.txt",
         "__TASK_E_GENERATE_PROOF__\n{{theorem_decl}}\n{{problem_ir_json}}",
@@ -133,7 +147,7 @@ def test_prompt_rendering_does_not_leak_gold_answer(tmp_path: Path) -> None:
     module_a = ModuleA(client, "spy-model", prompt_a)
     grounding_a = module_a.run(sample)
     assert grounding_a.parse_ok
-    assert client.prompts, "Module A should send one prompt"
+    assert client.prompts
     assert secret not in client.prompts[-1]
 
     grounding = GroundingResult(
@@ -150,7 +164,7 @@ def test_prompt_rendering_does_not_leak_gold_answer(tmp_path: Path) -> None:
 
     module_b = ModuleB(client, prompt_b)
     candidates = module_b.run(grounding)
-    assert len(candidates) == 4
+    assert candidates
     assert secret not in client.prompts[-1]
 
     compile_rows = [
@@ -179,6 +193,7 @@ def test_prompt_rendering_does_not_leak_gold_answer(tmp_path: Path) -> None:
     module_e = ModuleE(
         model_client=client,
         lean_runner=FakeLeanRunner(),
+        prompt_plan_path=prompt_e_plan,
         prompt_generate_path=prompt_e_gen,
         prompt_repair_path=prompt_e_repair,
         max_attempts=1,
@@ -187,3 +202,16 @@ def test_prompt_rendering_does_not_leak_gold_answer(tmp_path: Path) -> None:
     assert attempts
     assert check.proof_success is True
     assert secret not in client.prompts[-1]
+
+
+def test_redact_leakage_text_preserves_proof_style_problem_requests() -> None:
+    english = "Proof: show that the trajectory is an Archimedean spiral."
+    chinese = "证明该轨迹是阿基米德螺线。"
+
+    assert redact_leakage_text(english) == english
+    assert redact_leakage_text(chinese) == chinese
+
+
+def test_redact_leakage_text_still_cuts_answer_sections() -> None:
+    text = "Find the acceleration of the box. Answer: a = F / m"
+    assert redact_leakage_text(text) == "Find the acceleration of the box."

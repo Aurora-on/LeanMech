@@ -22,7 +22,7 @@ model:
 lean:
   enabled: true
   physlean_dir: "F:/AI4Mechanics/PhysLean-master"
-  timeout_s: 90
+  timeout_s: 120
   strict_blocklist: ["sorry", "admit", "axiom"]
   lean_header: "import PhysLean"
   preflight_enabled: true

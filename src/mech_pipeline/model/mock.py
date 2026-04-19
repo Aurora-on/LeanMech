@@ -225,6 +225,61 @@ class MockModelClient(ModelClient):
                 }
             return json.dumps(payload, ensure_ascii=False)
 
+        if "__TASK_Z_DIRECT_FORMALIZE__" in prompt:
+            if mode == "kinematics":
+                payload = {
+                    "theorem_decl": (
+                        "theorem direct_displacement_from_velocity_time "
+                        "(s v t : Real) "
+                        "(h : s = v * t) : s = v * t"
+                    ),
+                    "proof_body": "exact h",
+                    "plan": "Use the provided kinematics relation directly.",
+                    "used_facts": ["h"],
+                }
+            elif mode == "energy":
+                payload = {
+                    "theorem_decl": (
+                        "theorem direct_speed_sq_from_energy "
+                        "(m g h v : Real) "
+                        "(hm : m != 0) "
+                        "(hrel : m * g * h = (1 / 2 : Real) * m * v^2) : v^2 = 2 * g * h"
+                    ),
+                    "proof_body": "\n".join(
+                        [
+                            "apply (eq_div_iff hm).2",
+                            "calc",
+                            "  v ^ 2 * m = m * v ^ 2 := by ring",
+                            "  _ = 2 * (m * g * h) := by",
+                            "    have hmul := congrArg (fun x : Real => 2 * x) hrel",
+                            "    simpa [pow_two] using hmul",
+                            "  _ = m * (2 * g * h) := by ring",
+                        ]
+                    ),
+                    "plan": "Multiply the energy equation by 2 and divide by the nonzero mass.",
+                    "used_facts": ["hrel", "hm"],
+                }
+            else:
+                payload = {
+                    "theorem_decl": (
+                        "theorem direct_acceleration_from_force_mass "
+                        "(F m a : Real) "
+                        "(hm : m != 0) "
+                        "(h : F = m * a) : a = F / m"
+                    ),
+                    "proof_body": "\n".join(
+                        [
+                            "apply (eq_div_iff hm).2",
+                            "calc",
+                            "  a * m = m * a := by ring",
+                            "  _ = F := by rw [<- h]",
+                        ]
+                    ),
+                    "plan": "Solve the Newton second law relation for acceleration.",
+                    "used_facts": ["h", "hm"],
+                }
+            return json.dumps(payload, ensure_ascii=False)
+
         if "__TASK_D_SEMANTIC_RANK__" in prompt:
             cids = re.findall(r'"candidate_id"\s*:\s*"([^"]+)"', prompt)
             ordered: list[str] = []
@@ -263,10 +318,21 @@ class MockModelClient(ModelClient):
                 )
             return json.dumps({"results": results}, ensure_ascii=False)
 
+        if "__TASK_E_PLAN_PROOF__" in prompt:
+            payload = {
+                "plan": "Use the theorem assumptions first and leave algebraic simplification to the end.",
+                "theorems_to_apply": [],
+                "givens_to_use": ["h"],
+                "intermediate_claims": ["Rearrange the main relation into the target form."],
+                "algebraic_cleanup_only": False,
+            }
+            return json.dumps(payload, ensure_ascii=False)
+
         if "__TASK_E_GENERATE_PROOF__" in prompt or "__TASK_E_REPAIR_PROOF__" in prompt:
             payload = {
                 "proof_body": "first | aesop | rfl | simp",
                 "strategy": "mock baseline",
+                "plan": "Use assumptions first, then simplify.",
                 "used_facts": ["aesop", "rfl", "simp"],
             }
             return json.dumps(payload, ensure_ascii=False)

@@ -1,12 +1,12 @@
-﻿__TASK_E_GENERATE_PROOF__
+__TASK_E_GENERATE_PROOF__
 You are a Lean4 proof generator.
 
-Before proving, learn the retrieved library context and follow its import/namespace conventions.
+Before writing Lean code, read the theorem-level proof plan and use it as the main proof skeleton.
 Output JSON only:
 {
   "proof_body": "...",
   "strategy": "...",
-  "plan": "brief proof plan",
+  "plan": "brief proof-construction note",
   "used_facts": ["..."],
   "subgoals": ["..."]
 }
@@ -15,16 +15,20 @@ Rules:
 1. Output only proof body; do not repeat theorem declaration.
 2. Never use sorry / admit / axiom.
 3. Do not output a bare one-line tactic such as `rfl`, `simp`, `aesop`, `linarith`, or `ring`.
-4. Every proof must use theorem assumptions or derive explicit intermediate facts with `have`, `calc`, `rw`, `constructor`, or `simpa`.
-5. Prefer robust tactics: simp, norm_num, ring, linarith, nlinarith, field_simp, rw, calc.
-6. Keep each step directly relevant to theorem target.
-7. Use retrieved context as style hints only; do not copy irrelevant lemmas.
+4. Every proof must use theorem assumptions or explicit intermediate facts with `have`, `calc`, `rw`, `constructor`, or `simpa`.
+5. For mechanics law questions, first establish the relevant theorem application, then do algebraic cleanup.
+6. `ring`, `linarith`, `norm_num`, `nlinarith`, and similar tactics may only appear as the last cleanup step, not as the main proof skeleton.
+7. Prefer `have`, `apply`, `rw`, and `simpa using` steps that correspond to the supplied theorem plan.
+8. Use retrieved context as theorem/style hints only; do not copy irrelevant lemmas.
 
 Theorem:
 {{theorem_decl}}
 
 ProblemIR:
 {{problem_ir_json}}
+
+Proof plan:
+{{proof_plan_json}}
 
 Retrieved library context:
 {{mechlib_context}}

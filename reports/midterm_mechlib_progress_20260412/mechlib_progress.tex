@@ -1,0 +1,236 @@
+\documentclass[12pt,a4paper]{ctexart}
+
+\usepackage[a4paper,margin=2.5cm]{geometry}
+\usepackage{array}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{caption}
+\usepackage[most]{tcolorbox}
+\usepackage{hyperref}
+\usepackage{setspace}
+\usepackage{tabularx}
+\usepackage{tikz}
+\usepackage{titlesec}
+
+\usetikzlibrary{arrows.meta,backgrounds,fit,positioning}
+
+\hypersetup{hidelinks}
+\setstretch{1.35}
+\emergencystretch=2em
+\setcounter{tocdepth}{3}
+\setcounter{secnumdepth}{3}
+
+\titleformat{\section}{\heiti\zihao{-3}}{\thesection}{1em}{}
+\titleformat{\subsection}{\heiti\zihao{4}}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}{\heiti\zihao{-4}}{\thesubsubsection}{1em}{}
+
+\captionsetup[table]{skip=6pt}
+\newtcolorbox{codeblock}{
+    colback=gray!5,
+    colframe=black!35,
+    boxrule=0.5pt,
+    arc=1pt,
+    left=8pt,
+    right=8pt,
+    top=6pt,
+    bottom=6pt,
+    breakable
+}
+
+\begin{document}
+
+\begin{center}
+    {\zihao{3}\heiti 中期报告工作进展：MechLib 部分}
+\end{center}
+
+\section{MechLib 工作进展}
+
+\subsection{研究目标与功能定位}
+
+本课题将 MechLib 视为面向力学自动形式化研究的核心知识基础设施。其功能定位并不限于为 Lean 代码提供一个可编译的运行环境，更重要的是在题目理解、候选命题生成、语义筛选和证明构造等阶段，为系统提供可检索、可引用、可复用的形式化物理知识。与一般意义上的“定理列表”不同，MechLib 在本课题中的角色是一个同时承担\textbf{知识表示}、\textbf{知识检索}与\textbf{形式化执行}三重职责的理论库：一方面，它通过类型化的量纲体系和 SI 单位层为力学量的合法组合提供形式保障；另一方面，它将经典力学与部分理论力学中的核心关系组织为可调用的 Lean 定理与接口；再一方面，它又被导出为适配大模型检索与提示注入的语料资源。因此，中期阶段围绕 MechLib 的工作不仅是单纯的工程集成，更包括对其知识结构、可检索性、可复用性以及对主流程实际贡献的系统性考察。
+
+\subsection{已完成的主要工作}
+
+\subsubsection{完成 MechLib 项目结构梳理与知识分层建模}
+
+中期阶段首先对 MechLib 的源码结构进行了系统梳理。目前该项目的顶层入口文件为 \texttt{MechLib.lean}，其下属内容大致可划分为四个层次：
+
+\begin{enumerate}
+    \item \textbf{基础量纲与物理量层}：位于 \texttt{Units/} 目录，包含 \texttt{Dim.lean}、\texttt{Quantity.lean}、\texttt{VecQuantity.lean} 等文件。该层负责定义量纲、带量纲的标量物理量与向量物理量，是后续所有力学定理的类型基础。
+    \item \textbf{SI 单位体系层}：主要集中在 \texttt{SI.lean} 中，负责给出长度、质量、时间、速度、力、能量、角动量等类型别名，以及 \texttt{meter}、\texttt{newton}、\texttt{joule} 等 SI 单位和一组量纲桥接定理。
+    \item \textbf{力学理论层}：位于 \texttt{Mechanics/} 目录，已形成较为清晰的模块化结构，包括 \texttt{Kinematics}、\texttt{Dynamics}、\texttt{SystemDynamics}、\texttt{WorkEnergy}、\texttt{MomentumImpulse}、\texttt{Rotation}、\texttt{CentralForce}、\texttt{AnalyticalMechanics}、\texttt{SHM} 和 \texttt{DampedSHM} 等模块。
+    \item \textbf{兼容层}：位于 \texttt{Compat/PHYSlib.lean}，用于对接旧风格命名和历史接口，降低已有脚本迁移到新库结构时的成本。
+\end{enumerate}
+
+\begin{figure}[htbp]
+    \centering
+    \resizebox{\textwidth}{!}{%
+    \begin{tikzpicture}[
+        font=\scriptsize,
+        >=Latex,
+        node distance=0.75cm and 0.45cm,
+        layer/.style={draw, rounded corners=2pt, align=center, minimum height=0.95cm, text width=3.5cm, fill=gray!8},
+        module/.style={draw, rounded corners=2pt, align=center, minimum height=0.82cm, text width=2.95cm, fill=blue!4},
+        groupbox/.style={draw, rounded corners=3pt, inner sep=12pt, fill=green!4},
+        arrow/.style={->, line width=0.5pt}
+    ]
+        \node[layer, fill=black!6, text width=4.0cm] (root) {\texttt{MechLib}\\顶层入口与统一导出};
+
+        \node[layer, below left=of root, xshift=-3.0cm] (units) {基础量纲与物理量层\\\texttt{Units/}\\\texttt{Dim.lean}\\\texttt{Quantity.lean}\\\texttt{VecQuantity.lean}};
+        \node[layer, below=of root] (si) {SI 单位体系层\\\texttt{SI.lean}\\单位别名与量纲桥接};
+        \node[layer, below right=of root, xshift=3.0cm] (compat) {兼容层\\\texttt{Compat/}\\\texttt{PHYSlib.lean}\\旧接口与别名映射};
+        \coordinate (mechanicsanchor) at ([yshift=-3.6cm]root.south);
+
+        \node[module] (kin) at ([xshift=-6.4cm,yshift=-1.2cm]mechanicsanchor) {\texttt{Kinematics}\\运动学};
+        \node[module] (dyn) at ([xshift=-3.2cm,yshift=-1.2cm]mechanicsanchor) {\texttt{Dynamics}\\动力学};
+        \node[module] (sysdyn) at ([xshift=0cm,yshift=-1.2cm]mechanicsanchor) {\texttt{System}\\\texttt{Dynamics}\\系统动力学};
+        \node[module] (work) at ([xshift=3.2cm,yshift=-1.2cm]mechanicsanchor) {\texttt{Work}\\\texttt{Energy}\\功与能};
+        \node[module] (mom) at ([xshift=6.4cm,yshift=-1.2cm]mechanicsanchor) {\texttt{Momentum}\\\texttt{Impulse}\\动量与冲量};
+
+        \node[module] (rot) at ([xshift=-6.4cm,yshift=-3.2cm]mechanicsanchor) {\texttt{Rotation}\\转动};
+        \node[module] (central) at ([xshift=-3.2cm,yshift=-3.2cm]mechanicsanchor) {\texttt{Central}\\\texttt{Force}\\中心力};
+        \node[module] (analytic) at ([xshift=0cm,yshift=-3.2cm]mechanicsanchor) {\texttt{Analytical}\\\texttt{Mechanics}\\分析力学};
+        \node[module] (shm) at ([xshift=3.2cm,yshift=-3.2cm]mechanicsanchor) {\texttt{SHM}\\简谐振动};
+        \node[module] (dshm) at ([xshift=6.4cm,yshift=-3.2cm]mechanicsanchor) {\texttt{Damped}\\\texttt{SHM}\\阻尼振动};
+
+        \begin{scope}[on background layer]
+            \node[groupbox, fit=(kin)(dyn)(sysdyn)(work)(mom)(rot)(central)(analytic)(shm)(dshm)] (mechanicsgroup) {};
+        \end{scope}
+        \node[align=center, fill=white, inner xsep=5pt, inner ysep=1pt] at ([yshift=-2pt]mechanicsgroup.north) {力学理论层\\\texttt{Mechanics/}};
+
+        \draw[arrow] (root) -- (units);
+        \draw[arrow] (root) -- (si);
+        \draw[arrow] (root) -- (compat);
+        \draw[arrow] (root) -- (mechanicsgroup);
+
+        \draw[arrow] (units) -- (si);
+        \draw[arrow] (si) -- (mechanicsgroup);
+    \end{tikzpicture}
+    }
+    \caption{MechLib 的总体结构示意图}
+    \label{fig:mechlib-structure}
+\end{figure}
+
+如图~\ref{fig:mechlib-structure} 所示，MechLib 并非简单的“定理堆叠”，而是一个从基础类型系统、单位系统、理论模块到兼容接口逐层展开的形式化力学库。这一分层对本课题尤为关键：它使得后续的自动形式化系统既可以在上层调用现成的力学定理，又可以在必要时追溯到更底层的量纲桥接与单位转换机制，从而提高系统在编译与语义层面的稳定性。
+
+\subsubsection{完成 MechLib 环境接入与运行联调}
+
+目前项目已经完成本地 MechLib 工作区与主流水线的联调。系统在 Lean 执行层同时支持 PhysLean 与 MechLib 两类后端环境，并通过预检查机制在运行开始前确认后端环境是否可用。对于需要使用 MechLib 的样本，系统能够自动选择对应 backend，完成候选命题的编译检查与证明验证；在实验产物导出阶段，也能够生成包含 MechLib 依赖信息的 Lean 工作区，以保证运行结果可复查、可重新打开和可独立编译。
+
+这一部分工作的意义在于，项目已经不再停留于“模型输出一段看似 Lean 的字符串”这一层面，而是实现了命题与证明在真实形式化环境中的执行闭环。就工程状态而言，MechLib 已经从外部资源变成主系统的可调用组成部分，为后续研究“形式化知识库如何参与自动建模与推理”提供了稳定基础。
+
+\subsubsection{完成 MechLib 核心内容的源码级整理与功能确认}
+
+在源码阅读与接口整理的基础上，目前已确认 MechLib 的内容可概括为以下三类。
+
+\paragraph{（1）量纲安全的物理量表示机制。}
+MechLib 的核心抽象是 \texttt{Quantity (d : Dim)}。这一结构在 \texttt{Quantity.lean} 中给出，其本质是将量纲编码到 Lean 类型中，从而保证物理量之间的加法、乘法、除法、幂运算和单位换算均受到类型系统约束。例如，\texttt{cast} 接口允许在已知量纲相等的前提下完成类型转换，而 \texttt{inUnits} 则提供“在指定单位下读取数值”的统一接口。这一设计使得库中大量物理定律不再是对裸 \texttt{Real} 变量的关系陈述，而是建立在量纲正确性的前提之上。
+
+\paragraph{（2）SI 单位与量纲桥接定理体系。}
+在 \texttt{SI.lean} 中，MechLib 进一步将 \texttt{Length}、\texttt{Mass}、\texttt{Time}、\texttt{Force}、\texttt{Energy}、\texttt{Momentum} 等常用物理量定义为带特定量纲的别名，并给出 \texttt{meter}、\texttt{newton}、\texttt{joule}、\texttt{hertz} 等单位常量。更重要的是，库中以定理形式编码了大量量纲桥接关系，例如 \texttt{force\_time\_eq\_momentum}、\texttt{mass\_two\_speed\_eq\_energy}、\texttt{length\_plus\_force\_eq\_torque} 等。这些桥接定理为上层公式中的 \texttt{cast} 操作提供了正式依据，是自动形式化系统在编译阶段能够通过类型检查的关键支持。
+
+\paragraph{（3）经典力学与理论力学主干模块。}
+在理论内容方面，MechLib 已经具备较为完整的经典力学主干模块：动力学模块中给出牛顿第二定律、动量定义和定质量动量变化公式；功与能模块中给出动能、弹簧势能、功与功--能定理接口；冲量与动量模块中给出冲量定义、冲量--动量定理和非弹性碰撞动量守恒；转动模块中给出力矩、角动量、转动动能和平行轴定理；振动模块给出简谐振动与阻尼振动的接口。此外，\texttt{AnalyticalMechanics.lean} 已经开始引入拉格朗日量、哈密顿量、欧拉--拉格朗日方程、Poisson 括号与约束乘子法等理论力学接口。这表明 MechLib 已不局限于中学或基础大学物理公式，而开始向更高层次的理论力学形式化迈进。
+
+\subsubsection{代表性定理展示}
+
+在对 MechLib 源码进行系统梳理之后，可以发现该项目已经具备若干适合直接展示的形式化定理。这类定理一方面应具有明确的物理含义，能够反映库在经典力学核心内容上的形式化能力；另一方面又应具有较好的可读性，能够在篇幅受限的报告中直观体现其形式化表达风格。基于这一标准，本文选取牛顿第二定律与简谐振动周期关系作为代表性样例。
+
+\paragraph{牛顿第二定律的形式化表达。}
+该定理位于 \texttt{Dynamics.lean} 中，其内容极为简洁，但具有较强的代表性。首先，MechLib 并未将力学量直接退化为裸实数，而是在 \texttt{Mass}、\texttt{Acceleration} 和 \texttt{Force} 的类型约束下表达 $F=ma$；其次，定理以前置定义 \texttt{F\_of} 为接口，随后通过 \texttt{@[simp]} 标记给出可重写形式，这使其既适合作为面向人类的物理表述，又适合作为 Lean 自动化证明中的基础重写规则。该定理体现了 MechLib 在“物理命名可读性”与“形式化可调用性”之间的统一。
+
+\begin{codeblock}
+\small\ttfamily
+@[simp] theorem newton\_second\_law\\
+\hspace*{1em}(m : Mass) (a : Acceleration) :\\
+\hspace*{1em}F\_of m a = m * a := rfl
+\end{codeblock}
+
+\paragraph{简谐振动周期关系的形式化证明。}
+第二个样例选自 \texttt{SHM.lean} 中的 \texttt{period\_frequency\_relation}。与前述牛顿第二定律主要体现定义展开与接口组织不同，这一定理进一步展示了 MechLib 在完整 Lean 证明层面的表达能力。该定理所刻画的是简谐振动中周期与角频率之间的标准关系，即经过量纲转换后，$T\omega = 2\pi$。从证明结构看，其步骤较为规范：先通过 \texttt{ext} 将带量纲对象的等式转化为数值分量等式，再使用 \texttt{simp} 展开定义与桥接项，最后通过 \texttt{field\_simp} 完成代数化整理。由此可见，MechLib 并不仅限于“定义型公式库”，而是已经能够承载较完整的物理定理证明过程。
+
+\begin{codeblock}
+\small\ttfamily
+theorem period\_frequency\_relation\\
+\hspace*{1em}(omega : AngularVelocity) (h : omega.val $\neq$ 0) :\\
+\hspace*{1em}Quantity.cast (period omega * omega)\\
+\hspace*{2em}SI.time\_plus\_angular\_velocity\_eq\_dimensionless =\\
+\hspace*{2em}(((2 : $\mathbb{R}$) * Real.pi : $\mathbb{R}$) : Dimensionless) := by\\
+\hspace*{1em}ext\\
+\hspace*{1em}simp [period, Quantity.cast\_val, Quantity.val\_ofReal]\\
+\hspace*{1em}field\_simp [h]
+\end{codeblock}
+
+这两条定理具有明显的互补性。前者对应基础动力学中最核心的局部关系，展示了 MechLib 如何将经典物理定律压缩为可直接调用的形式化规则；后者则对应振动理论中的标准结论，展示了库如何在量纲安全前提下组织较完整的证明过程。将二者并列展示，有助于较为准确地体现 MechLib 当前在“基础公式表达”与“定理级证明支撑”两个层面的形式化能力。
+
+\subsubsection{完成 MechLib 理论语料索引与检索适配}
+
+中期阶段已实现面向 MechLib 的检索模块，能够从本地代码库和定理语料中提取与力学题目相关的上下文信息。当前系统已经构建了面向力学主题的索引语料，其中包含定理名称、模块来源、导入提示、声明签名、适用条件提示以及 proof style 线索。围绕这些信息，系统能够在题目进入 B 阶段之前，为命题生成模块构造与题目主题相匹配的 MechLib 上下文，从而实现“题目语义 $\rightarrow$ 形式化知识上下文”的桥接。
+
+从知识覆盖规模来看，当前本地 MechLib 代码树已经包含 Analytical Mechanics、Dynamics、Momentum/Impulse、Rotation、Work/Energy、SHM、Damped SHM、SI 单位体系等多个核心模块；对应的 theorem corpus 中已经积累了百余条可供检索的形式化条目，足以支撑中期阶段对基础力学与部分理论力学主题的探索性实验。这意味着课题目前已经具备了以 MechLib 为知识源开展自动形式化实验的必要条件。
+
+\paragraph{按模块统计的定理索引规模。}
+依据当前导出的 \texttt{theorem\_corpus.jsonl}，MechLib 已形成共计 182 条索引项。按模块划分，其分布如下：
+\begin{table}[htbp]
+    \centering
+    \caption{MechLib 各模块定理索引项统计}
+    \begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}X >{\centering\arraybackslash}p{2.8cm}}
+        \toprule
+        模块名称 & 索引项数量 \\
+        \midrule
+        \texttt{MechLib.Units.Dim} & 10 \\
+        \texttt{MechLib.Units.Quantity} & 20 \\
+        \texttt{MechLib.Units.VecQuantity} & 9 \\
+        \texttt{MechLib.SI} & 28 \\
+        \texttt{MechLib.Mechanics.Kinematics} & 24 \\
+        \texttt{MechLib.Mechanics.Dynamics} & 4 \\
+        \texttt{MechLib.Mechanics.SystemDynamics} & 14 \\
+        \texttt{MechLib.Mechanics.WorkEnergy} & 7 \\
+        \texttt{MechLib.Mechanics.MomentumImpulse} & 3 \\
+        \texttt{MechLib.Mechanics.Rotation} & 7 \\
+        \texttt{MechLib.Mechanics.CentralForce} & 15 \\
+        \texttt{MechLib.Mechanics.AnalyticalMechanics} & 11 \\
+        \texttt{MechLib.Mechanics.SHM} & 7 \\
+        \texttt{MechLib.Mechanics.DampedSHM} & 21 \\
+        \texttt{MechLib.Compat.PHYSlib} & 2 \\
+        \midrule
+        总计 & 182 \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+这一统计结果说明，当前 MechLib 的知识覆盖已经明显超出“若干零散公式”层面。其中，\texttt{SI}、\texttt{Kinematics}、\texttt{DampedSHM}、\texttt{Quantity} 与 \texttt{CentralForce} 等模块的索引条目相对丰富，表明库在基础量纲层、运动学层、振动问题以及中心力问题上已形成较为可观的检索资源；而 \texttt{Dynamics} 与 \texttt{MomentumImpulse} 等模块的条目数相对较少，则反映出这部分内容当前更偏向于核心主干接口的凝练表达，而非大量派生定理的铺开。这一差异也为后续知识库扩展提供了定量依据。
+
+\subsubsection{完成 MechLib 检索结果向主流程的注入}
+
+在系统结构上，MechLib 检索结果目前已经可以注入到主流程的多个阶段。中期实现中，检索结果首先服务于命题生成阶段，使模型在构造 Lean theorem 候选时能够参考相关的物理定律、符号命名和库接口；同时，这些信息也参与后续的语义分析和证明环节，为系统提供额外的物理背景线索。最近一轮结构升级后，检索上下文已不再是单纯的自然语言摘要，而是进一步包含 theorem 名称、声明签名、适用说明和 proof usage hint。这一改造使 MechLib 上下文更接近“可引用证据”，而不仅仅是“提示性背景”。
+
+此外，围绕 MechLib 的使用情况，系统已经新增了若干面向研究问题的统计量，包括 statement 层面的库使用率、最终选中候选的库使用率、proof 中真实用库率以及带库依据候选的最终选中率。这些指标虽然仍处于中期阶段，但已经为后续判断“系统是否真正用到了 MechLib”提供了必要的量化基础。
+
+\subsubsection{完成 MechLib 相关的真实 API 实验与消融实验}
+
+为评估 MechLib 在系统中的实际作用，项目已经完成两类关键实验。
+
+第一类是常规真实 API 实验。基于 LeanPhysBench 的 mechanics 子集和自建的理论力学小型测试集，系统已经多次在启用 MechLib 环境与检索注入的条件下完成端到端运行。实验表明，当前系统已经能够在大量样本上稳定运行在 MechLib 环境中，说明 MechLib 的接入不是形式上的，而是已经进入主实验链路。
+
+第二类是消融实验。课题专门构建了“不提供 MechLib 检索信息，但保留 Lean/MechLib 运行环境”的对照实验，以区分“环境接入”与“知识注入”各自的贡献。实验结果表明：在 LeanPhysBench mechanics 的 101 题全量实验中，关闭 MechLib 检索上下文后，端到端成功数由 42 题下降至 38 题，说明 MechLib 检索信息对系统性能具有一定正向作用；而在 14 题理论力学小样本上，去除检索信息前后端到端成功数保持为 5 题不变，说明当前检索注入在理论力学方向的作用仍然有限。这一结果具有明确的方法学价值：它说明 MechLib 对现阶段系统并非“完全无用”，但其收益尚不足以说明系统已经实现了对库定理的稳定复用。
+
+\subsection{阶段性研究认识}
+
+\subsubsection{MechLib 已具备较完整的知识结构，但“可检索”尚未稳定转化为“可复用”}
+
+综合当前实现与实验结果，可以得出一个较为明确的阶段性判断：MechLib 在知识结构层面已经具备较好的研究基础，其源码既包含量纲安全的基础表示层，又包含 SI 桥接层和较为系统的力学模块层；然而，主系统对这些知识的利用目前仍主要停留在“检索得到上下文并将其注入 prompt”的阶段，尚未稳定实现“检索到的定理显式进入最终 theorem 与 proof 正文”。换言之，当前系统已经具备了“知识可访问性”，但尚未完全获得“知识可执行性”与“知识可复用性”。
+
+这一现象说明，项目在 MechLib 方向已经完成了“环境可用”和“提示可用”两个层面的工作，但还没有完全达到“知识可复用”的研究目标。从中期报告角度看，这既是当前工作的真实边界，也是后续最重要的研究切入点。
+
+\subsubsection{MechLib 已经对系统产生影响，但影响方式仍偏间接}
+
+从消融结果可以看到，在 101 题全量 benchmark 上移除 MechLib 检索信息后，端到端成功数出现下降，说明检索信息确实对系统有帮助。然而，这种帮助更可能体现为建模偏置、题型提示和语义方向引导，而不是模型已经显式调用了库中定理完成严格的 theorem 构造与证明。换言之，MechLib 当前对系统的作用更接近“提供一个更有物理语义的上下文场”，而不是“直接作为被调用的定理库参与证明”。
+
+这一判断对于课题后续安排具有重要意义。它说明下一阶段的工作重点不应仅仅放在继续扩充检索文本，而应转向如何让 B 阶段输出显式引用库依据的候选、如何让 D 阶段在语义正确时优先保留这类候选，以及如何让 E 阶段围绕库定理构造 theorem-first proof。只有打通这条链路，MechLib 才能从“背景知识来源”真正转化为“形式化推理资源”。
+
+\subsection{小结}
+
+总体而言，中期阶段在 MechLib 方向已经取得了较为扎实的工程与实验进展：一方面，MechLib 已被稳定接入主系统，相关检索与运行环境均已具备支撑真实实验的条件；另一方面，围绕 MechLib 的消融实验已经给出了初步但有价值的结论，即其对系统性能存在一定帮助，但目前尚未转化为稳定、显式、可度量的定理复用能力。因此，MechLib 部分的中期结论可以概括为：\emph{项目已经完成了 MechLib 的环境接入与检索适配，初步证明其对自动形式化系统具有正向作用，但如何将这种作用进一步提升为真实的库定理复用能力，仍是后续研究的核心问题。}
+
+\end{document}
