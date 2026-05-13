@@ -1,16 +1,31 @@
 from __future__ import annotations
 
+import os
 import re
+import signal
 import subprocess
+import tempfile
 import textwrap
 from pathlib import Path
 
 from mech_pipeline.decl_validation import prevalidate_theorem_decl
+from mech_pipeline.types import ProofActionCheckResult
 from mech_pipeline.utils import ensure_dir, normalize_lean_text, safe_stem, truncate
 
 _SUBPROCESS_TEXT_ENCODING = "utf-8"
 _SUBPROCESS_TEXT_ERRORS = "replace"
 _LEAN_ERROR_LOC_RE = re.compile(r":(?P<line>\d+):(?P<col>\d+):\s*error:\s*(?P<msg>[^\n]+)")
+_MECHLIB_HEADER_LINES = (
+    "import Mathlib",
+    "import MechLib",
+    "open MechLib",
+    "open MechLib.SI",
+    "open MechLib.Mechanics",
+    "open MechLib.Compat.PHYSlib.SI (F_of secondLaw displacement_end_x_init_x displacement_delta_t_const_v)",
+)
+_PHYSLIB_IMPORT = "import Physlib"
+_PHYSLIB_OPEN = "open Physlib"
+_PHYSLIB_PROBE = Path("Physlib/ClassicalMechanics/Basic.lean")
 
 
 def _indent(text: str, n: int = 2) -> str:
@@ -46,6 +61,15 @@ def _strip_pipeline_markers(text: str) -> str:
     out = out.replace("[PIPELINE_TIMEOUT]", "")
     out = re.sub(r"\[PIPELINE_EXCEPTION][^\n]*", "", out)
     return out.strip()
+
+
+def _order_imports_before_commands(lines: list[str]) -> list[str]:
+    import_lines = sorted(
+        [line for line in lines if line.lstrip().startswith("import ")],
+        key=lambda line: (0 if line.strip() == "import Mathlib" else 1 if line.strip() == "import MechLib" else 2, line),
+    )
+    other_lines = [line for line in lines if not line.lstrip().startswith("import ")]
+    return import_lines + other_lines
 
 
 def _warning_lines(stdout: str, stderr: str) -> list[str]:
@@ -171,6 +195,107 @@ def classify_compile_sub_error(error_type: str | None, stderr: str) -> str | Non
     return None
 
 
+def _merged_output(stdout: str, stderr: str) -> str:
+    return normalize_lean_text("\n".join(part for part in [stderr, stdout] if part).strip())
+
+
+def _probe_goals_excerpt(text: str, limit: int = 800) -> str | None:
+    normalized = normalize_lean_text(text)
+    lower = normalized.lower()
+    idx = lower.find("unsolved goals")
+    if idx < 0:
+        return truncate(normalized, limit) or None
+    return truncate(normalized[idx:], limit) or None
+
+
+def classify_proof_probe_result(
+    *,
+    ok: bool,
+    stdout: str,
+    stderr: str,
+    tactic_block: str,
+) -> ProofActionCheckResult:
+    merged = _merged_output(stdout, stderr)
+    lowered = merged.lower()
+    details = extract_lean_error_details(stdout, stderr)
+    stderr_excerpt = _stderr_excerpt(stdout, stderr, limit=800) or None
+
+    if "unsolved goals" in lowered:
+        return ProofActionCheckResult(
+            action_id="probe",
+            strategy="probe_proof_prefix",
+            tactic_block=tactic_block,
+            status="progress",
+            error_type="unsolved_goals",
+            error_message=details["error_message"],
+            stderr_excerpt=stderr_excerpt,
+            goals_excerpt=_probe_goals_excerpt(merged),
+        )
+    if "[pipeline_timeout]" in lowered or "[pipeline_exception]" in lowered:
+        return ProofActionCheckResult(
+            action_id="probe",
+            strategy="probe_proof_prefix",
+            tactic_block=tactic_block,
+            status="invalid",
+            error_type=classify_timeout_sub_error(stdout, stderr)
+            if "[pipeline_timeout]" in lowered
+            else "timeout_or_tooling_block",
+            error_message=details["error_message"],
+            stderr_excerpt=stderr_excerpt,
+            goals_excerpt=None,
+        )
+
+    invalid_patterns = [
+        ("unknown identifier", "symbol_hallucination"),
+        ("unknown constant", "symbol_hallucination"),
+        ("unknown namespace", "namespace_or_import_issue"),
+        ("unknown module prefix", "namespace_or_import_issue"),
+        ("type mismatch", "type_mismatch"),
+        ("application type mismatch", "type_mismatch"),
+        ("invalid field notation", "wrong_api_shape"),
+        ("function expected at", "wrong_api_shape"),
+        ("tactic failed", "tactic_failed"),
+        ("invalid syntax", "invalid_lean_syntax"),
+        ("unexpected token", "invalid_lean_syntax"),
+        ("parse error", "invalid_lean_syntax"),
+    ]
+    for pattern, error_type in invalid_patterns:
+        if pattern in lowered:
+            return ProofActionCheckResult(
+                action_id="probe",
+                strategy="probe_proof_prefix",
+                tactic_block=tactic_block,
+                status="invalid",
+                error_type=error_type,
+                error_message=details["error_message"],
+                stderr_excerpt=stderr_excerpt,
+                goals_excerpt=None,
+            )
+
+    if ok and "error:" not in lowered:
+        return ProofActionCheckResult(
+            action_id="probe",
+            strategy="probe_proof_prefix",
+            tactic_block=tactic_block,
+            status="closed",
+            error_type=None,
+            error_message=None,
+            stderr_excerpt=stderr_excerpt,
+            goals_excerpt=None,
+        )
+
+    return ProofActionCheckResult(
+        action_id="probe",
+        strategy="probe_proof_prefix",
+        tactic_block=tactic_block,
+        status="invalid",
+        error_type="elaboration_failure",
+        error_message=details["error_message"],
+        stderr_excerpt=stderr_excerpt,
+        goals_excerpt=None,
+    )
+
+
 class LeanRunner:
     def __init__(
         self,
@@ -195,32 +320,70 @@ class LeanRunner:
         self.route_fallback = route_fallback
         self._mechlib_ready = bool(self.mechlib_dir and self.mechlib_dir.exists())
 
-    def _run_lean(self, *, root_dir: Path, rel_file: Path) -> tuple[bool, str, str]:
+    def _run_lean(self, *, root_dir: Path, rel_file: Path, timeout_s: int | None = None) -> tuple[bool, str, str]:
         root = root_dir.resolve()
         target = rel_file.resolve() if rel_file.is_absolute() else (root / rel_file).resolve()
+        effective_timeout = self.timeout_s if timeout_s is None else timeout_s
         try:
             arg_path = target.relative_to(root)
         except ValueError:
             arg_path = target
         arg = arg_path.as_posix()
+        proc: subprocess.Popen[str] | None = None
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 ["lake", "env", "lean", arg],
                 cwd=root,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 encoding=_SUBPROCESS_TEXT_ENCODING,
                 errors=_SUBPROCESS_TEXT_ERRORS,
-                timeout=self.timeout_s,
-                check=False,
+                start_new_session=True,
             )
-            return (proc.returncode == 0, proc.stdout, proc.stderr)
+            stdout, stderr = proc.communicate(timeout=effective_timeout)
+            return (proc.returncode == 0, stdout, stderr)
         except subprocess.TimeoutExpired as exc:
-            stdout = exc.stdout if isinstance(exc.stdout, str) else ""
-            stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+            if proc is not None:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except Exception:
+                    proc.kill()
+                try:
+                    stdout, stderr = proc.communicate(timeout=5)
+                except Exception:
+                    stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+                    stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+            else:
+                stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+                stderr = exc.stderr if isinstance(exc.stderr, str) else ""
             return (False, stdout, f"{stderr}\n[PIPELINE_TIMEOUT]")
         except Exception as exc:  # pragma: no cover
             return (False, "", f"[PIPELINE_EXCEPTION] {type(exc).__name__}: {exc}")
+
+    def _run_probe_code(
+        self,
+        *,
+        root_dir: Path,
+        code: str,
+        prefix: str,
+        timeout_s: int | None = None,
+    ) -> tuple[bool, str, str]:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            suffix=".lean",
+            prefix=prefix,
+            delete=False,
+        ) as handle:
+            handle.write(code)
+            probe_path = Path(handle.name)
+        try:
+            if timeout_s is None:
+                return self._run_lean(root_dir=root_dir, rel_file=probe_path)
+            return self._run_lean(root_dir=root_dir, rel_file=probe_path, timeout_s=timeout_s)
+        finally:
+            probe_path.unlink(missing_ok=True)
 
     def _stderr_digest(self, stdout: str, stderr: str) -> str:
         merged = (stderr or "").strip()
@@ -238,14 +401,18 @@ class LeanRunner:
     def _backend_probe(self, backend: str) -> Path:
         if backend == "mechlib":
             return Path("MechLib/Mechanics/Dynamics.lean")
-        return Path("PhysLean/ClassicalMechanics/Basic.lean")
+        return _PHYSLIB_PROBE
 
     def _backend_exists(self, backend: str) -> bool:
         try:
             root = self._backend_root(backend)
         except RuntimeError:
             return False
-        return root.exists() and (root / "lakefile.toml").exists() and (root / "lean-toolchain").exists()
+        return (
+            root.exists()
+            and (root / "lean-toolchain").exists()
+            and ((root / "lakefile.toml").exists() or (root / "lakefile.lean").exists())
+        )
 
     def _uses_mechlib(self, lean_header: str, theorem_decl: str) -> bool:
         header = lean_header or ""
@@ -255,9 +422,27 @@ class LeanRunner:
 
     def _uses_physlean(self, lean_header: str, theorem_decl: str) -> bool:
         header = lean_header or ""
-        if "import PhysLean" in header or "open PhysLean" in header:
+        if any(token in header for token in ("import PhysLean", "open PhysLean", _PHYSLIB_IMPORT, _PHYSLIB_OPEN)):
             return True
-        return "PhysLean." in theorem_decl
+        return "PhysLean." in theorem_decl or "Physlib." in theorem_decl
+
+    def _normalize_physlean_header(self, header: str) -> str:
+        normalized = (header or "").replace("import PhysLean", _PHYSLIB_IMPORT).replace("open PhysLean", _PHYSLIB_OPEN)
+        if _PHYSLIB_IMPORT not in normalized:
+            normalized = f"{_PHYSLIB_IMPORT}\n{normalized}".strip()
+        lines = [ln.rstrip() for ln in normalize_lean_text(normalized).splitlines() if ln.strip()]
+        return "\n".join(_order_imports_before_commands(lines)).strip()
+
+    def _normalize_mechlib_header(self, header: str) -> str:
+        raw_lines = [ln.rstrip() for ln in normalize_lean_text(header or "").splitlines() if ln.strip()]
+        merged: list[str] = []
+        seen: set[str] = set()
+        for line in [*_MECHLIB_HEADER_LINES, *raw_lines]:
+            if line in seen:
+                continue
+            seen.add(line)
+            merged.append(line)
+        return "\n".join(_order_imports_before_commands(merged)).strip()
 
     def _route_backend(self, lean_header: str, theorem_decl: str) -> tuple[str, str]:
         if self.route_policy == "force_mechlib":
@@ -273,10 +458,10 @@ class LeanRunner:
 
     def _effective_header(self, lean_header: str, backend: str) -> str:
         header = (lean_header or self.lean_header).strip()
-        if backend == "mechlib" and "import MechLib" not in header:
-            return f"import MechLib\n{header}".strip()
-        if backend == "physlean" and "import PhysLean" not in header:
-            return f"import PhysLean\n{header}".strip()
+        if backend == "mechlib":
+            return self._normalize_mechlib_header(header)
+        if backend == "physlean":
+            return self._normalize_physlean_header(header)
         return header
 
     def preflight(self) -> tuple[bool, str | None, str]:
@@ -305,9 +490,10 @@ class LeanRunner:
                 "environment_warnings": [],
             }
 
-        ok, stdout, stderr = self._run_lean(
+        ok, stdout, stderr = self._run_probe_code(
             root_dir=self.physlean_dir,
-            rel_file=self._backend_probe("physlean"),
+            code=f"{_PHYSLIB_IMPORT}\n#check True\n",
+            prefix="pipeline_physlean_preflight_",
         )
         warnings = _warning_lines(stdout, stderr)
         if not ok:
@@ -330,9 +516,10 @@ class LeanRunner:
                     "environment_health": "warning_only" if warnings else "clean",
                     "environment_warnings": warnings,
                 }
-            ok_m, stdout_m, stderr_m = self._run_lean(
+            ok_m, stdout_m, stderr_m = self._run_probe_code(
                 root_dir=self._backend_root("mechlib"),
-                rel_file=self._backend_probe("mechlib"),
+                code="import Mathlib\nimport MechLib\n#check MechLib.SI.Mass\n",
+                prefix="pipeline_mechlib_preflight_",
             )
             warnings.extend(_warning_lines(stdout_m, stderr_m))
             if not ok_m:
@@ -357,9 +544,10 @@ class LeanRunner:
             }
 
         if self._backend_exists("mechlib"):
-            ok_m, stdout_m, stderr_m = self._run_lean(
+            ok_m, stdout_m, stderr_m = self._run_probe_code(
                 root_dir=self._backend_root("mechlib"),
-                rel_file=self._backend_probe("mechlib"),
+                code="import Mathlib\nimport MechLib\n#check MechLib.SI.Mass\n",
+                prefix="pipeline_mechlib_preflight_",
             )
             warnings.extend(_warning_lines(stdout_m, stderr_m))
             self._mechlib_ready = ok_m
@@ -573,6 +761,100 @@ class LeanRunner:
             ),
             "failure_details": failure_details,
         }
+
+    def _probe_once(
+        self,
+        *,
+        backend: str,
+        lean_header: str,
+        theorem_decl: str,
+        proof_prefix: str,
+        timeout_s: int | None,
+    ) -> ProofActionCheckResult:
+        root_dir = self._backend_root(backend)
+        decl = _declaration_only(theorem_decl)
+        header = self._effective_header(lean_header, backend)
+        prefix = _strip_code_fence(proof_prefix).replace("\r\n", "\n")
+        prefix = textwrap.dedent(prefix).lstrip()
+        if prefix.startswith("by\n"):
+            prefix = prefix[3:]
+        elif prefix.startswith("by "):
+            prefix = prefix[3:].lstrip()
+        elif prefix == "by":
+            prefix = ""
+        prefix = prefix.strip("\n")
+
+        code = f"{header}\n\n{decl} := by\n{_indent(prefix)}\n"
+        if not is_strict_clean(code, [*self.strict_blocklist, "set_option"]):
+            return ProofActionCheckResult(
+                action_id="probe",
+                strategy="probe_proof_prefix",
+                tactic_block=proof_prefix,
+                status="invalid",
+                error_type="forbidden_token",
+                error_message="Proof prefix contains a forbidden token.",
+                stderr_excerpt=None,
+                goals_excerpt=None,
+            )
+
+        ok, stdout, stderr = self._run_probe_code(
+            root_dir=root_dir,
+            code=code,
+            prefix="pipeline_proof_probe_",
+            timeout_s=timeout_s,
+        )
+        return classify_proof_probe_result(
+            ok=ok,
+            stdout=stdout,
+            stderr=stderr,
+            tactic_block=proof_prefix,
+        )
+
+    def probe_proof_prefix(
+        self,
+        *,
+        lean_header: str,
+        theorem_decl: str,
+        proof_prefix: str,
+        timeout_s: int | None = None,
+    ) -> ProofActionCheckResult:
+        if not self.enabled:
+            return ProofActionCheckResult(
+                action_id="probe",
+                strategy="probe_proof_prefix",
+                tactic_block=proof_prefix,
+                status="invalid",
+                error_type="lean_disabled",
+                error_message="Lean probe disabled by config.",
+            )
+
+        decl = _declaration_only(theorem_decl)
+        backend, _route_reason = self._route_backend(lean_header, decl)
+        if backend == "mechlib" and not self._mechlib_ready:
+            backend = "physlean"
+
+        first = self._probe_once(
+            backend=backend,
+            lean_header=lean_header,
+            theorem_decl=decl,
+            proof_prefix=proof_prefix,
+            timeout_s=timeout_s,
+        )
+        if first.status in {"closed", "progress"}:
+            return first
+
+        if self.route_fallback and self.default_backend != backend and self._backend_exists(self.default_backend):
+            fallback = self._probe_once(
+                backend=self.default_backend,
+                lean_header=lean_header,
+                theorem_decl=decl,
+                proof_prefix=proof_prefix,
+                timeout_s=timeout_s,
+            )
+            if fallback.status in {"closed", "progress"}:
+                return fallback
+
+        return first
 
     def compile_statement(
         self,

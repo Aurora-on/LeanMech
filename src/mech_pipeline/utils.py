@@ -2,6 +2,7 @@
 
 import json
 import re
+import os
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -204,3 +205,91 @@ def normalize_lean_text(text: str) -> str:
     out = out.replace("!=", "≠")
     out = out.replace("�", "")
     return out
+
+
+def _strip_balanced_outer_parens(text: str) -> str:
+    value = text.strip()
+    while value.startswith("(") and value.endswith(")"):
+        depth = 0
+        balanced = True
+        for index, char in enumerate(value):
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0 and index != len(value) - 1:
+                    balanced = False
+                    break
+            if depth < 0:
+                balanced = False
+                break
+        if not balanced or depth != 0:
+            break
+        value = value[1:-1].strip()
+    return value
+
+
+def _tautology_body(text: str) -> str:
+    value = _strip_balanced_outer_parens(normalize_lean_text(text).strip())
+    quantifier_pattern = re.compile(r"^(?:∀|forall)\s+.+?,\s*(.+)$", re.DOTALL)
+    while True:
+        match = quantifier_pattern.match(value)
+        if not match:
+            break
+        value = _strip_balanced_outer_parens(match.group(1).strip())
+    for marker in ("->", "→"):
+        if marker in value:
+            value = _strip_balanced_outer_parens(value.rsplit(marker, 1)[1].strip())
+    return value
+
+
+def is_tautological_equality(text: object) -> bool:
+    """Return True for equality-only tautologies such as `x = x` or `forall t, f t = f t`.
+
+    This intentionally stays syntactic. It catches no-information model/target formulas without
+    treating meaningful shared-variable constraints such as `a1 = a ∧ a2 = a` as duplicates.
+    """
+    value = _tautology_body(str(text or ""))
+    if not value:
+        return False
+    parts = re.split(r"\s*(?:∧|\\land|\band\b)\s*", value)
+    checked = 0
+    for part in parts:
+        piece = _strip_balanced_outer_parens(part.strip())
+        if not piece:
+            continue
+        if any(token in piece for token in ("≠", "≤", "≥", "<", ">")):
+            return False
+        if piece.count("=") != 1:
+            return False
+        lhs, rhs = [
+            re.sub(r"\s+", "", _strip_balanced_outer_parens(side.strip()))
+            for side in piece.split("=", 1)
+        ]
+        if not lhs or lhs != rhs:
+            return False
+        checked += 1
+    return checked > 0
+
+
+def load_dotenv_if_present(path: Path, override: bool = False) -> bool:
+    if not path.exists():
+        return False
+    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        if override or key not in os.environ:
+            os.environ[key] = value
+    return True

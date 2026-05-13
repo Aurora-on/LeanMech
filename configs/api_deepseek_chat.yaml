@@ -5,27 +5,31 @@
   sample_policy: index_head
   seed: 42
   local_archive:
-    root: "F:/AI4Mechanics/\u6570\u636e\u96c6/\u5f52\u6863"
+    root: "../archive"
     mode: text_only
   single_image_only_for_mvp: true
 
 model:
   provider: openai_compatible
-  model_id: deepseek-chat
-  base_url: "https://api.deepseek.com/v1"
+  model_id: deepseek-v4-pro
+  base_url: "https://api.deepseek.com"
   api_key: null
   api_key_env: DEEPSEEK_KEY
   supports_vision: false
   timeout_s: 60
   max_retries: 2
-  extra: {}
+  extra:
+    reasoning_effort: high
+    extra_body:
+      thinking:
+        type: enabled
 
 lean:
   enabled: false
-  physlean_dir: "F:/AI4Mechanics/PhysLean-master"
+  physlean_dir: "../physlib"
   timeout_s: 120
   strict_blocklist: ["sorry", "admit", "axiom"]
-  lean_header: "import PhysLean"
+  lean_header: "import Physlib"
   preflight_enabled: false
 
 semantic:
@@ -46,4 +50,3 @@ output:
   output_dir: outputs/latest
   runs_dir: runs
   tag: api-deepseek-chat
-

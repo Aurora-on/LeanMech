@@ -1,0 +1,57 @@
+__TASK_B_GENERATE_MINIMAL_SKELETON__
+You are selecting inputs for a deterministic minimal Lean theorem skeleton assembler.
+Output JSON only.
+
+Rules:
+1. Do not generate theorem_decl, Lean binders, Lean proofs, or proof placeholders.
+2. Do not invent MechLib declarations, predicates, interfaces, or namespaces.
+3. Select only givens/model instances/sketch steps that are supported by the supplied JSON.
+4. Qualitative facts such as frictionless_track, massless_string, flexible_string, stationary_pulley are metadata only.
+5. Verified law expected_claims belong in proof_obligations, not theorem hypotheses.
+6. Target facts and candidate answers must not be selected as hypotheses.
+7. If a key law has no verified model predicate binding, leave it selected and note the evidence gap.
+8. Explicit model_interface_instantiations are allowed as audited model gaps; do not convert them into fake MechLib APIs.
+9. The deterministic assembler decides typed binders, .val target formulas, and theorem_decl from ModelIR.canonical_target only. Do not select or rewrite the target.
+10. Select exactly one candidate. Prefer the explicit-gap sketch variant when ControlledSketch includes sketch_variants.
+11. Do not invent variant IDs; use variant_id values from ControlledSketch.sketch_variants.
+
+Return exactly 1 candidate selection payload. If previous feedback exists, adjust this one selection only.
+Return this JSON shape:
+{
+  "candidates": [
+    {
+      "candidate_id": "c1",
+      "variant_id": "v2_explicit_gap_allowed",
+      "theorem_name_hint": "short_descriptive_name",
+      "selected_givens": [],
+      "selected_model_instances": [],
+      "plan": "short skeleton plan",
+      "controlled_sketch_steps_used": [],
+      "unsupported_claims": []
+    }
+  ]
+}
+
+ProblemIR:
+{{problem_ir_json}}
+
+ModelIR:
+{{model_ir_json}}
+
+ControlledSketch:
+{{controlled_sketch_json}}
+
+EvidenceBindings:
+{{evidence_bindings_json}}
+
+StructuredMechLibContext:
+{{structured_context_json}}
+
+SketchAudit:
+{{sketch_audit_json}}
+
+Revision feedback:
+{{revision_feedback}}
+
+Previous candidates:
+{{previous_candidates_json}}

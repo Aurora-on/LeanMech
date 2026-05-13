@@ -40,8 +40,8 @@ Options:
 
 Fixed Lean environment:
 The evaluator will prepend the following header automatically:
-import PhysLean
-open PhysLean
+import Physlib
+open Physlib
 """
 
 

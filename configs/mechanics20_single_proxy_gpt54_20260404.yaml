@@ -5,10 +5,10 @@ dataset:
   sample_policy: index_head
   seed: 20260404
   local_archive:
-    root: "F:/AI4Mechanics/datasets/archive"
+    root: "../archive"
     mode: text_only
   lean4phys:
-    bench_path: "F:/AI4Mechanics/coding/pipeline1/fixtures/bench_mechanics20_single_20260404.json"
+    bench_path: "fixtures/bench_mechanics20_single_20260404.json"
     category: "mechanics"
     level: null
   single_image_only_for_mvp: true
@@ -16,7 +16,7 @@ dataset:
 model:
   provider: openai_compatible
   model_id: gpt-5.4
-  base_url: "https://api.openai-proxy.org/v1"
+  base_url: "https://api.openai-proxy.org"
   api_key: null
   api_key_env: OPENAI_PROXY_KEY
   supports_vision: false
@@ -26,8 +26,8 @@ model:
 
 lean:
   enabled: true
-  physlean_dir: "F:/AI4Mechanics/PhysLean-master"
-  mechlib_dir: "F:/AI4Mechanics/coding/MechLib"
+  physlean_dir: "../physlib"
+  mechlib_dir: "../MechLib"
   timeout_s: 120
   strict_blocklist: ["sorry", "admit", "axiom"]
   lean_header: "import MechLib"
@@ -38,13 +38,13 @@ lean:
 
 knowledge:
   enabled: true
-  mechlib_dir: "F:/AI4Mechanics/coding/MechLib"
+  mechlib_dir: "../MechLib"
   scope: mechanics_si
   top_k: 6
   cache_path: "tmp/mechlib_index.jsonl"
   inject_modules: ["B"]
   context_source: hybrid
-  summary_corpus_path: "F:/AI4Mechanics/coding/MechLib/theorem_corpus.jsonl"
+  summary_corpus_path: "../MechLib/theorem_corpus.jsonl"
   summary_injection_mode: domain_full
   always_include_core_tags: ["SI", "Units"]
 

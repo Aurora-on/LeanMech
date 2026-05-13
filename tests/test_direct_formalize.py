@@ -41,7 +41,7 @@ def test_direct_formalize_parses_valid_payload(tmp_path: Path) -> None:
             '"plan":"Solve for a","used_facts":["h","hm"]}'
         ),
         prompt_path=prompt_path,
-        lean_header="import PhysLean",
+        lean_header="import Physlib",
     )
 
     row = module.run(_sample())
@@ -59,7 +59,7 @@ def test_direct_formalize_rejects_missing_theorem_decl(tmp_path: Path) -> None:
     module = ModuleZDirectFormalize(
         model_client=StaticDirectClient('{"theorem_decl":"","plan":"bad"}'),
         prompt_path=prompt_path,
-        lean_header="import PhysLean",
+        lean_header="import Physlib",
     )
 
     row = module.run(_sample())

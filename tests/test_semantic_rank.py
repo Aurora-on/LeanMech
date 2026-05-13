@@ -5,7 +5,7 @@ from pathlib import Path
 from mech_pipeline.model.base import ModelClient
 from mech_pipeline.model.mock import MockModelClient
 from mech_pipeline.modules.D_semantic_rank import ModuleD
-from mech_pipeline.types import CompileCheckResult, GroundingResult, ModelResponse, StatementCandidate
+from mech_pipeline.types import CompileCheckResult, GroundingResult, ModelResponse, StatementCandidate, TheoremSkeletonCandidate
 
 
 def test_semantic_rank_selects_best(tmp_path: Path) -> None:
@@ -31,13 +31,13 @@ def test_semantic_rank_selects_best(tmp_path: Path) -> None:
         StatementCandidate(
             sample_id="s1",
             candidate_id="c1",
-            lean_header="import PhysLean",
+            lean_header="import Physlib",
             theorem_decl="theorem t1 : True",
         ),
         StatementCandidate(
             sample_id="s1",
             candidate_id="c2",
-            lean_header="import PhysLean",
+            lean_header="import Physlib",
             theorem_decl="theorem t2 : a = F / m",
         ),
     ]
@@ -114,13 +114,13 @@ def test_semantic_rank_uses_proofability_bias(tmp_path: Path) -> None:
         StatementCandidate(
             sample_id="s2",
             candidate_id="c1",
-            lean_header="import PhysLean",
+            lean_header="import Physlib",
             theorem_decl="theorem t1 (a F m : Real) (hm : m ≠ 0) : a = Real.sqrt ((F / m)^2)",
         ),
         StatementCandidate(
             sample_id="s2",
             candidate_id="c2",
-            lean_header="import PhysLean",
+            lean_header="import Physlib",
             theorem_decl="theorem t2 (a F m : Real) (hm : m ≠ 0) : a = F / m",
         ),
     ]
@@ -153,6 +153,47 @@ def test_semantic_rank_uses_proofability_bias(tmp_path: Path) -> None:
 
     assert row_c1["proofability_bias"] < row_c2["proofability_bias"]
     assert rank.selected_candidate_id == "c2"
+
+
+def test_semantic_rank_does_not_penalize_typed_minimal_skeleton(tmp_path: Path) -> None:
+    prompt = tmp_path / "D_semantic_rank.txt"
+    prompt.write_text("__TASK_D_SEMANTIC_RANK__", encoding="utf-8")
+    mod = ModuleD(model_client=EqualSemanticLLM(), prompt_path=prompt, pass_threshold=0.2)
+
+    grounding = GroundingResult(
+        sample_id="s2-typed",
+        model_id="m",
+        problem_ir={
+            "unknown_target": {"symbol": "a", "description": "acceleration"},
+            "known_quantities": [{"symbol": "F"}, {"symbol": "m"}],
+            "physical_laws": ["NewtonSecondLaw"],
+        },
+        parse_ok=True,
+        raw_response="",
+        error=None,
+    )
+    candidates = [
+        TheoremSkeletonCandidate(
+            sample_id="s2-typed",
+            candidate_id="c1",
+            lean_header="import MechLib",
+            theorem_decl="theorem typed (F : Force) (m : Mass) (a : Acceleration) : a.val = F.val / m.val",
+        ),
+        StatementCandidate(
+            sample_id="s2-typed",
+            candidate_id="c2",
+            lean_header="import MechLib",
+            theorem_decl="theorem real (F m a : Real) : a = F / m",
+        ),
+    ]
+    compile_rows = [
+        CompileCheckResult("s2-typed", "c1", True, True, True, None, "", None),
+        CompileCheckResult("s2-typed", "c2", True, True, True, None, "", None),
+    ]
+
+    rank = mod.run(grounding, candidates, compile_rows, problem_text="Given force and mass, find acceleration.")
+    row_c1 = next(x for x in rank.ranking if x["candidate_id"] == "c1")
+    assert row_c1["proofability_bias"] >= 0.0
 
 
 class DetailedSemanticLLM(ModelClient):
@@ -209,7 +250,7 @@ def test_semantic_rank_preserves_detailed_mismatch_feedback(tmp_path: Path) -> N
         StatementCandidate(
             sample_id="s3",
             candidate_id="c1",
-            lean_header="import PhysLean",
+            lean_header="import Physlib",
             theorem_decl="theorem c1 (s F m : Real) : s = F + m",
         )
     ]
@@ -493,7 +534,7 @@ def test_semantic_rank_allows_implicit_function_target_when_other_semantics_alig
         StatementCandidate(
             sample_id="s7",
             candidate_id="c1",
-            lean_header="import PhysLean",
+            lean_header="import Physlib",
             theorem_decl="theorem c1 (t : Real) : deriv (fun τ : Real => 3 * τ^2 - 2 * τ) t = 6 * t - 2",
         )
     ]
@@ -610,4 +651,125 @@ def test_semantic_rank_prefers_library_grounded_candidate_over_pure_algebraic_va
     row_c2 = next(x for x in rank.ranking if x["candidate_id"] == "c2")
 
     assert row_c1["library_grounding_score"] > row_c2["library_grounding_score"]
+    assert rank.selected_candidate_id == "c1"
+
+
+def test_semantic_rank_prefers_semantic_pass_over_grounded_wrong_candidate(tmp_path: Path) -> None:
+    prompt = tmp_path / "D_semantic_rank.txt"
+    prompt.write_text("__TASK_D_SEMANTIC_RANK__", encoding="utf-8")
+    payload = """
+    {
+      "results": [
+        {"candidate_id": "c1", "back_translation": "Wrong target but grounded.", "semantic_score": 0.95, "semantic_pass": false, "target_relation": "drift", "reason": "wrong target"},
+        {"candidate_id": "c2", "back_translation": "Correct target.", "semantic_score": 0.75, "semantic_pass": true, "target_relation": "exact", "reason": "aligned"}
+      ]
+    }
+    """
+    mod = ModuleD(model_client=DetailedSemanticLLM(payload), prompt_path=prompt, pass_threshold=0.7)
+    grounding = GroundingResult(
+        sample_id="s8-pass-first",
+        model_id="m",
+        problem_ir={
+            "unknown_target": {"symbol": "a", "description": "acceleration"},
+            "known_quantities": [{"symbol": "F"}, {"symbol": "m"}],
+            "physical_laws": ["NewtonSecondLaw"],
+        },
+        parse_ok=True,
+        raw_response="",
+        error=None,
+    )
+    candidates = [
+        StatementCandidate(
+            sample_id="s8-pass-first",
+            candidate_id="c1",
+            lean_header="import MechLib",
+            theorem_decl="theorem c1 (F m a v : Real) (h : F = m * a) : v = F / m",
+            verified_decl_refs=[{"verified_decl": "MechLib.NewtonSecondLaw"}],
+            library_symbols_used=["NewtonSecondLaw"],
+        ),
+        StatementCandidate(
+            sample_id="s8-pass-first",
+            candidate_id="c2",
+            lean_header="import MechLib",
+            theorem_decl="theorem c2 (F m a : Real) (h : F = m * a) : a = F / m",
+        ),
+    ]
+    compile_rows = [
+        CompileCheckResult("s8-pass-first", "c1", True, True, True, None, "", None),
+        CompileCheckResult("s8-pass-first", "c2", True, True, True, None, "", None),
+    ]
+
+    rank = mod.run(
+        grounding,
+        candidates,
+        compile_rows,
+        problem_text="Use Newton's second law to compute acceleration.",
+        mechlib_context="Law-Matched Declarations:\n[1] theorem_name=NewtonSecondLaw symbol=NewtonSecondLaw score=1.0",
+    )
+    assert rank.selected_candidate_id == "c2"
+
+
+def test_semantic_rank_prefers_fully_verified_minimal_skeleton_on_equal_semantics(tmp_path: Path) -> None:
+    prompt = tmp_path / "D_semantic_rank.txt"
+    prompt.write_text("__TASK_D_SEMANTIC_RANK__", encoding="utf-8")
+    payload = """
+    {
+      "results": [
+        {"candidate_id": "c1", "back_translation": "Correct target.", "semantic_score": 0.9, "semantic_pass": true, "target_relation": "exact", "reason": "aligned"},
+        {"candidate_id": "c2", "back_translation": "Correct target.", "semantic_score": 0.9, "semantic_pass": true, "target_relation": "exact", "reason": "aligned"},
+        {"candidate_id": "c3", "back_translation": "Correct target.", "semantic_score": 0.9, "semantic_pass": true, "target_relation": "exact", "reason": "aligned"}
+      ]
+    }
+    """
+    mod = ModuleD(model_client=DetailedSemanticLLM(payload), prompt_path=prompt, pass_threshold=0.7)
+    grounding = GroundingResult(
+        sample_id="s8-minimal-grounding",
+        model_id="m",
+        problem_ir={
+            "unknown_target": {"symbol": "a", "description": "acceleration"},
+            "known_quantities": [{"symbol": "F"}, {"symbol": "m"}],
+            "physical_laws": ["NewtonSecondLaw"],
+        },
+        parse_ok=True,
+        raw_response="",
+        error=None,
+    )
+    candidates = [
+        TheoremSkeletonCandidate(
+            sample_id="s8-minimal-grounding",
+            candidate_id="c1",
+            lean_header="import MechLib",
+            theorem_decl="theorem c1 (F : Force) (m : Mass) (a : Acceleration) : a.val = F.val / m.val",
+            verified_decls=["MechLib.NewtonSecondLaw"],
+            verified_decl_refs=[{"verified_decl": "MechLib.NewtonSecondLaw"}],
+            fully_mechlib_verified=True,
+        ),
+        TheoremSkeletonCandidate(
+            sample_id="s8-minimal-grounding",
+            candidate_id="c2",
+            lean_header="import MechLib",
+            theorem_decl="theorem c2 (F : Force) (m : Mass) (a : Acceleration) : a.val = F.val / m.val",
+            verified_decls=["MechLib.NewtonSecondLaw"],
+            explicit_model_gaps=[{"source_model_instance": "mi1"}],
+        ),
+        TheoremSkeletonCandidate(
+            sample_id="s8-minimal-grounding",
+            candidate_id="c3",
+            lean_header="import MechLib",
+            theorem_decl="theorem c3 (F : Force) (m : Mass) (a : Acceleration) : a.val = F.val / m.val",
+            gap_schema_only=True,
+        ),
+    ]
+    compile_rows = [
+        CompileCheckResult("s8-minimal-grounding", "c1", True, True, True, None, "", None),
+        CompileCheckResult("s8-minimal-grounding", "c2", True, True, True, None, "", None),
+        CompileCheckResult("s8-minimal-grounding", "c3", True, True, True, None, "", None),
+    ]
+
+    rank = mod.run(grounding, candidates, compile_rows, problem_text="Use Newton's second law to compute acceleration.")
+    row_c1 = next(x for x in rank.ranking if x["candidate_id"] == "c1")
+    row_c2 = next(x for x in rank.ranking if x["candidate_id"] == "c2")
+    row_c3 = next(x for x in rank.ranking if x["candidate_id"] == "c3")
+
+    assert row_c1["skeleton_grounding_bias"] > row_c2["skeleton_grounding_bias"] > row_c3["skeleton_grounding_bias"]
     assert rank.selected_candidate_id == "c1"

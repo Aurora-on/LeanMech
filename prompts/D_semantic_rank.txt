@@ -57,5 +57,11 @@ ProblemIR:
 Compile-passed Lean candidates:
 {{candidate_payload_json}}
 
+Candidate payloads may include minimal_skeleton metadata such as variant_id, variant_policy,
+target_form_policy, gap_policy, repair_directives, verified_decls, proof_obligations,
+gap_laws_count, explicit_model_gaps_count, fully_mechlib_verified, and target_spec. Use these
+fields to judge target semantics, grounding, and proof readiness, but do not let grounding
+compensate for a wrong target.
+
 Retrieved MechLib context:
 {{mechlib_context}}

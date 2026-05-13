@@ -8,7 +8,7 @@ dataset:
     - "https://hf-mirror.com/datasets/Cloudriver/PhyX/resolve/main/data_llms_eval/PhyX_mini_MC.parquet"
     - "https://huggingface.co/datasets/Cloudriver/PhyX/resolve/main/data_llms_eval/PhyX_mini_MC.parquet"
   local_archive:
-    root: "F:/AI4Mechanics/datasets/archive"
+    root: "../archive"
     mode: text_only
   single_image_only_for_mvp: true
 
@@ -24,10 +24,10 @@ model:
 
 lean:
   enabled: true
-  physlean_dir: "F:/AI4Mechanics/PhysLean-master"
+  physlean_dir: "../physlib"
   timeout_s: 120
   strict_blocklist: ["sorry", "admit", "axiom"]
-  lean_header: "import PhysLean"
+  lean_header: "import Physlib"
   preflight_enabled: true
 
 semantic:

@@ -53,13 +53,13 @@ def test_semantic_guard_rejects_law_drift_even_if_llm_prefers_it(tmp_path: Path)
         StatementCandidate(
             sample_id="s1",
             candidate_id="c1",
-            lean_header="import PhysLean",
+            lean_header="import Physlib",
             theorem_decl="theorem c1_newton (F m a : Real) (h : F = m * a) : a = F / m",
         ),
         StatementCandidate(
             sample_id="s1",
             candidate_id="c2",
-            lean_header="import PhysLean",
+            lean_header="import Physlib",
             theorem_decl="theorem c2_kin (s v t : Real) (h : s = v * t) (ht : t != 0) : v = s / t",
         ),
     ]
@@ -125,13 +125,13 @@ def test_semantic_guard_rejects_trivial_goal(tmp_path: Path) -> None:
         StatementCandidate(
             sample_id="s2",
             candidate_id="c1",
-            lean_header="import PhysLean",
+            lean_header="import Physlib",
             theorem_decl="theorem c1_trivial (a : Real) : a = a",
         ),
         StatementCandidate(
             sample_id="s2",
             candidate_id="c2",
-            lean_header="import PhysLean",
+            lean_header="import Physlib",
             theorem_decl="theorem c2_newton (F m a : Real) (h : F = m * a) (hm : m != 0) : a = F / m",
         ),
     ]

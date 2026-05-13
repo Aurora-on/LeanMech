@@ -1,0 +1,122 @@
+__TASK_A2_BUILD_MODEL_IR__
+You are a controlled mechanics ModelIR builder.
+Output JSON only.
+
+Rules:
+1. Do not generate Lean theorem declarations.
+2. Do not generate proofs or proof scripts.
+3. Do not treat law-application results, derived relations, algebra elimination results, or final answers as givens.
+4. Separate facts into: given_fact, model_instance, local_definition, coordinate_convention, target, derived_relation.
+5. For each model instance, provide kind, natural_language, expected_claim, planning_schema_hint, entities, variables, parameters, and confidence.
+6. Use interface_instantiations for local modeling interfaces such as net force, effective torque, constraint velocity, or sign convention equations.
+7. interface_instantiations must use Lean-like value-level equations, e.g. Fnet = T or Fnet = m * g - T; do not use fake MechLib names.
+8. The target may contain the requested final formula if the problem asks for one, but it must stay in target/forbidden_as_assumption, never in givens.
+9. If unsure, lower confidence and leave planning_schema_hint empty. Do not invent verified declarations.
+10. forbidden_as_assumption must include the target/goal and any derived or algebraic result that should not be assumed.
+11. For every variable, output quantity_annotations using the problem statement, units, and definitions. Do not infer from symbol spelling alone.
+12. Use only existing MechLib.SI quantity types. For angles use PhysAngle, not Angle. If no existing SI type fits, use Real with low confidence and explain why.
+13. If a quantity is a function of time or another variable, write its Lean type as a function type, e.g. Time -> Length, Time -> Speed, Time -> Acceleration. Do not put .val in bound-variable names.
+14. Output exactly one canonical_target. It is the only target B may use. It may be a closed-form equation, a relation, a component relation, or a property; do not force a closed form unless the problem asks for one.
+15. If the problem asks for multiple required outputs, put the primary requested formula in canonical_target.lean_formula and the other required formulas in canonical_target.secondary_formulas. Do not drop requested outputs.
+16. Never use no-information tautologies such as x = x, v t = v t, a.val = a.val, or forall t, f t = f t as target or modeling equations.
+17. For function-valued targets, also fill canonical_target.function_formula_ir. B will trust this structure rather than infer function semantics from strings.
+18. Use function formula_kind values: scalar_relation, pointwise_relation, evaluation_relation, ode_relation, component_relation, property. If the function target cannot be expressed in Lean-like first-order syntax, set parse_ok=false and explain error.
+
+Return this JSON shape:
+{
+  "objects": [],
+  "variables": {},
+  "quantity_annotations": [
+    {
+      "symbol": "m",
+      "semantic_role": "mass of the block",
+      "unit_or_dimension": "kg",
+      "lean_type": "Mass",
+      "confidence": 0.95,
+      "evidence_text": "the problem states mass m",
+      "reasoning_note": "kg identifies mass"
+    }
+  ],
+  "canonical_target": {
+    "target_id": "target_1",
+    "target_kind": "closed_form | relation | component_relation | existence_or_property | unknown_or_ambiguous",
+    "target_variables": ["a"],
+    "lean_formula": "a = (m2 * g) / (m1 + m2)",
+    "secondary_formulas": [],
+    "function_formula_ir": [
+      {
+        "formula_id": "target_formula_1",
+        "formula_kind": "scalar_relation",
+        "bound_variables": [],
+        "domain_conditions": [],
+        "lhs": "a",
+        "relation": "=",
+        "rhs": "(m2 * g) / (m1 + m2)",
+        "lean_formula": "a = (m2 * g) / (m1 + m2)",
+        "source_text": "problem asks for acceleration",
+        "parse_ok": true,
+        "error": null
+      }
+    ],
+    "requires_closed_form": false,
+    "source_text": "problem asks for the acceleration",
+    "confidence": 0.85,
+    "parse_ok": true,
+    "error": null
+  },
+  "givens": [{"name":"...", "lean":"...", "role":"given_fact", "source_type":"problem_ir", "source_id":"...", "allowed_in_hypotheses":true, "notes":""}],
+  "coordinate_system": {},
+  "reference_frame": "",
+  "local_definitions": [],
+  "model_instances": [
+    {
+      "instance_id":"mi1",
+      "kind":"...",
+      "natural_language":"...",
+      "entities":[],
+      "variables":{},
+      "parameters":{},
+      "coordinate_convention":"",
+      "planning_schema_hint":"",
+      "expected_claim":"",
+      "hypothesis_form":"",
+      "interface_instantiations": [
+        {
+          "instantiation_id": "net_force_mi1",
+          "kind": "net_force_balance",
+          "formal_claim": "Fnet = T",
+          "source_model_instance": "mi1",
+          "interface_name": "net_force",
+          "introduced_variable": {"name": "Fnet", "lean_type": "Force"},
+          "binding_status": "explicit_model_gap",
+          "proof_fact_allowed": false,
+          "notes": "Local modeling interface; not a verified MechLib declaration."
+        }
+      ],
+      "provenance":{},
+      "confidence":0.0
+    }
+  ],
+  "interface_instantiations": [],
+  "target": {},
+  "target_spec": {},
+  "forbidden_as_assumption": []
+}
+
+Problem text:
+{{problem_text}}
+
+ProblemIR:
+{{problem_ir_json}}
+
+Structured MechLib context:
+{{structured_context_json}}
+
+Image description:
+{{image_description}}
+
+Supported MechLib.SI quantity types:
+{{supported_si_quantity_types}}
+
+Revision feedback:
+{{revision_feedback}}

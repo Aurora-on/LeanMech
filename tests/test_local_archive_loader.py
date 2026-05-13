@@ -47,3 +47,25 @@ def test_local_archive_image_text(tmp_path: Path) -> None:
     assert len(samples) == 1
     assert samples[0].image_path is not None
     assert samples[0].skip_reason is None
+
+
+def test_local_archive_image_text_accepts_root_relative_images_dir(tmp_path: Path) -> None:
+    (tmp_path / "output_checked_part1").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "images").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "images" / "b.jpg").write_bytes(b"fake")
+    (tmp_path / "output_checked_part1" / "1-3.md").write_text(
+        "题目: 图像样本\n![](images/b.jpg)",
+        encoding="utf-8",
+    )
+
+    loader = LocalArchiveDatasetAdapter(
+        root_dir=str(tmp_path),
+        mode="image_text",
+        limit=5,
+        single_image_only=True,
+    )
+    samples = loader.load()
+
+    assert len(samples) == 1
+    assert samples[0].image_path == str((tmp_path / "images" / "b.jpg").resolve())
+    assert samples[0].skip_reason is None

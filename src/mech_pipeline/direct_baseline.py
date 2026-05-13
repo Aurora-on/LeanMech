@@ -31,7 +31,7 @@ DIRECT_STAGE_ROW_FILES = (
     "semantic_rank.jsonl",
     "sample_summary.jsonl",
 )
-DIRECT_BASELINE_LEAN_HEADER = "\n".join(["import PhysLean", "open PhysLean"])
+DIRECT_BASELINE_LEAN_HEADER = "\n".join(["import Physlib", "open Physlib"])
 
 
 class DirectProcessSampleResult(TypedDict):

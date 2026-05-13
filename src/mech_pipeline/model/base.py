@@ -38,6 +38,7 @@ def build_model_client(config: ModelConfig) -> ModelClient:
             supports_vision=config.supports_vision,
             timeout_s=config.timeout_s,
             max_retries=config.max_retries,
+            request_extra=config.extra,
         )
 
     raise ValueError("Unsupported provider, use {'mock', 'openai_compatible'}")

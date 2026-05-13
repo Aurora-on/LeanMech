@@ -3,12 +3,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+from dataclasses import replace
 
 from mech_pipeline.adapters.lean_runner import LeanRunner
+from mech_pipeline.config import ProofConfig, select_proof_execution_mode
 from mech_pipeline.llm_schemas import ProofPayload, ProofPlanPayload
+from mech_pipeline.modules.e_dependency_audit import audit_proof_dependencies
+from mech_pipeline.modules.e_proof_context import build_proof_context
+from mech_pipeline.modules.e_search_controller import run_llm_guided_search
 from mech_pipeline.prompting import load_template, render_template
 from mech_pipeline.response_parser import ResponseParseError, parse_json_model
-from mech_pipeline.types import GroundingResult, ProofAttemptResult, ProofCheckResult, StatementCandidate
+from mech_pipeline.types import GroundingResult, ProofAttemptResult, ProofCheckResult, ProofSearchTrace, StatementCandidate
 from mech_pipeline.utils import (
     normalize_lean_text,
     sanitize_problem_ir_for_llm,
@@ -211,6 +216,10 @@ def _build_proof_failure_summary(error_type: str | None, stderr_digest: str) -> 
     return None
 
 
+def _action_rows_from_trace(trace: ProofSearchTrace) -> list[dict[str, object]]:
+    return [*trace.accepted_actions, *trace.rejected_actions]
+
+
 class ModuleE:
     def __init__(
         self,
@@ -220,6 +229,7 @@ class ModuleE:
         prompt_generate_path: Path,
         prompt_repair_path: Path,
         max_attempts: int,
+        proof_config: ProofConfig | None = None,
     ) -> None:
         self.model_client = model_client
         self.lean_runner = lean_runner
@@ -227,6 +237,7 @@ class ModuleE:
         self.prompt_generate = load_template(prompt_generate_path, DEFAULT_GENERATE_PROMPT)
         self.prompt_repair = load_template(prompt_repair_path, DEFAULT_REPAIR_PROMPT)
         self.max_attempts = max_attempts
+        self.proof_config = proof_config or ProofConfig()
 
     def run(
         self,
@@ -236,21 +247,184 @@ class ModuleE:
         mechlib_context: str = "(none)",
     ) -> tuple[list[ProofAttemptResult], ProofCheckResult]:
         if selected_candidate is None:
-            return (
-                [],
-                ProofCheckResult(
-                    sample_id=grounding.sample_id,
-                    proof_success=False,
-                    attempts_used=0,
-                    selected_candidate_id=None,
-                    error_type="proof_search_failure",
-                    final_log_path=None,
-                    sub_error_type="proof_generation_failure",
-                    failure_tags=["proof_generation_failure"],
-                    failure_summary="No selected candidate was available for proof generation.",
-                    failure_details={"selected_candidate_present": False},
-                ),
+            return self._no_selected_candidate_result(grounding)
+
+        proof_mode = select_proof_execution_mode(self.proof_config, selected_candidate)
+        if proof_mode == "llm_guided_search":
+            search_attempts, search_check = self._run_llm_guided_search_prover(
+                grounding=grounding,
+                selected_candidate=selected_candidate,
+                run_dir=run_dir,
+                mechlib_context=mechlib_context,
             )
+            if search_check.proof_success or not self.proof_config.legacy_fallback_enabled:
+                return search_attempts, search_check
+
+            legacy_attempts, legacy_check = self._run_legacy_full_proof(
+                grounding=grounding,
+                selected_candidate=selected_candidate,
+                run_dir=run_dir,
+                mechlib_context=mechlib_context,
+            )
+            for attempt in legacy_attempts:
+                attempt.fallback_to_legacy_full_proof = True
+                attempt.proof_mode = "legacy_full_proof"
+                attempt.fully_mechlib_verified = False
+            legacy_check.fallback_to_legacy_full_proof = True
+            legacy_check.proof_mode = "legacy_full_proof"
+            legacy_check.fully_mechlib_verified = False
+            legacy_check.attempts_used = len(search_attempts) + legacy_check.attempts_used
+            legacy_check.failure_details = {
+                **legacy_check.failure_details,
+                "fallback_to_legacy_full_proof": True,
+                "llm_guided_search_status": search_check.error_type,
+                "llm_guided_search_failure_summary": search_check.failure_summary,
+            }
+            return [*search_attempts, *legacy_attempts], legacy_check
+
+        legacy_attempts, legacy_check = self._run_legacy_full_proof(
+            grounding=grounding,
+            selected_candidate=selected_candidate,
+            run_dir=run_dir,
+            mechlib_context=mechlib_context,
+        )
+        for attempt in legacy_attempts:
+            attempt.proof_mode = "legacy_full_proof"
+        legacy_check.proof_mode = "legacy_full_proof"
+        return legacy_attempts, legacy_check
+
+    def _no_selected_candidate_result(
+        self,
+        grounding: GroundingResult,
+    ) -> tuple[list[ProofAttemptResult], ProofCheckResult]:
+        return (
+            [],
+            ProofCheckResult(
+                sample_id=grounding.sample_id,
+                proof_success=False,
+                attempts_used=0,
+                selected_candidate_id=None,
+                error_type="proof_search_failure",
+                final_log_path=None,
+                sub_error_type="proof_generation_failure",
+                failure_tags=["proof_generation_failure"],
+                failure_summary="No selected candidate was available for proof generation.",
+                failure_details={"selected_candidate_present": False},
+            ),
+        )
+
+    def _run_llm_guided_search_prover(
+        self,
+        grounding: GroundingResult,
+        selected_candidate: StatementCandidate,
+        run_dir: Path,
+        mechlib_context: str = "(none)",
+    ) -> tuple[list[ProofAttemptResult], ProofCheckResult]:
+        _ = run_dir
+        context = build_proof_context(
+            sample_id=grounding.sample_id,
+            problem_ir=grounding.problem_ir or {},
+            selected_candidate=selected_candidate,
+            mechlib_context=mechlib_context,
+        )
+        trace = run_llm_guided_search(
+            proof_context=context,
+            lean_runner=self.lean_runner,
+            llm_client=self.model_client,
+            cfg=self.proof_config.llm_guided_search,
+        )
+        proof_success = bool(trace.search_status == "success" and trace.final_proof_body)
+        trace_dict = trace.to_dict()
+        action_rows = _action_rows_from_trace(trace)
+        strategy_prompt_rows = list(trace.strategy_prompt_summaries)
+        audit_context = context
+        if trace.physical_assumption_augmented:
+            audit_context = replace(
+                context,
+                theorem_decl=trace.augmented_theorem_decl or context.theorem_decl,
+                base_theorem_decl=trace.base_theorem_decl or context.base_theorem_decl,
+                added_physical_assumptions=list(trace.added_physical_assumptions),
+                augmentation_status="applied",
+                augmentation_reason="e_physical_assumption_augmentation",
+            )
+        audit = audit_proof_dependencies(
+            proof_context=audit_context,
+            proof_body=trace.final_proof_body or "",
+            final_replay_pass=proof_success,
+        ).to_dict()
+        stderr_digest = "" if proof_success else (trace.failure_reason or trace.search_status)
+        attempt = ProofAttemptResult(
+            sample_id=grounding.sample_id,
+            attempt_index=1,
+            proof_body=trace.final_proof_body or "",
+            parse_ok=True,
+            raw_response="",
+            compile_pass=proof_success,
+            strict_pass=proof_success,
+            error_type=None if proof_success else "proof_search_failure",
+            stderr_digest=stderr_digest,
+            log_path=None,
+            plan="llm_guided_search",
+            sub_error_type=None if proof_success else trace.failure_reason,
+            failure_tags=[] if proof_success else _proof_failure_tags("proof_search_failure", trace.failure_reason),
+            failure_summary=None if proof_success else (trace.failure_reason or "llm guided proof search failed"),
+            failure_details={
+                "proof_mode": "llm_guided_search",
+                "search_status": trace.search_status,
+                "nodes_expanded": trace.nodes_expanded,
+                "llm_calls": trace.llm_calls,
+                "physical_assumption_augmented": trace.physical_assumption_augmented,
+                "added_physical_assumptions": list(trace.added_physical_assumptions),
+            },
+            proof_body_excerpt=_excerpt(trace.final_proof_body or ""),
+            stderr_excerpt=_excerpt(stderr_digest),
+            proof_search_trace=trace_dict,
+            proof_action_checks=action_rows,
+            proof_strategy_prompts=strategy_prompt_rows,
+            dependency_audit=audit,
+            proof_mode="llm_guided_search",
+            fallback_to_legacy_full_proof=False,
+            fully_mechlib_verified=bool(audit.get("fully_mechlib_verified")),
+            physical_assumption_augmented=trace.physical_assumption_augmented,
+            added_physical_assumptions=list(trace.added_physical_assumptions),
+            augmented_theorem_success=bool(proof_success and trace.physical_assumption_augmented),
+        )
+        check = ProofCheckResult(
+            sample_id=grounding.sample_id,
+            proof_success=proof_success,
+            attempts_used=1,
+            selected_candidate_id=selected_candidate.candidate_id,
+            error_type=None if proof_success else "proof_search_failure",
+            final_log_path=None,
+            sub_error_type=None if proof_success else trace.failure_reason,
+            failure_tags=[] if proof_success else _proof_failure_tags("proof_search_failure", trace.failure_reason),
+            failure_summary=None if proof_success else (trace.failure_reason or "llm guided proof search failed"),
+            failure_details={
+                "proof_mode": "llm_guided_search",
+                "search_status": trace.search_status,
+                "nodes_expanded": trace.nodes_expanded,
+                "llm_calls": trace.llm_calls,
+                "physical_assumption_augmented": trace.physical_assumption_augmented,
+                "added_physical_assumptions": list(trace.added_physical_assumptions),
+            },
+            proof_mode="llm_guided_search",
+            fallback_to_legacy_full_proof=False,
+            proof_search_trace=trace_dict,
+            dependency_audit=audit,
+            fully_mechlib_verified=bool(audit.get("fully_mechlib_verified")),
+            physical_assumption_augmented=trace.physical_assumption_augmented,
+            added_physical_assumptions=list(trace.added_physical_assumptions),
+            augmented_theorem_success=bool(proof_success and trace.physical_assumption_augmented),
+        )
+        return [attempt], check
+
+    def _run_legacy_full_proof(
+        self,
+        grounding: GroundingResult,
+        selected_candidate: StatementCandidate,
+        run_dir: Path,
+        mechlib_context: str = "(none)",
+    ) -> tuple[list[ProofAttemptResult], ProofCheckResult]:
 
         safe_ir = sanitize_problem_ir_for_llm(grounding.problem_ir or {})
         problem_ir_json = json.dumps(safe_ir, ensure_ascii=False, indent=2)

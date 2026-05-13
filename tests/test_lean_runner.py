@@ -18,32 +18,34 @@ def test_run_lean_resolves_relative_path_from_backend_root(tmp_path: Path, monke
 
     class _Proc:
         returncode = 0
-        stdout = ""
-        stderr = ""
+        pid = 12345
 
-    def fake_run(cmd, cwd, capture_output, text, encoding, errors, timeout, check):
-        _ = (capture_output, text, encoding, errors, timeout, check)
-        captured["cmd"] = cmd
-        captured["cwd"] = cwd
-        return _Proc()
+        def __init__(self, cmd, cwd, stdout, stderr, text, encoding, errors, start_new_session):
+            _ = (stdout, stderr, text, encoding, errors, start_new_session)
+            captured["cmd"] = cmd
+            captured["cwd"] = cwd
 
-    monkeypatch.setattr("mech_pipeline.adapters.lean_runner.subprocess.run", fake_run)
+        def communicate(self, timeout):
+            captured["timeout"] = timeout
+            return "", ""
+
+    monkeypatch.setattr("mech_pipeline.adapters.lean_runner.subprocess.Popen", _Proc)
     runner = LeanRunner(
         physlean_dir=root_dir,
         mechlib_dir=tmp_path / "mechlib",
         timeout_s=10,
         strict_blocklist=[],
-        lean_header="import PhysLean",
+        lean_header="import Physlib",
     )
 
     ok, _stdout, _stderr = runner._run_lean(
         root_dir=root_dir,
-        rel_file=Path("PhysLean/ClassicalMechanics/Basic.lean"),
+        rel_file=Path("Physlib/ClassicalMechanics/Basic.lean"),
     )
 
     assert ok is True
     assert Path(captured["cwd"]) == root_dir
-    assert captured["cmd"][-1] == "PhysLean/ClassicalMechanics/Basic.lean"
+    assert captured["cmd"][-1] == "Physlib/ClassicalMechanics/Basic.lean"
 
 
 def test_extract_lean_error_details_and_compile_sub_error() -> None:
@@ -67,7 +69,7 @@ def test_prevalidate_decl_rejects_embedded_proof_without_spawning_lean(tmp_path:
         mechlib_dir=tmp_path / "mechlib",
         timeout_s=10,
         strict_blocklist=[],
-        lean_header="import PhysLean",
+        lean_header="import Physlib",
         route_fallback=False,
     )
 
@@ -79,7 +81,7 @@ def test_prevalidate_decl_rejects_embedded_proof_without_spawning_lean(tmp_path:
     result = runner.compile_statement(
         sample_id="s1",
         candidate_id="c1",
-        lean_header="import PhysLean",
+        lean_header="import Physlib",
         theorem_decl="theorem bad : 1 = 1 := by rfl",
         run_dir=tmp_path / "run",
     )
@@ -101,7 +103,7 @@ def test_compile_statement_classifies_empty_timeout(tmp_path: Path, monkeypatch)
         mechlib_dir=tmp_path / "mechlib",
         timeout_s=10,
         strict_blocklist=[],
-        lean_header="import PhysLean",
+        lean_header="import Physlib",
         route_fallback=False,
     )
 
@@ -109,7 +111,7 @@ def test_compile_statement_classifies_empty_timeout(tmp_path: Path, monkeypatch)
     result = runner.compile_statement(
         sample_id="s1",
         candidate_id="c1",
-        lean_header="import PhysLean",
+        lean_header="import Physlib",
         theorem_decl="theorem ok (v : Real) : v = v + 1 - 1",
         run_dir=tmp_path / "run",
     )
@@ -128,7 +130,7 @@ def test_compile_statement_classifies_timeout_after_warning(tmp_path: Path, monk
         mechlib_dir=tmp_path / "mechlib",
         timeout_s=10,
         strict_blocklist=[],
-        lean_header="import PhysLean",
+        lean_header="import Physlib",
         route_fallback=False,
     )
     stderr = "warning: batteries: repository 'X' has local changes\n[PIPELINE_TIMEOUT]"
@@ -137,7 +139,7 @@ def test_compile_statement_classifies_timeout_after_warning(tmp_path: Path, monk
     result = runner.compile_statement(
         sample_id="s1",
         candidate_id="c1",
-        lean_header="import PhysLean",
+        lean_header="import Physlib",
         theorem_decl="theorem ok (v : Real) : v = v + 1 - 1",
         run_dir=tmp_path / "run",
     )
@@ -150,7 +152,7 @@ def test_compile_statement_classifies_timeout_after_warning(tmp_path: Path, monk
 def test_preflight_details_reports_dirty_packages_from_probe_warning(tmp_path: Path, monkeypatch) -> None:
     physlean_dir = tmp_path / "physlean"
     physlean_dir.mkdir()
-    (physlean_dir / "lakefile.toml").write_text('name = "PhysLean"\n', encoding="utf-8")
+    (physlean_dir / "lakefile.toml").write_text('name = "Physlib"\n', encoding="utf-8")
     (physlean_dir / "lean-toolchain").write_text("leanprover/lean4:v4.26.0\n", encoding="utf-8")
 
     runner = LeanRunner(
@@ -158,7 +160,7 @@ def test_preflight_details_reports_dirty_packages_from_probe_warning(tmp_path: P
         mechlib_dir=None,
         timeout_s=10,
         strict_blocklist=[],
-        lean_header="import PhysLean",
+        lean_header="import Physlib",
         route_fallback=False,
     )
     monkeypatch.setattr(
@@ -172,3 +174,75 @@ def test_preflight_details_reports_dirty_packages_from_probe_warning(tmp_path: P
     assert details["ok"] is True
     assert details["environment_health"] == "dirty_packages"
     assert details["environment_warnings"]
+
+
+def test_compile_statement_injects_physlib_compat_opens_for_mechlib_header(tmp_path: Path, monkeypatch) -> None:
+    mechlib_dir = tmp_path / "mechlib"
+    mechlib_dir.mkdir()
+    runner = LeanRunner(
+        physlean_dir=tmp_path / "physlean",
+        mechlib_dir=mechlib_dir,
+        timeout_s=10,
+        strict_blocklist=[],
+        lean_header="import MechLib",
+        route_fallback=False,
+    )
+    captured: dict[str, str] = {}
+
+    def fake_run(*, root_dir, rel_file):
+        _ = root_dir
+        captured["code"] = Path(rel_file).read_text(encoding="utf-8")
+        return (True, "", "")
+
+    monkeypatch.setattr(runner, "_run_lean", fake_run)
+
+    result = runner.compile_statement(
+        sample_id="s1",
+        candidate_id="c1",
+        lean_header="import MechLib",
+        theorem_decl="theorem uses_F_of (m a : Real) : F_of m a = m * a",
+        run_dir=tmp_path / "run",
+    )
+
+    assert result["compile_pass"] is True
+    assert (
+        "open MechLib.Compat.PHYSlib.SI (F_of secondLaw displacement_end_x_init_x displacement_delta_t_const_v)"
+        in captured["code"]
+    )
+
+
+def test_compile_statement_orders_all_imports_before_open_commands(tmp_path: Path, monkeypatch) -> None:
+    mechlib_dir = tmp_path / "mechlib"
+    mechlib_dir.mkdir()
+    runner = LeanRunner(
+        physlean_dir=tmp_path / "physlean",
+        mechlib_dir=mechlib_dir,
+        timeout_s=10,
+        strict_blocklist=[],
+        lean_header="import MechLib",
+        route_fallback=False,
+    )
+    captured: dict[str, str] = {}
+
+    def fake_run(*, root_dir, rel_file):
+        _ = root_dir
+        captured["code"] = Path(rel_file).read_text(encoding="utf-8")
+        return (True, "", "")
+
+    monkeypatch.setattr(runner, "_run_lean", fake_run)
+
+    result = runner.compile_statement(
+        sample_id="s1",
+        candidate_id="c1",
+        lean_header="open MechLib\nimport Mathlib\nopen Real",
+        theorem_decl="theorem import_order_test (x : Real) (h : x = 1) : x + 0 = 1",
+        run_dir=tmp_path / "run",
+    )
+
+    assert result["compile_pass"] is True
+    header = captured["code"].split("theorem import_order_test", 1)[0]
+    lines = [line for line in header.splitlines() if line.strip()]
+    first_open = next(i for i, line in enumerate(lines) if line.startswith("open "))
+    last_import = max(i for i, line in enumerate(lines) if line.startswith("import "))
+    assert last_import < first_open
+    assert "import Mathlib" in lines

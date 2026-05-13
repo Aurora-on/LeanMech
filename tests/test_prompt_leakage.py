@@ -38,10 +38,10 @@ class SpyModelClient(ModelClient):
             return ModelResponse(
                 text=(
                     '{"candidates":['
-                    '{"candidate_id":"c1","lean_header":"import PhysLean","theorem_decl":"theorem t1 (F m a : Real) (hm : m ≠ 0) (h : F = m * a) : a = F / m","assumptions":[],"plan":"p","supporting_facts":["F = m * a"],"fact_sources":["problem"],"library_symbols_used":[],"grounding_explanation":"g"},'
-                    '{"candidate_id":"c2","lean_header":"import PhysLean","theorem_decl":"theorem t2 (F m a : Real) (hm : m ≠ 0) (h : F = m * a) : F / m = a","assumptions":[],"plan":"p","supporting_facts":["F = m * a"],"fact_sources":["problem"],"library_symbols_used":[],"grounding_explanation":"g"},'
-                    '{"candidate_id":"c3","lean_header":"import PhysLean","theorem_decl":"theorem t3 (F m a : Real) (hm : m ≠ 0) (h : F = m * a) : m * a = F","assumptions":[],"plan":"p","supporting_facts":["F = m * a"],"fact_sources":["problem"],"library_symbols_used":[],"grounding_explanation":"g"},'
-                    '{"candidate_id":"c4","lean_header":"import PhysLean","theorem_decl":"theorem t4 (F m a : Real) (hm : m ≠ 0) (h : F = m * a) : F = a * m","assumptions":[],"plan":"p","supporting_facts":["F = m * a"],"fact_sources":["problem"],"library_symbols_used":[],"grounding_explanation":"g"}'
+                    '{"candidate_id":"c1","lean_header":"import Physlib","theorem_decl":"theorem t1 (F m a : Real) (hm : m ≠ 0) (h : F = m * a) : a = F / m","assumptions":[],"plan":"p","supporting_facts":["F = m * a"],"fact_sources":["problem"],"library_symbols_used":[],"grounding_explanation":"g"},'
+                    '{"candidate_id":"c2","lean_header":"import Physlib","theorem_decl":"theorem t2 (F m a : Real) (hm : m ≠ 0) (h : F = m * a) : F / m = a","assumptions":[],"plan":"p","supporting_facts":["F = m * a"],"fact_sources":["problem"],"library_symbols_used":[],"grounding_explanation":"g"},'
+                    '{"candidate_id":"c3","lean_header":"import Physlib","theorem_decl":"theorem t3 (F m a : Real) (hm : m ≠ 0) (h : F = m * a) : m * a = F","assumptions":[],"plan":"p","supporting_facts":["F = m * a"],"fact_sources":["problem"],"library_symbols_used":[],"grounding_explanation":"g"},'
+                    '{"candidate_id":"c4","lean_header":"import Physlib","theorem_decl":"theorem t4 (F m a : Real) (hm : m ≠ 0) (h : F = m * a) : F = a * m","assumptions":[],"plan":"p","supporting_facts":["F = m * a"],"fact_sources":["problem"],"library_symbols_used":[],"grounding_explanation":"g"}'
                     "]}"
                 )
             )

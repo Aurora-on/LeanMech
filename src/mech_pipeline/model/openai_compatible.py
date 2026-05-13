@@ -48,6 +48,7 @@ class OpenAICompatibleClient(ModelClient):
         supports_vision: bool,
         timeout_s: int,
         max_retries: int,
+        request_extra: dict[str, Any] | None = None,
     ) -> None:
         if not model_id:
             raise ValueError("model_id is required for openai_compatible provider")
@@ -57,12 +58,26 @@ class OpenAICompatibleClient(ModelClient):
         self._model_id: str = model_id
         self.model_id = model_id
         self.supports_vision = supports_vision
+        self.request_extra = dict(request_extra or {})
         self.client = OpenAI(
             api_key=api_key,
             base_url=normalize_base_url(base_url),
             timeout=timeout_s,
             max_retries=max_retries,
         )
+
+    def _request_payload(
+        self,
+        *,
+        messages: list[ChatCompletionMessageParam],
+        call_kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = dict(self.request_extra)
+        payload.update({key: value for key, value in call_kwargs.items() if key != "temperature"})
+        payload["model"] = self._model_id
+        payload["messages"] = messages
+        payload["temperature"] = float(call_kwargs.get("temperature", payload.get("temperature", 0.0)))
+        return payload
 
     def generate_text(self, prompt: str, **kwargs) -> ModelResponse:
         system_message: ChatCompletionSystemMessageParam = {
@@ -74,11 +89,7 @@ class OpenAICompatibleClient(ModelClient):
             "content": prompt,
         }
         messages: list[ChatCompletionMessageParam] = [system_message, user_message]
-        completion = self.client.chat.completions.create(
-            model=self._model_id,
-            temperature=float(kwargs.get("temperature", 0.0)),
-            messages=messages,
-        )
+        completion = self.client.chat.completions.create(**self._request_payload(messages=messages, call_kwargs=kwargs))
         text = _extract_text(completion.choices[0].message.content)
         usage = completion.usage.model_dump() if completion.usage else {}
         return ModelResponse(text=text, raw=completion.model_dump(), usage=usage)
@@ -101,11 +112,7 @@ class OpenAICompatibleClient(ModelClient):
         }
         user_message: ChatCompletionUserMessageParam = {"role": "user", "content": content}
         messages: list[ChatCompletionMessageParam] = [system_message, user_message]
-        completion = self.client.chat.completions.create(
-            model=self._model_id,
-            temperature=float(kwargs.get("temperature", 0.0)),
-            messages=messages,
-        )
+        completion = self.client.chat.completions.create(**self._request_payload(messages=messages, call_kwargs=kwargs))
         text = _extract_text(completion.choices[0].message.content)
         usage = completion.usage.model_dump() if completion.usage else {}
         return ModelResponse(text=text, raw=completion.model_dump(), usage=usage)

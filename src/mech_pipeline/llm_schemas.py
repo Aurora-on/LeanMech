@@ -42,6 +42,61 @@ class StatementCandidatesPayload(BasePayloadModel):
     candidates: list[StatementCandidatePayload] = Field(default_factory=list)
 
 
+class HypothesisProvenancePayload(BasePayloadModel):
+    name: str | None = None
+    lean: str | None = None
+    role: str | None = None
+    source_type: str | None = None
+    source_id: str | None = None
+    allowed_in_hypotheses: bool | int | str | None = None
+    notes: str | None = None
+    proof_fact_allowed: bool | int | str | None = None
+
+
+class ControlledSketchStepPayload(BasePayloadModel):
+    step_id: str | None = None
+    kind: str | None = None
+    claim: str | None = None
+    formal_claim: str | None = None
+    source_model_instance: str | None = None
+    planning_schema: str | None = None
+    verified_decl: str | None = None
+    binding_status: str | None = None
+    expected_claim: str | None = None
+    proof_fact_allowed: bool | int | str | None = None
+    allowed_solvers: list[Any] = Field(default_factory=list)
+    required_hypotheses: list[Any] = Field(default_factory=list)
+    produces: str | None = None
+    notes: str | None = None
+
+
+class TheoremSkeletonCandidatePayload(StatementCandidatePayload):
+    theorem_name_hint: str | None = None
+    variant_id: str | None = None
+    variant_policy: str | None = None
+    target_form_policy: str | None = None
+    hypothesis_policy: str | None = None
+    law_policy: str | None = None
+    gap_policy: str | None = None
+    obligation_policy: str | None = None
+    repair_directives: list[Any] = Field(default_factory=list)
+    selected_givens: list[Any] = Field(default_factory=list)
+    selected_model_instances: list[Any] = Field(default_factory=list)
+    selected_target: Any = Field(default_factory=dict)
+    hypothesis_provenance: list[HypothesisProvenancePayload] = Field(default_factory=list)
+    selected_laws: list[Any] = Field(default_factory=list)
+    verified_decls: list[Any] = Field(default_factory=list)
+    gap_laws: list[Any] = Field(default_factory=list)
+    proof_obligations: list[ControlledSketchStepPayload] = Field(default_factory=list)
+    controlled_sketch_steps_used: list[Any] = Field(default_factory=list)
+    unsupported_claims: list[Any] = Field(default_factory=list)
+    skeleton_audit: Any = Field(default_factory=dict)
+
+
+class TheoremSkeletonCandidatesPayload(BasePayloadModel):
+    candidates: list[TheoremSkeletonCandidatePayload] = Field(default_factory=list)
+
+
 class SemanticRankItemPayload(BasePayloadModel):
     candidate_id: str
     back_translation: str | None = None

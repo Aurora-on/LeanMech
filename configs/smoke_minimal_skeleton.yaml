@@ -1,0 +1,70 @@
+dataset:
+  source: local_archive
+  limit: 1
+  category: Mechanics
+  sample_policy: index_head
+  seed: 42
+  local_archive:
+    root: "../archive"
+    mode: text_only
+  single_image_only_for_mvp: true
+
+model:
+  provider: mock
+  model_id: mock-minimal-skeleton
+  base_url: null
+  api_key_env: OPENAI_API_KEY
+  supports_vision: true
+  timeout_s: 30
+  max_retries: 1
+  extra: {}
+
+lean:
+  enabled: false
+  physlean_dir: "../physlib"
+  mechlib_dir: "../MechLib"
+  timeout_s: 60
+  strict_blocklist: ["sorry", "admit", "axiom"]
+  lean_header: "import MechLib"
+  preflight_enabled: false
+
+knowledge:
+  enabled: true
+  structured_context_enabled: true
+  evidence_top_k: 8
+  lean_check_decls: true
+
+statement:
+  library_target: mechlib
+  with_mechlib_context: true
+  feedback_loop_enabled: true
+  max_revision_rounds: 1
+  generation_mode: minimal_skeleton
+  allow_explicit_gap_laws: true
+  forbid_derived_equation_hypotheses: true
+  require_hypothesis_provenance: true
+  require_evidence_binding: true
+  max_model_ir_candidates: 2
+  max_sketch_steps: 12
+  minimal_feedback_scope: routed_stage
+
+semantic:
+  pass_threshold: 0.7
+
+proof:
+  max_attempts: 2
+
+prompts:
+  dir: prompts
+  a_extract_ir: A_extract_ir.txt
+  b_generate_statements: B_generate_statements.txt
+  b_revise_statements: B_revise_statements.txt
+  d_semantic_rank: D_semantic_rank.txt
+  e_plan_proof: E_plan_proof.txt
+  e_generate_proof: E_generate_proof.txt
+  e_repair_proof: E_repair_proof.txt
+
+output:
+  output_dir: outputs/latest
+  runs_dir: runs
+  tag: smoke-minimal-skeleton

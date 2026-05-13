@@ -1,0 +1,237 @@
+# E 阶段 LLM-Guided Certified Prover
+
+本文说明 LeanMech 当前 E 阶段从“LLM 一次性生成完整 Lean proof”转向 “LLM-guided certified proof search” 的设计。
+
+## 1. 为什么不再使用 full-proof LLM generation
+
+早期 E 阶段的基本形式是：
+
+```text
+theorem statement
+  -> LLM proof plan
+  -> LLM full proof body
+  -> Lean verify
+  -> LLM repair
+```
+
+这个模式实现简单，但有几个问题：
+
+1. **证明不可控**：LLM 容易跳过物理定律应用步骤，直接写代数 tactic，导致 proof 虽然可能通过，却没有体现 MechLib 的 verified declaration。
+2. **难以审计依赖**：完整 proof body 是一次性生成的，系统很难判断每个 proof obligation 是否被覆盖，也难以区分 MechLib theorem、schema metadata 和普通代数事实。
+3. **失败反馈粗糙**：Lean 报错通常只对应整段 proof，不能稳定定位是哪一个局部动作失败。
+4. **不适合 minimal skeleton**：D 阶段之前已经生成了 `proof_obligations`、`EvidenceBinding` 和 verified extractor declaration，E 阶段应优先消费这些结构化信息，而不是让 LLM 重新猜证明。
+
+因此新的 E 阶段把 LLM 从“完整证明作者”降级为“证明策略控制器”。LLM 仍深度参与，但每个动作都必须由 Lean 检查。
+
+## 2. 为什么不直接接入 Lean Copilot
+
+Lean Copilot 的 tactic suggestion、premise selection 和 proof search 思路与本项目方向相近，但 LeanMech 当前没有直接依赖它，原因是：
+
+1. **本项目需要 MechLib EvidenceBinding**：证明阶段必须显式使用 D/B 前已经绑定好的 verified extractor declaration。
+2. **本项目需要 proof obligation audit**：每个 `law_to_equation` / `constraint_to_equation` obligation 都要能追踪是否被覆盖。
+3. **schema 不能进入 proof whitelist**：MechLib 中 concept schema、law schema、problem schema 只能用于建模、检索和规划，不能作为 proof fact。
+4. **输出需要 pipeline 级诊断**：LeanMech 要落盘 `proof_search_trace.jsonl`、`proof_action_checks.jsonl`、`proof_dependency_audit.jsonl` 和 metrics，供后续实验报告与 failure routing 使用。
+
+因此当前实现是一个 MechCopilot-style prover：参考 LLM-guided tactic search 的思想，但使用 LeanMech 自己的 proof context、action guard、dependency audit 和输出格式。
+
+## 3. LLM 在新 E 阶段中的角色
+
+LLM 不再直接输出完整 proof。它的角色包括：
+
+- **strategy controller**：根据当前 target、local facts、remaining obligations 和 allowed declarations 选择下一步策略。
+- **local tactic proposer**：提出一个小的 tactic block，例如一个 `have`、一次 `rw`、一次 `field_simp` + `nlinarith`。
+- **subgoal proposer**：在允许时提出局部可验证中间事实。
+- **failure diagnosis**：读取上一轮 Lean error excerpt 和 failed action summary，调整下一步策略。
+
+LLM 输入必须是 compact proof state。允许字段包括：
+
+- `target`
+- `proof_prefix_summary`
+- `local_facts`
+- `remaining_obligations`
+- `allowed_decls`
+- `available_strategy_cards`
+- `available_algebra_strategy_cards`
+- `last_error`
+- `failed_actions`
+
+禁止传入：
+
+- 完整 `retrieval_context`
+- 完整 `ProblemIR`
+- 完整 `StructuredMechLibContext`
+- 完整 previous proof attempts
+- 完整 theorem corpus
+- 长篇自然语言解题过程
+
+prompt 会做长度控制，目标是保持在 8000 字符以内。
+
+## 4. Lean 的角色
+
+Lean 是唯一的证明裁判。新的 E 阶段中，Lean 负责：
+
+1. **validate each action**：每个 LLM 或 deterministic 生成的 local tactic block 都通过 `probe_proof_prefix` 检查。
+2. **区分 action 状态**：
+   - `closed`：当前 proof prefix 已关闭目标；
+   - `progress`：当前 prefix 类型正确，但仍有未解决 goals；
+   - `invalid`：语法、类型、引用或 tactic 失败。
+3. **final replay**：即使 probe 返回 `closed`，最终 proof body 仍必须通过 `verify_proof` replay，才算 proof success。
+
+系统禁止使用 `sorry`、`admit`、`axiom` 和 `set_option` 等不受控 escape hatch。
+
+## 5. MechLib 的角色
+
+MechLib 在新 E 阶段中不是普通文本上下文，而是 verified proof source。
+
+关键输入包括：
+
+- **verified extractor declarations**：例如从课程层 predicate 抽取 value-level equation 的 theorem。
+- **proof obligations**：由 ControlledSketch / EvidenceBinding 提供，说明必须从哪个 hypothesis 使用哪个 verified declaration 得到哪个 formal claim。
+- **allowed verified declarations**：proof whitelist。LLM action 只能使用 whitelist 内的 MechLib declaration。
+
+典型 obligation：
+
+```json
+{
+  "kind": "law_to_equation",
+  "from_hypothesis": "glider_law",
+  "must_use": "MechLib.Dynamics.NewtonLaw.NewtonSecondLaw.to_value_equation",
+  "formal_claim": "Fnet1.val = m1.val * a.val",
+  "produced_fact_name": "h_obl_glider"
+}
+```
+
+E 阶段会优先 deterministic replay：
+
+```lean
+have h_obl_glider : Fnet1.val = m1.val * a.val := by
+  exact MechLib.Dynamics.NewtonLaw.NewtonSecondLaw.to_value_equation glider_law
+```
+
+这一步不依赖 LLM 猜测。
+
+## 6. 搜索流程
+
+当前搜索控制器的核心流程是：
+
+```text
+ProofContext
+  -> deterministic obligation replay
+  -> deterministic side-condition proposals
+  -> compact proof state
+  -> LLM strategy proposals
+  -> ActionGuard
+  -> Lean probe_proof_prefix
+  -> accepted/rejected action trace
+  -> final verify_proof replay
+  -> DependencyAudit
+```
+
+ActionGuard 会拒绝：
+
+- `sorry` / `admit` / `axiom`
+- 未授权 MechLib theorem
+- schema/problem/concept metadata
+- 修改 theorem statement 的命令
+- 自然语言或明显 placeholder
+- 超长 tactic block
+
+## 7. 输出文件说明
+
+### `proof_search_trace.jsonl`
+
+记录每个 sample/candidate 的搜索轨迹摘要：
+
+- `nodes_expanded`
+- `llm_calls`
+- `accepted_actions`
+- `rejected_actions`
+- `final_proof_body`
+- `search_status`
+- `failure_reason`
+- `strategy_prompt_summaries`
+
+### `proof_action_checks.jsonl`
+
+记录每个候选动作的 Lean 检查结果：
+
+- `action_id`
+- `strategy`
+- `tactic_block`
+- `source`: `deterministic` 或 `llm`
+- `uses_facts`
+- `uses_decls`
+- `status`: `closed` / `progress` / `invalid`
+- `error_type`
+- `stderr_excerpt`
+- `goals_excerpt`
+- `accepted`
+
+### `proof_strategy_prompts.jsonl`
+
+记录 compact prompt summary，而不是完整 prompt 或长上下文：
+
+- `prompt_chars`
+- `target_excerpt`
+- `proof_prefix_excerpt`
+- `local_facts`
+- `remaining_obligations`
+- `allowed_decls`
+- `failed_action_count`
+- `prompt_excerpt`
+- `omitted_context`
+
+`omitted_context` 会明确标记未保存的长上下文，例如完整 retrieval context、完整 ProblemIR、完整 theorem corpus。
+
+### `proof_dependency_audit.jsonl`
+
+记录最终 proof 是否真正使用了 MechLib verified declarations：
+
+- `used_verified_decls`
+- `required_verified_decls`
+- `missing_required_decls`
+- `covered_obligations`
+- `missing_obligations`
+- `gap_assisted`
+- `fully_mechlib_verified`
+- `classification`
+
+分类包括：
+
+- `fully_mechlib_verified`
+- `partial_mechlib_verified`
+- `gap_assisted_success`
+- `algebra_only_success`
+- `proof_failed`
+
+## 8. 指标说明
+
+E 阶段新增指标包括：
+
+- `llm_guided_search_enabled_rate`：进入新 search prover 的 proof attempt 比例。
+- `obligation_replay_success_rate`：成功 replay 的 obligation / required obligations。
+- `proof_obligation_coverage_rate`：最终 proof 覆盖的 obligation / required obligations。
+- `verified_decl_use_rate`：使用至少一个 required extractor declaration 的 proof 比例。
+- `fully_mechlib_verified_proof_rate`：分类为 `fully_mechlib_verified` 的 proof 比例。
+- `partial_mechlib_verified_proof_rate`：分类为 `partial_mechlib_verified` 的 proof 比例。
+- `gap_assisted_success_rate`：依赖 explicit gap law 的成功比例。
+- `algebra_only_success_rate`：final replay 通过但未使用 required MechLib declaration 的比例。
+- `llm_strategy_success_rate`：search trace 成功比例。
+- `valid_llm_action_rate`：LLM accepted actions / LLM proposals。
+- `invalid_llm_action_rate`：LLM invalid actions / LLM proposals。
+- `missing_side_condition_rate`：缺少 side condition 的 action 比例。
+- `average_llm_calls_per_proof`：每个 proof 的平均 LLM strategy calls。
+- `average_lean_action_checks_per_proof`：每个 proof 的平均 Lean action checks。
+
+这些指标用于区分“Lean proof 通过”和“MechLib 支撑的 verified proof 通过”。后者才是后续 pipeline 证明质量提升的核心指标。
+
+## 9. 当前限制
+
+当前实现仍有几个保守限制：
+
+1. DependencyAudit 主要基于 proof body 文本检查 required declaration 和 produced fact，尚未从 Lean proof term 中抽取真实 used constants。
+2. SideConditionAnalyzer 先支持简单分母和正性事实，尚未做 Lean AST 级分析。
+3. SearchController 是初版 best-first/beam 风格搜索，不是完整 MCTS。
+4. legacy fallback 仍保留，但 fallback proof 不自动标记为 `fully_mechlib_verified`。
+
+后续改进方向是从 Lean replay 中导出真实依赖、增强 proof state parsing，并把 `missing_side_condition` 回传到前段 failure routing。

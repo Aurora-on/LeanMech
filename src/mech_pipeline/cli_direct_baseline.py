@@ -24,10 +24,11 @@ from mech_pipeline.direct_baseline import (
     execute_direct_samples,
 )
 from mech_pipeline.model import build_model_client
+from mech_pipeline.utils import load_dotenv_if_present
 
 
 def _apply_physlean_only_baseline(cfg):
-    cfg.lean.lean_header = "import PhysLean"
+    cfg.lean.lean_header = "import Physlib"
     cfg.lean.route_policy = "force_physlean"
     cfg.lean.default_backend = "physlean"
     cfg.statement.library_target = "physlean"
@@ -187,6 +188,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     _configure_utf8_console()
+    load_dotenv_if_present(Path.cwd() / ".env")
     args = parse_args(argv)
     if args.command == "run":
         return run_pipeline(args)

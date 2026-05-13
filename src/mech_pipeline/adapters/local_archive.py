@@ -90,6 +90,8 @@ class LocalArchiveDatasetAdapter(DatasetAdapter):
                 else:
                     image_rel = images[0].strip()
                     image_abs = (path.parent / image_rel).resolve()
+                    if not image_abs.exists():
+                        image_abs = (self.root_dir / image_rel).resolve()
                     image_path = str(image_abs) if image_abs.exists() else None
                     if image_path is None:
                         skip_reason = "missing_diagram_information"

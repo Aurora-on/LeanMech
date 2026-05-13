@@ -50,6 +50,33 @@ def _grounding(sample_id: str = "s1") -> GroundingResult:
     )
 
 
+def test_statement_header_orders_imports_before_open_commands(tmp_path: Path) -> None:
+    prompt = tmp_path / "B_generate_statements.txt"
+    prompt.write_text("__TASK_B_GENERATE_STATEMENTS__", encoding="utf-8")
+    payload = """
+    {
+      "candidates": [
+        {
+          "candidate_id": "c1",
+          "lean_header": "open MechLib\\nimport Mathlib\\nopen Real",
+          "theorem_decl": "theorem header_order_test (x : Real) (h : x = 1) : x + 0 = 1",
+          "assumptions": [],
+          "plan": "test"
+        }
+      ]
+    }
+    """
+    module = ModuleB(StaticStatementClient(payload), prompt)
+
+    out = module.run(_grounding())
+
+    lines = out[0].lean_header.splitlines()
+    first_open = next(i for i, line in enumerate(lines) if line.startswith("open "))
+    last_import = max(i for i, line in enumerate(lines) if line.startswith("import "))
+    assert last_import < first_open
+    assert "import Mathlib" in lines
+
+
 def test_statement_normalizes_decimal_literals_to_real_terms(tmp_path: Path) -> None:
     prompt = tmp_path / "B_generate_statements.txt"
     prompt.write_text("__TASK_B_GENERATE_STATEMENTS__", encoding="utf-8")

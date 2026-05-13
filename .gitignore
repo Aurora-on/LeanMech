@@ -1,5 +1,6 @@
 .mypy_cache/
 .pytest_cache/
+.venv/
 tmp/pytest/
 .lake/
 lake-manifest.json
@@ -12,3 +13,4 @@ src/*.egg-info/
 .tmp_leanforphysics_extract.txt
 .env
 .env.*
+.DS_Store

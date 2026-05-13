@@ -82,14 +82,14 @@ def test_cli_direct_baseline_smoke(tmp_path: Path, capsys) -> None:
     assert len(rows) == 1
     assert rows[0]["parse_ok"] is True
     assert rows[0]["theorem_decl"].startswith("theorem")
-    assert rows[0]["lean_header"] == "import PhysLean\nopen PhysLean"
+    assert rows[0]["lean_header"] == "import Physlib\nopen Physlib"
     readme_text = (output_latest / "README.md").read_text(encoding="utf-8")
     analysis_text = (output_latest / "analysis.md").read_text(encoding="utf-8")
     config_payload = json.loads((output_latest / "config.json").read_text(encoding="utf-8"))
     assert "environment: physlean_only" in readme_text
     assert "environment: physlean_only" in analysis_text
     assert "MechLib environment" not in readme_text
-    assert config_payload["resolved_config"]["lean"]["lean_header"] == "import PhysLean"
+    assert config_payload["resolved_config"]["lean"]["lean_header"] == "import Physlib"
     assert config_payload["resolved_config"]["lean"]["route_policy"] == "force_physlean"
     assert config_payload["resolved_config"]["lean"]["default_backend"] == "physlean"
     assert config_payload["resolved_config"]["statement"]["library_target"] == "physlean"

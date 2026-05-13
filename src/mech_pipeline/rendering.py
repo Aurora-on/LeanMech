@@ -6,6 +6,7 @@ import textwrap
 from pathlib import Path
 
 from mech_pipeline.config import PipelineConfig
+from mech_pipeline.eval.metrics import build_minimal_skeleton_stage_summary
 from mech_pipeline.types import CompileCheckResult, SampleRunSummary, SemanticRankResult, StatementCandidate
 from mech_pipeline.utils import normalize_lean_text, safe_stem, truncate
 
@@ -54,6 +55,8 @@ def build_revision_feedback(
     compile_pass_count = sum(1 for row in compile_results if row.compile_pass)
     for candidate in candidates:
         compile_row = compile_map.get(candidate.candidate_id)
+        skeleton_audit = getattr(candidate, "skeleton_audit", None)
+        controlled_sketch = getattr(candidate, "controlled_sketch", None)
         row: dict[str, object] = {
             "candidate_id": candidate.candidate_id,
             "theorem_decl": candidate.theorem_decl,
@@ -63,6 +66,28 @@ def build_revision_feedback(
             "library_symbols_used": candidate.library_symbols_used,
             "grounding_explanation": candidate.grounding_explanation,
             "unsupported_claims": candidate.unsupported_claims,
+            "verified_decl_refs": candidate.verified_decl_refs,
+            "schema_refs": candidate.schema_refs,
+            "alias_refs": candidate.alias_refs,
+            "grounding_status": candidate.grounding_status,
+            "gap_schema_only": candidate.gap_schema_only,
+            "generation_mode": getattr(candidate, "generation_mode", None),
+            "variant_id": getattr(candidate, "variant_id", None),
+            "variant_policy": getattr(candidate, "variant_policy", None),
+            "target_form_policy": getattr(candidate, "target_form_policy", None),
+            "gap_policy": getattr(candidate, "gap_policy", None),
+            "repair_directives": list(getattr(candidate, "repair_directives", []) or []),
+            "generation_blocked_reason": getattr(candidate, "generation_blocked_reason", None),
+            "fully_mechlib_verified": bool(getattr(candidate, "fully_mechlib_verified", False)),
+            "verified_decls": list(getattr(candidate, "verified_decls", []) or []),
+            "proof_obligations_count": len(getattr(candidate, "proof_obligations", []) or []),
+            "gap_laws_count": len(getattr(candidate, "gap_laws", []) or []),
+            "explicit_model_gaps_count": len(getattr(candidate, "explicit_model_gaps", []) or []),
+            "skeleton_audit_pass": getattr(skeleton_audit, "audit_pass", None),
+            "skeleton_audit_failure_tags": list(getattr(skeleton_audit, "failure_tags", []) or []),
+            "skeleton_audit_failure_summary": getattr(skeleton_audit, "failure_summary", None),
+            "controlled_sketch_status": getattr(controlled_sketch, "status", None),
+            "controlled_sketch_error": getattr(controlled_sketch, "error", None),
             "compile_pass": bool(compile_row.compile_pass) if compile_row else False,
             "error_type": compile_row.error_type if compile_row else "compile_not_run",
             "sub_error_type": compile_row.sub_error_type if compile_row else None,
@@ -95,6 +120,11 @@ def build_revision_feedback(
                     "semantic_rank_score": semantic_row.get("semantic_rank_score"),
                     "library_grounding_score": semantic_row.get("library_grounding_score"),
                     "grounded_library_symbols": semantic_row.get("grounded_library_symbols"),
+                    "verified_decl_refs": semantic_row.get("verified_decl_refs"),
+                    "schema_refs": semantic_row.get("schema_refs"),
+                    "alias_refs": semantic_row.get("alias_refs"),
+                    "grounding_status": semantic_row.get("grounding_status"),
+                    "gap_schema_only": semantic_row.get("gap_schema_only"),
                     "grounding_gap_summary": semantic_row.get("grounding_gap_summary"),
                     "direct_translation": semantic_row.get("direct_translation"),
                 }
@@ -107,6 +137,7 @@ def build_revision_feedback(
 
     payload = {
         "retry_reason": retry_reason,
+        "candidate_count": len(candidates),
         "compile_pass_count": compile_pass_count,
         "semantic_pass": semantic.semantic_pass,
         "selected_candidate_id": semantic.selected_candidate_id,
@@ -476,6 +507,7 @@ def build_run_readme(
     semantic_rows = stage_rows.get("semantic_rank.jsonl", [])
     proof_attempt_rows = stage_rows.get("proof_attempts.jsonl", [])
     proof_rows = stage_rows.get("proof_checks.jsonl", [])
+    minimal_summary = build_minimal_skeleton_stage_summary(stage_rows)
     compile_sub_counter: dict[str, int] = {}
     for row in compile_rows:
         sub_error = str(row.get("sub_error_type") or "").strip()
@@ -537,6 +569,15 @@ def build_run_readme(
         f"- proof_mechlib_usage_rate: {metrics.get('proof_mechlib_usage_rate', 0)}",
         f"- library_grounded_selection_rate: {metrics.get('library_grounded_selection_rate', 0)}",
         f"- feedback_loop_used_rate: {metrics.get('feedback_loop_used_rate', 0)}",
+        f"- model_ir_success_rate: {metrics.get('model_ir_success_rate')}",
+        f"- evidence_binding_success_rate: {metrics.get('evidence_binding_success_rate')}",
+        f"- verified_binding_rate: {metrics.get('verified_binding_rate')}",
+        f"- gap_schema_only_rate: {metrics.get('gap_schema_only_rate')}",
+        f"- sketch_audit_pass_rate: {metrics.get('sketch_audit_pass_rate')}",
+        f"- skeleton_generation_success_rate: {metrics.get('skeleton_generation_success_rate')}",
+        f"- derived_equation_hypothesis_violation_rate: {metrics.get('derived_equation_hypothesis_violation_rate')}",
+        f"- schema_as_proof_fact_violation_rate: {metrics.get('schema_as_proof_fact_violation_rate')}",
+        f"- explicit_gap_law_rate: {metrics.get('explicit_gap_law_rate')}",
         f"- sample_concurrency: {sample_concurrency}",
         f"- environment_health: {environment_health}",
         f"- environment_warnings_count: {len(environment_warnings)}",
@@ -551,6 +592,17 @@ def build_run_readme(
         "  - selected_statement_mechlib_usage_rate = ratio of D-selected candidates with explicit retrieved-library support",
         "  - proof_mechlib_usage_rate = ratio of final proof attempts whose proof plan/body references retrieved theorem names or symbols",
         "  - library_grounded_selection_rate = ratio of D selections that are explicitly library-backed or receive positive library grounding score",
+        "",
+        "## Minimal Skeleton Front Half",
+        "",
+        f"- generation_mode: {minimal_summary['generation_mode']}",
+        f"- model_ir_ok: {minimal_summary['model_ir_ok']}",
+        f"- evidence_binding_count: {minimal_summary['evidence_binding_count']}",
+        f"- verified_binding_count: {minimal_summary['verified_binding_count']}",
+        f"- gap_schema_only_count: {minimal_summary['gap_schema_only_count']}",
+        f"- sketch_audit_pass: {minimal_summary['sketch_audit_pass']}",
+        f"- forbidden_hypothesis_count: {minimal_summary['forbidden_hypothesis_count']}",
+        f"- skeleton_candidate_count: {minimal_summary['skeleton_candidate_count']}",
         "",
         "## Runtime Diagnostics",
         "",
@@ -577,7 +629,11 @@ def build_run_readme(
             lines.extend(["", f"**Round {round_index}**", ""])
             sample_candidates = round_candidates_map.get(round_index, [])
             mechlib_count = sum(1 for c in sample_candidates if "import MechLib" in str(c.get("lean_header") or ""))
-            physlean_count = sum(1 for c in sample_candidates if "import PhysLean" in str(c.get("lean_header") or ""))
+            physlean_count = sum(
+                1
+                for c in sample_candidates
+                if any(token in str(c.get("lean_header") or "") for token in ("import PhysLean", "import Physlib"))
+            )
             lines.append(
                 f"- backend_distribution: mechlib_headers={mechlib_count}, physlean_headers={physlean_count}, total={len(sample_candidates)}"
             )
@@ -593,7 +649,7 @@ def build_run_readme(
                     f"fallback={comp.get('route_fallback_used') if comp else None}"
                 )
                 lines.append("```lean")
-                lines.append(str(c.get("lean_header", "import PhysLean")).strip())
+                lines.append(str(c.get("lean_header", "import Physlib")).strip())
                 lines.append("")
                 lines.append(str(c.get("theorem_decl", "")).strip())
                 lines.append("```")
@@ -602,6 +658,9 @@ def build_run_readme(
                 lines.append(f"  - fact_sources: {truncate(json.dumps(c.get('fact_sources', []), ensure_ascii=False), 240)}")
                 lines.append(f"  - library_symbols_used: {truncate(json.dumps(c.get('library_symbols_used', []), ensure_ascii=False), 240)}")
                 lines.append(f"  - unsupported_claims: {truncate(json.dumps(c.get('unsupported_claims', []), ensure_ascii=False), 240)}")
+                lines.append(f"  - grounding_status: {c.get('grounding_status')} gap_schema_only={c.get('gap_schema_only')}")
+                lines.append(f"  - verified_decl_refs: {truncate(json.dumps(c.get('verified_decl_refs', []), ensure_ascii=False), 360)}")
+                lines.append(f"  - schema_refs: {truncate(json.dumps(c.get('schema_refs', []), ensure_ascii=False), 240)}")
 
             semantic = round_semantic_map.get(round_index)
             lines.extend(["", "**Semantic Ranking**", ""])
@@ -653,6 +712,8 @@ def build_run_readme(
                     lines.append(f"  - reason: {reason}")
                     lines.append(
                         f"  - grounded_library_symbols={item.get('grounded_library_symbols')} "
+                        f"verified_decl_refs={truncate(json.dumps(item.get('verified_decl_refs', []), ensure_ascii=False), 260)} "
+                        f"grounding_status={item.get('grounding_status')} gap_schema_only={item.get('gap_schema_only')} "
                         f"unsupported_claims={item.get('unsupported_claims')} "
                         f"grounding_gap_summary={truncate(str(item.get('grounding_gap_summary') or ''), 240)}"
                     )

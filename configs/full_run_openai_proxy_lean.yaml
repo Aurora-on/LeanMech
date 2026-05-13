@@ -5,14 +5,14 @@
   sample_policy: index_head
   seed: 42
   local_archive:
-    root: "F:/AI4Mechanics/datasets/archive"
+    root: "../archive"
     mode: text_only
   single_image_only_for_mvp: true
 
 model:
   provider: openai_compatible
   model_id: gpt-5.2
-  base_url: "https://api.openai-proxy.org/v1"
+  base_url: "https://api.openai-proxy.org"
   api_key: null
   api_key_env: OPENAI_PROXY_KEY
   supports_vision: true
@@ -22,10 +22,10 @@ model:
 
 lean:
   enabled: true
-  physlean_dir: "F:/AI4Mechanics/PhysLean-master"
+  physlean_dir: "../physlib"
   timeout_s: 120
   strict_blocklist: ["sorry", "admit", "axiom"]
-  lean_header: "import PhysLean"
+  lean_header: "import Physlib"
   preflight_enabled: true
 
 semantic:

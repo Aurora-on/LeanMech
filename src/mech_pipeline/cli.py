@@ -16,7 +16,16 @@ from mech_pipeline.archive import create_run_dir, write_outputs
 from mech_pipeline.config import PipelineConfig, load_config, validate_config
 from mech_pipeline.knowledge import MechLibRetriever
 from mech_pipeline.model import build_model_client
-from mech_pipeline.modules import ModuleA, ModuleB, ModuleC, ModuleD, ModuleE, ModuleF
+from mech_pipeline.modules import (
+    ModuleA,
+    ModuleA2ModelIR,
+    ModuleB,
+    ModuleC,
+    ModuleControlledSketch,
+    ModuleD,
+    ModuleE,
+    ModuleF,
+)
 from mech_pipeline.orchestrator import (
     execute_samples,
     new_stage_rows as _new_stage_rows,
@@ -27,17 +36,28 @@ from mech_pipeline.rendering import (
     build_run_readme as _build_run_readme,
 )
 from mech_pipeline.types import SampleRunSummary
-from mech_pipeline.utils import to_row
+from mech_pipeline.utils import load_dotenv_if_present, to_row
 
 
 STAGE_ROW_FILES = (
     "problem_ir.jsonl",
+    "model_ir.jsonl",
+    "structured_mechlib_context.jsonl",
+    "evidence_bindings.jsonl",
+    "controlled_sketch.jsonl",
+    "sketch_audit.jsonl",
+    "failure_routes.jsonl",
     "mechlib_retrieval.jsonl",
     "statement_candidates.jsonl",
+    "theorem_skeleton_candidates.jsonl",
     "compile_checks.jsonl",
     "semantic_rank.jsonl",
     "proof_attempts.jsonl",
     "proof_checks.jsonl",
+    "proof_search_trace.jsonl",
+    "proof_action_checks.jsonl",
+    "proof_strategy_prompts.jsonl",
+    "proof_dependency_audit.jsonl",
     "sample_summary.jsonl",
 )
 
@@ -123,11 +143,17 @@ def _build_worker_modules(cfg: PipelineConfig, prompt_dir: Path):
     model_client = build_model_client(cfg.model)
     lean_runner = _build_lean_runner(cfg)
     module_a = ModuleA(model_client, cfg.model.model_id, prompt_dir / cfg.prompts.a_extract_ir)
+    module_a2 = ModuleA2ModelIR(model_client, prompt_dir / cfg.prompts.a2_model_ir)
+    module_sketch = ModuleControlledSketch(model_client, prompt_dir / cfg.prompts.controlled_sketch)
     module_b = ModuleB(
         model_client,
         prompt_dir / cfg.prompts.b_generate_statements,
         revise_prompt_path=prompt_dir / cfg.prompts.b_revise_statements,
+        minimal_prompt_path=prompt_dir / cfg.prompts.b_generate_minimal_skeleton,
         library_target=cfg.statement.library_target,
+        b_minimal_llm_enabled=cfg.statement.b_minimal_llm_enabled,
+        b_minimal_llm_on_retry=cfg.statement.b_minimal_llm_on_retry,
+        compact_minimal_prompts=cfg.statement.compact_minimal_prompts,
     )
     module_c = ModuleC(lean_runner)
     module_d = ModuleD(model_client, prompt_dir / cfg.prompts.d_semantic_rank, cfg.semantic.pass_threshold)
@@ -138,8 +164,9 @@ def _build_worker_modules(cfg: PipelineConfig, prompt_dir: Path):
         prompt_generate_path=prompt_dir / cfg.prompts.e_generate_proof,
         prompt_repair_path=prompt_dir / cfg.prompts.e_repair_proof,
         max_attempts=cfg.proof.max_attempts,
+        proof_config=cfg.proof,
     )
-    return module_a, module_b, module_c, module_d, module_e
+    return module_a, module_a2, module_sketch, module_b, module_c, module_d, module_e
 
 
 def _empty_metrics_with_error(error_type: str) -> dict[str, object]:
@@ -155,6 +182,15 @@ def _empty_metrics_with_error(error_type: str) -> dict[str, object]:
         "mechlib_compile_pass_rate": 0.0,
         "selected_mechlib_candidate_rate": 0.0,
         "feedback_loop_used_rate": 0.0,
+        "model_ir_success_rate": None,
+        "evidence_binding_success_rate": None,
+        "verified_binding_rate": None,
+        "gap_schema_only_rate": None,
+        "sketch_audit_pass_rate": None,
+        "skeleton_generation_success_rate": None,
+        "derived_equation_hypothesis_violation_rate": None,
+        "schema_as_proof_fact_violation_rate": None,
+        "explicit_gap_law_rate": None,
         "error_type_distribution": {error_type: 1},
     }
 
@@ -200,6 +236,13 @@ def run_pipeline(args: argparse.Namespace) -> int:
             cache_path=Path(cfg.knowledge.cache_path),
             context_source=cfg.knowledge.context_source,
             summary_corpus_path=Path(cfg.knowledge.summary_corpus_path),
+            enriched_corpus_enabled=cfg.knowledge.enriched_corpus_enabled,
+            decl_corpus_path=Path(cfg.knowledge.decl_corpus_path),
+            law_schema_corpus_path=Path(cfg.knowledge.law_schema_corpus_path),
+            problem_schema_corpus_path=Path(cfg.knowledge.problem_schema_corpus_path),
+            concept_corpus_path=Path(cfg.knowledge.concept_corpus_path),
+            alias_map_path=Path(cfg.knowledge.alias_map_path),
+            alignment_index_path=Path(cfg.knowledge.alignment_index_path),
             summary_injection_mode=cfg.knowledge.summary_injection_mode,
             always_include_core_tags=cfg.knowledge.always_include_core_tags,
         )
@@ -248,6 +291,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
             compile_rows=[],
             semantic_rows=[],
             proof_rows=[],
+            stage_rows=stage_rows,
         )
         stage_rows["sample_summary.jsonl"] = [to_row(s) for s in dry_summaries]
         write_outputs(
@@ -308,6 +352,9 @@ def run_pipeline(args: argparse.Namespace) -> int:
     proof_rows = execution["proof_rows"]
     summaries = execution["summaries"]
     sample_concurrency = execution["sample_concurrency"]
+    lean_decl_check_cache_stats = execution.get("lean_decl_check_cache_stats", {})
+    if lean_decl_check_cache_stats:
+        preflight_details["lean_decl_check_cache"] = lean_decl_check_cache_stats
 
     metrics, analysis = module_f.build(
         summaries=summaries,
@@ -319,6 +366,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
         retrieval_rows=stage_rows["mechlib_retrieval.jsonl"],
         proof_attempt_rows=stage_rows["proof_attempts.jsonl"],
         run_metadata=preflight_details,
+        stage_rows=stage_rows,
     )
     run_readme = _build_run_readme(
         samples=samples,
@@ -351,6 +399,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
                 "message": preflight_message,
                 "environment_health": preflight_details.get("environment_health"),
                 "environment_warnings": preflight_details.get("environment_warnings"),
+                "lean_decl_check_cache": preflight_details.get("lean_decl_check_cache", {}),
             },
         },
         extra_text_files=lean_export_files,
@@ -360,6 +409,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     _configure_utf8_console()
+    load_dotenv_if_present(Path.cwd() / ".env")
     args = parse_args(argv)
     if args.command == "run":
         return run_pipeline(args)

@@ -172,6 +172,64 @@ class SummaryCorpusEntry:
         return asdict(self)
 
 
+@dataclass
+class EnrichedDeclEntry:
+    row_id: str
+    kind: str
+    fq_name: str
+    short_name: str
+    namespace: str
+    module: str
+    statement: str
+    attrs: list[str]
+    source_path: str
+    source_line: int | None
+    tags: list[str]
+    summary_en: str
+    proof_hints: list[str]
+    retrieval_text: str
+    status: str
+    trust_level: str
+    callable_by_llm: bool
+    required_imports: list[str]
+    dependencies: list[str]
+    primary_spec_id: str
+    secondary_spec_ids: list[str]
+    concept_ids: list[str]
+    law_schema_ids: list[str]
+    problem_schema_ids: list[str]
+    premise_role: list[str]
+    alignment_method: str
+    alignment_score: float | None
+    needs_review: bool
+
+    def to_row(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class SchemaCorpusEntry:
+    corpus_type: str
+    row_id: str
+    retrieval_text: str
+    raw: dict[str, Any]
+
+    def to_row(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class AliasMapEntry:
+    alias_name: str
+    alias_fq_name: str
+    alias_to_fq_name: str
+    source_path: str
+    source_line: int | None
+
+    def to_row(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 class MechLibRetriever:
     def __init__(
         self,
@@ -181,6 +239,13 @@ class MechLibRetriever:
         cache_path: Path | None = None,
         context_source: str = "hybrid",
         summary_corpus_path: Path | None = None,
+        enriched_corpus_enabled: bool = True,
+        decl_corpus_path: Path | None = None,
+        law_schema_corpus_path: Path | None = None,
+        problem_schema_corpus_path: Path | None = None,
+        concept_corpus_path: Path | None = None,
+        alias_map_path: Path | None = None,
+        alignment_index_path: Path | None = None,
         summary_injection_mode: str = "domain_full",
         always_include_core_tags: list[str] | None = None,
     ) -> None:
@@ -192,7 +257,20 @@ class MechLibRetriever:
         self.summary_corpus_path = (
             Path(summary_corpus_path)
             if summary_corpus_path
-            else (self.mechlib_dir / "theorem_corpus.jsonl")
+            else (self.mechlib_dir / "corpus" / "theorem_corpus.jsonl")
+        )
+        self.enriched_corpus_enabled = enriched_corpus_enabled
+        self.decl_corpus_path = Path(decl_corpus_path) if decl_corpus_path else (self.mechlib_dir / "corpus" / "decl_corpus_enriched.jsonl")
+        self.law_schema_corpus_path = (
+            Path(law_schema_corpus_path) if law_schema_corpus_path else (self.mechlib_dir / "corpus" / "law_schema_corpus.jsonl")
+        )
+        self.problem_schema_corpus_path = (
+            Path(problem_schema_corpus_path) if problem_schema_corpus_path else (self.mechlib_dir / "corpus" / "problem_schema_corpus.jsonl")
+        )
+        self.concept_corpus_path = Path(concept_corpus_path) if concept_corpus_path else (self.mechlib_dir / "corpus" / "concept_corpus.jsonl")
+        self.alias_map_path = Path(alias_map_path) if alias_map_path else (self.mechlib_dir / "corpus" / "alias_map.jsonl")
+        self.alignment_index_path = (
+            Path(alignment_index_path) if alignment_index_path else (self.mechlib_dir / "corpus" / "decl_to_spec_index.json")
         )
         self.summary_injection_mode = summary_injection_mode
         self.core_tags = [_normalize_tag(x) for x in (always_include_core_tags or ["SI", "Units"]) if x.strip()]
@@ -200,9 +278,19 @@ class MechLibRetriever:
         self.entries: list[MechLibEntry] = []
         self.summary_entries: list[SummaryCorpusEntry] = []
         self.summary_entries_by_tag: dict[str, list[SummaryCorpusEntry]] = {}
+        self.decl_entries: list[EnrichedDeclEntry] = []
+        self.decl_entries_by_name: dict[str, EnrichedDeclEntry] = {}
+        self.schema_entries: list[SchemaCorpusEntry] = []
+        self.alias_entries: list[AliasMapEntry] = []
+        self.alias_entries_by_name: dict[str, AliasMapEntry] = {}
+        self.alignment_index: dict[str, Any] = {}
 
         self._build_index()
         self._load_summary_corpus()
+        self._load_enriched_decl_corpus()
+        self._load_schema_corpora()
+        self._load_alias_map()
+        self._load_alignment_index()
 
     def _iter_target_files(self) -> list[Path]:
         root = self.mechlib_dir / "MechLib"
@@ -327,6 +415,210 @@ class MechLibRetriever:
 
         self.summary_entries = entries
         self.summary_entries_by_tag = by_tag
+
+    def _string_list(self, value: object) -> list[str]:
+        if isinstance(value, str):
+            text = normalize_lean_text(value.strip())
+            return [text] if text else []
+        if not isinstance(value, list):
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            text = normalize_lean_text(str(item or "").strip())
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            out.append(text)
+        return out
+
+    def _as_bool(self, value: object, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "yes", "1"}:
+                return True
+            if lowered in {"false", "no", "0"}:
+                return False
+        return default
+
+    def _as_float_or_none(self, value: object) -> float | None:
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value.strip())
+            except ValueError:
+                return None
+        return None
+
+    def _as_int_or_none(self, value: object) -> int | None:
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            try:
+                return int(value.strip())
+            except ValueError:
+                return None
+        return None
+
+    def _load_jsonl_dicts(self, path: Path) -> list[dict[str, Any]]:
+        if not path.exists():
+            return []
+        rows: list[dict[str, Any]] = []
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(obj, dict):
+                    rows.append(obj)
+        return rows
+
+    def _load_enriched_decl_corpus(self) -> None:
+        if not self.enriched_corpus_enabled:
+            self.decl_entries = []
+            self.decl_entries_by_name = {}
+            return
+
+        entries: list[EnrichedDeclEntry] = []
+        for obj in self._load_jsonl_dicts(self.decl_corpus_path):
+            fq_name = normalize_lean_text(str(obj.get("fq_name") or "").strip())
+            short_name = normalize_lean_text(str(obj.get("short_name") or "").strip())
+            statement = normalize_lean_text(str(obj.get("statement") or "").strip())
+            if not fq_name or not short_name or not statement:
+                continue
+            entry = EnrichedDeclEntry(
+                row_id=str(obj.get("id") or "").strip(),
+                kind=str(obj.get("kind") or "").strip(),
+                fq_name=fq_name,
+                short_name=short_name,
+                namespace=str(obj.get("namespace") or "").strip(),
+                module=str(obj.get("module") or "").strip(),
+                statement=statement,
+                attrs=self._string_list(obj.get("attrs")),
+                source_path=str(obj.get("source_path") or "").strip(),
+                source_line=self._as_int_or_none(obj.get("source_line")),
+                tags=[_normalize_tag(x) for x in self._string_list(obj.get("tags"))],
+                summary_en=normalize_lean_text(str(obj.get("summary_en") or "").strip()),
+                proof_hints=self._string_list(obj.get("proof_hints")),
+                retrieval_text=normalize_lean_text(str(obj.get("retrieval_text") or "").strip()),
+                status=str(obj.get("status") or "").strip().lower(),
+                trust_level=str(obj.get("trust_level") or "").strip().lower(),
+                callable_by_llm=self._as_bool(obj.get("callable_by_llm"), default=False),
+                required_imports=self._string_list(obj.get("required_imports")),
+                dependencies=self._string_list(obj.get("dependencies")),
+                primary_spec_id=str(obj.get("primary_spec_id") or "").strip(),
+                secondary_spec_ids=self._string_list(obj.get("secondary_spec_ids")),
+                concept_ids=self._string_list(obj.get("concept_ids")),
+                law_schema_ids=self._string_list(obj.get("law_schema_ids")),
+                problem_schema_ids=self._string_list(obj.get("problem_schema_ids")),
+                premise_role=self._string_list(obj.get("premise_role")),
+                alignment_method=str(obj.get("alignment_method") or "").strip(),
+                alignment_score=self._as_float_or_none(obj.get("alignment_score")),
+                needs_review=self._as_bool(obj.get("needs_review"), default=False),
+            )
+            entries.append(entry)
+
+        by_name: dict[str, EnrichedDeclEntry] = {}
+        for entry in entries:
+            by_name[entry.fq_name] = entry
+            by_name[entry.short_name] = entry
+        self.decl_entries = entries
+        self.decl_entries_by_name = by_name
+
+    def _schema_retrieval_text(self, corpus_type: str, obj: dict[str, Any]) -> str:
+        pieces: list[str] = [str(obj.get("id") or "")]
+        for key in (
+            "topic",
+            "zh_name",
+            "en_name",
+            "statement_text",
+            "formal_prop_name",
+            "status",
+        ):
+            value = str(obj.get(key) or "").strip()
+            if value:
+                pieces.append(value)
+        for key in (
+            "candidate_laws",
+            "expected_lean_objects",
+            "input_objects",
+            "target_objects",
+            "modeling_steps",
+            "schema_decls",
+            "verified_decls",
+            "prerequisites",
+            "used_for",
+            "aliases_en",
+            "aliases_zh",
+            "related_laws",
+            "related_problem_schemas",
+            "tags",
+        ):
+            for item in self._string_list(obj.get(key)):
+                pieces.append(item)
+        return normalize_lean_text(f"{corpus_type}\n" + "\n".join(x for x in pieces if x))
+
+    def _load_schema_corpora(self) -> None:
+        entries: list[SchemaCorpusEntry] = []
+        for corpus_type, path in (
+            ("law_schema", self.law_schema_corpus_path),
+            ("problem_schema", self.problem_schema_corpus_path),
+            ("concept", self.concept_corpus_path),
+        ):
+            for obj in self._load_jsonl_dicts(path):
+                row_id = str(obj.get("id") or "").strip()
+                if not row_id:
+                    continue
+                entries.append(
+                    SchemaCorpusEntry(
+                        corpus_type=corpus_type,
+                        row_id=row_id,
+                        retrieval_text=self._schema_retrieval_text(corpus_type, obj),
+                        raw=obj,
+                    )
+                )
+        self.schema_entries = entries
+
+    def _load_alias_map(self) -> None:
+        entries: list[AliasMapEntry] = []
+        for obj in self._load_jsonl_dicts(self.alias_map_path):
+            alias_name = str(obj.get("alias_name") or "").strip()
+            alias_fq_name = str(obj.get("alias_fq_name") or "").strip()
+            alias_to_fq_name = str(obj.get("alias_to_fq_name") or "").strip()
+            if not alias_name or not alias_fq_name or not alias_to_fq_name:
+                continue
+            entries.append(
+                AliasMapEntry(
+                    alias_name=alias_name,
+                    alias_fq_name=alias_fq_name,
+                    alias_to_fq_name=alias_to_fq_name,
+                    source_path=str(obj.get("source_path") or "").strip(),
+                    source_line=self._as_int_or_none(obj.get("source_line")),
+                )
+            )
+        self.alias_entries = entries
+        self.alias_entries_by_name = {entry.alias_name: entry for entry in entries}
+
+    def _load_alignment_index(self) -> None:
+        if not self.alignment_index_path.exists():
+            self.alignment_index = {}
+            return
+        try:
+            obj = json.loads(self.alignment_index_path.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            obj = {}
+        self.alignment_index = obj if isinstance(obj, dict) else {}
 
     def _query_tokens(self, problem_text: str, problem_ir: dict[str, Any] | None) -> tuple[set[str], set[str]]:
         ir = problem_ir or {}
@@ -483,6 +775,214 @@ class MechLibRetriever:
             )
         return rows
 
+    def _import_hints_from_required_imports(self, imports: list[str]) -> list[str]:
+        hints: list[str] = []
+        seen: set[str] = set()
+        for item in imports:
+            text = item.strip()
+            if not text:
+                continue
+            hint = text if text.startswith("import ") else f"import {text}"
+            if hint in seen:
+                continue
+            seen.add(hint)
+            hints.append(hint)
+        if not hints:
+            hints.append("import MechLib")
+        return hints
+
+    def _decl_keywords(self, entry: EnrichedDeclEntry) -> set[str]:
+        parts = [
+            entry.fq_name,
+            entry.short_name,
+            entry.module,
+            entry.namespace,
+            entry.statement,
+            entry.summary_en,
+            entry.retrieval_text,
+            " ".join(entry.tags),
+            " ".join(entry.law_schema_ids),
+            " ".join(entry.problem_schema_ids),
+            " ".join(entry.concept_ids),
+            entry.primary_spec_id,
+            " ".join(entry.secondary_spec_ids),
+            " ".join(entry.premise_role),
+        ]
+        tokens: set[str] = set()
+        for part in parts:
+            tokens.update(_to_ascii_tokens(part))
+            for chunk in re.split(r"[._:/-]+", part):
+                tokens.update(_to_ascii_tokens(chunk))
+        return tokens
+
+    def _schema_keywords(self, entry: SchemaCorpusEntry) -> set[str]:
+        tokens = _to_ascii_tokens(entry.retrieval_text)
+        for chunk in re.split(r"[._:/-]+", entry.retrieval_text):
+            tokens.update(_to_ascii_tokens(chunk))
+        return tokens
+
+    def _decl_to_retrieval_row(self, entry: EnrichedDeclEntry, score: float) -> dict[str, Any]:
+        import_hints = self._import_hints_from_required_imports(entry.required_imports)
+        proof_hint = "; ".join(entry.proof_hints[:2])
+        return {
+            "score": score,
+            "theorem_name": entry.short_name,
+            "symbol_name": entry.short_name,
+            "fq_name": entry.fq_name,
+            "kind": entry.kind,
+            "module": entry.module,
+            "namespace": entry.namespace,
+            "import_hint": import_hints[0],
+            "required_imports": import_hints,
+            "declaration_signature": entry.statement,
+            "statement": entry.statement,
+            "tags": entry.tags,
+            "law_tags": entry.tags,
+            "summary_en": entry.summary_en,
+            "proof_hints": entry.proof_hints,
+            "proof_usage_hint": truncate(proof_hint, 220),
+            "proof_style_example": truncate(proof_hint, 220),
+            "applicability_hint": truncate(
+                (
+                    f"status={entry.status}; trust_level={entry.trust_level}; "
+                    f"callable_by_llm={entry.callable_by_llm}; "
+                    f"law_schema_ids={entry.law_schema_ids}; problem_schema_ids={entry.problem_schema_ids}"
+                ),
+                260,
+            ),
+            "status": entry.status,
+            "trust_level": entry.trust_level,
+            "callable_by_llm": entry.callable_by_llm,
+            "needs_review": entry.needs_review,
+            "proof_eligible": bool(entry.status == "verified" and entry.callable_by_llm and not entry.needs_review),
+            "primary_spec_id": entry.primary_spec_id,
+            "secondary_spec_ids": entry.secondary_spec_ids,
+            "concept_ids": entry.concept_ids,
+            "law_schema_ids": entry.law_schema_ids,
+            "problem_schema_ids": entry.problem_schema_ids,
+            "alignment_method": entry.alignment_method,
+            "alignment_score": entry.alignment_score,
+            "source_path": entry.source_path,
+            "source_line": entry.source_line,
+            "source": "decl_corpus_enriched",
+        }
+
+    def _schema_to_retrieval_row(self, entry: SchemaCorpusEntry, score: float) -> dict[str, Any]:
+        raw = entry.raw
+        return {
+            "score": score,
+            "schema_id": entry.row_id,
+            "corpus_type": entry.corpus_type,
+            "topic": raw.get("topic") or raw.get("zh_name") or raw.get("en_name"),
+            "statement_text": raw.get("statement_text"),
+            "candidate_laws": raw.get("candidate_laws", []),
+            "verified_decls": raw.get("verified_decls", []),
+            "schema_decls": raw.get("schema_decls", []),
+            "expected_lean_objects": raw.get("expected_lean_objects", []),
+            "retrieval_text": truncate(entry.retrieval_text, 420),
+            "proof_eligible": False,
+            "source": entry.corpus_type,
+        }
+
+    def _retrieve_decl_rows(
+        self,
+        problem_text: str,
+        problem_ir: dict[str, Any] | None,
+        top_k: int | None = None,
+    ) -> list[dict[str, Any]]:
+        if not self.decl_entries:
+            return []
+        k = top_k or self.top_k
+        query_tokens, target_laws = self._query_tokens(problem_text, problem_ir)
+        scored: list[tuple[float, EnrichedDeclEntry]] = []
+        for entry in self.decl_entries:
+            proof_eligible = entry.status == "verified" and entry.callable_by_llm and not entry.needs_review
+            if not proof_eligible:
+                continue
+            kws = self._decl_keywords(entry)
+            overlap = len(query_tokens.intersection(kws))
+            law_text = " ".join([*entry.tags, *entry.law_schema_ids, entry.primary_spec_id, *entry.secondary_spec_ids])
+            law_tokens = _to_ascii_tokens(law_text)
+            law_overlap = len({law.lower() for law in target_laws}.intersection(law_tokens))
+            if overlap == 0 and law_overlap == 0:
+                continue
+            score = 0.0
+            score += min(1.0, overlap / max(1, min(12, len(kws)))) * 0.72
+            score += min(1.0, law_overlap / 2.0) * 0.18
+            if entry.trust_level == "core":
+                score += 0.05
+            if entry.proof_hints:
+                score += 0.03
+            if entry.required_imports:
+                score += 0.02
+            scored.append((round(min(score, 1.0), 6), entry))
+        scored.sort(key=lambda x: (-x[0], x[1].module, x[1].fq_name))
+        return [self._decl_to_retrieval_row(entry, score) for score, entry in scored[:k]]
+
+    def _retrieve_schema_rows(
+        self,
+        problem_text: str,
+        problem_ir: dict[str, Any] | None,
+        top_k: int | None = None,
+    ) -> list[dict[str, Any]]:
+        if not self.schema_entries:
+            return []
+        k = top_k or self.top_k
+        query_tokens, target_laws = self._query_tokens(problem_text, problem_ir)
+        scored: list[tuple[float, SchemaCorpusEntry]] = []
+        for entry in self.schema_entries:
+            kws = self._schema_keywords(entry)
+            overlap = len(query_tokens.intersection(kws))
+            law_overlap = len({law.lower() for law in target_laws}.intersection(kws))
+            if overlap == 0 and law_overlap == 0:
+                continue
+            score = 0.0
+            score += min(1.0, overlap / max(1, min(12, len(kws)))) * 0.8
+            score += min(1.0, law_overlap / 2.0) * 0.2
+            scored.append((round(score, 6), entry))
+        scored.sort(key=lambda x: (-x[0], x[1].corpus_type, x[1].row_id))
+        return [self._schema_to_retrieval_row(entry, score) for score, entry in scored[:k]]
+
+    def _extend_decl_rows_from_schema(
+        self,
+        decl_rows: list[dict[str, Any]],
+        schema_rows: list[dict[str, Any]],
+        top_k: int | None = None,
+    ) -> list[dict[str, Any]]:
+        k = top_k or self.top_k
+        seen = {str(row.get("fq_name") or "") for row in decl_rows}
+        out = list(decl_rows)
+        for row in schema_rows:
+            verified_decls = row.get("verified_decls")
+            if not isinstance(verified_decls, list):
+                continue
+            for ref in verified_decls:
+                name = str(ref or "").strip()
+                entry = self.decl_entries_by_name.get(name)
+                if entry is None:
+                    continue
+                if not (entry.status == "verified" and entry.callable_by_llm and not entry.needs_review):
+                    continue
+                if entry.fq_name in seen:
+                    continue
+                seen.add(entry.fq_name)
+                out.append(self._decl_to_retrieval_row(entry, 0.01))
+                if len(out) >= k:
+                    return out
+        return out
+
+    def _select_alias_rows(self, decl_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not self.alias_entries:
+            return []
+        targets = {str(row.get("fq_name") or "") for row in decl_rows}
+        targets.update(str(row.get("theorem_name") or "") for row in decl_rows)
+        out: list[dict[str, Any]] = []
+        for entry in self.alias_entries:
+            if entry.alias_to_fq_name not in targets and entry.alias_name not in targets:
+                continue
+            out.append(entry.to_row())
+        return out
+
     # Backward-compatible API: source retrieval.
     def retrieve(
         self,
@@ -503,22 +1003,38 @@ class MechLibRetriever:
         import_hints: list[str] = []
         seen_import: set[str] = set()
         for row in rows:
+            hints: list[str] = []
+            required = row.get("required_imports")
+            if isinstance(required, list):
+                hints.extend(str(item).strip() for item in required if str(item).strip())
             hint = str(row.get("import_hint") or "").strip()
-            if not hint or hint in seen_import:
-                continue
-            seen_import.add(hint)
-            import_hints.append(hint)
+            if hint:
+                hints.append(hint)
+            for item in hints:
+                if item in seen_import:
+                    continue
+                seen_import.add(item)
+                import_hints.append(item)
 
         law_matched_items: list[dict[str, Any]] = []
         for row in rows:
             law_matched_items.append(
                 {
                     "theorem_name": row.get("theorem_name") or row.get("symbol_name"),
+                    "fq_name": row.get("fq_name"),
                     "module": row.get("module"),
                     "symbol_name": row.get("symbol_name"),
                     "kind": row.get("kind"),
                     "score": row.get("score"),
                     "law_tags": row.get("law_tags"),
+                    "status": row.get("status"),
+                    "trust_level": row.get("trust_level"),
+                    "callable_by_llm": row.get("callable_by_llm"),
+                    "proof_eligible": row.get("proof_eligible"),
+                    "required_imports": row.get("required_imports", []),
+                    "law_schema_ids": row.get("law_schema_ids", []),
+                    "problem_schema_ids": row.get("problem_schema_ids", []),
+                    "alignment_score": row.get("alignment_score"),
                     "declaration_signature": truncate(str(row.get("declaration_signature") or ""), 200),
                     "applicability_hint": truncate(str(row.get("applicability_hint") or ""), 220),
                     "proof_usage_hint": truncate(str(row.get("proof_usage_hint") or ""), 220),
@@ -584,7 +1100,8 @@ class MechLibRetriever:
             lines.append(
                 f"[{idx}] theorem_name={row.get('theorem_name')} module={row.get('module')} "
                 f"kind={row.get('kind')} symbol={row.get('symbol_name')} "
-                f"score={row.get('score')} law_tags={row.get('law_tags')}"
+                f"fq_name={row.get('fq_name')} score={row.get('score')} "
+                f"law_tags={row.get('law_tags')} proof_eligible={row.get('proof_eligible')}"
             )
             lines.append(f"signature: {truncate(str(row.get('declaration_signature') or ''), 260)}")
             applicability_hint = str(row.get("applicability_hint") or "").strip()
@@ -609,20 +1126,57 @@ class MechLibRetriever:
         domain_from_a, selected_tags = self._select_summary_tags(problem_text=problem_text, problem_ir=problem_ir)
         summary_items: list[dict[str, Any]] = []
         source_items: list[dict[str, Any]] = []
+        verified_decl_items: list[dict[str, Any]] = []
+        schema_items: list[dict[str, Any]] = []
+        alias_items: list[dict[str, Any]] = []
 
         if self.context_source in {"hybrid", "summary_only"} and self.summary_entries:
             summary_items = self._select_summary_rows(selected_tags=selected_tags)
+        if self.enriched_corpus_enabled:
+            verified_decl_items = self._retrieve_decl_rows(
+                problem_text=problem_text,
+                problem_ir=problem_ir,
+                top_k=top_k,
+            )
+            schema_items = self._retrieve_schema_rows(
+                problem_text=problem_text,
+                problem_ir=problem_ir,
+                top_k=top_k,
+            )
+            verified_decl_items = self._extend_decl_rows_from_schema(
+                verified_decl_items,
+                schema_items,
+                top_k=top_k,
+            )
+            alias_items = self._select_alias_rows(verified_decl_items)
         if self.context_source in {"hybrid", "source_only"}:
             source_items = self._retrieve_source_rows(problem_text=problem_text, problem_ir=problem_ir, top_k=top_k)
 
+        decl_pack = self.build_context_pack_from_rows(verified_decl_items)
         source_pack = self.build_context_pack_from_rows(source_items)
+        combined_import_hints: list[str] = []
+        seen_import: set[str] = set()
+        for hint in [*decl_pack.get("import_hints", []), *source_pack.get("import_hints", [])]:
+            text = str(hint or "").strip()
+            if not text or text in seen_import:
+                continue
+            seen_import.add(text)
+            combined_import_hints.append(text)
+        combined_law_items = [
+            *decl_pack.get("law_matched_items", []),
+            *source_pack.get("law_matched_items", []),
+        ]
+        gap_schema_only = bool(schema_items and not verified_decl_items)
         lines: list[str] = []
         lines.append("Library Learning Preamble:")
         lines.append("Learn this MechLib domain summary context first, then generate Lean declarations.")
         lines.append("Do not copy verbatim; adapt symbols and assumptions to this specific problem.")
+        lines.append("Only Verified Declaration Context items are proof-eligible.")
+        lines.append("Schema Context items are modeling metadata only; never cite them as proof facts.")
         lines.append("")
         lines.append(f"Domain from A.physical_laws: {domain_from_a if domain_from_a else ['(fallback)']}")
         lines.append(f"Selected domain tags: {selected_tags}")
+        lines.append(f"gap_schema_only: {gap_schema_only}")
 
         if summary_items:
             lines.append("")
@@ -646,17 +1200,64 @@ class MechLibRetriever:
             lines.append("Domain Summary Context (from theorem_corpus.jsonl): (none)")
 
         lines.append("")
+        lines.append("Verified Declaration Context (from decl_corpus_enriched.jsonl; proof-eligible only):")
+        if verified_decl_items:
+            for idx, row in enumerate(verified_decl_items, start=1):
+                lines.append(
+                    f"[{idx}] theorem_name={row.get('theorem_name')} "
+                    f"fq_name={row.get('fq_name')} module={row.get('module')} kind={row.get('kind')} "
+                    f"score={row.get('score')} status={row.get('status')} trust_level={row.get('trust_level')} "
+                    f"callable_by_llm={row.get('callable_by_llm')} proof_eligible={row.get('proof_eligible')}"
+                )
+                lines.append(f"required_imports: {row.get('required_imports', [])}")
+                lines.append(f"statement: {truncate(str(row.get('statement') or row.get('declaration_signature') or ''), 320)}")
+                lines.append(f"proof_hints: {truncate(json.dumps(row.get('proof_hints', []), ensure_ascii=False), 260)}")
+                lines.append(f"law_schema_ids: {row.get('law_schema_ids', [])}")
+                lines.append(f"problem_schema_ids: {row.get('problem_schema_ids', [])}")
+        else:
+            lines.append("(none)")
+
+        lines.append("")
+        lines.append("Schema Context (metadata only; not proof facts):")
+        if schema_items:
+            for idx, row in enumerate(schema_items, start=1):
+                lines.append(
+                    f"[{idx}] schema_id={row.get('schema_id')} corpus_type={row.get('corpus_type')} "
+                    f"score={row.get('score')} proof_eligible=False"
+                )
+                topic = str(row.get("topic") or "").strip()
+                if topic:
+                    lines.append(f"topic: {truncate(topic, 160)}")
+                statement_text = str(row.get("statement_text") or "").strip()
+                if statement_text:
+                    lines.append(f"statement_text: {truncate(statement_text, 260)}")
+                lines.append(f"verified_decls: {row.get('verified_decls', [])}")
+                lines.append(f"candidate_laws: {row.get('candidate_laws', [])}")
+        else:
+            lines.append("(none)")
+
+        if alias_items:
+            lines.append("")
+            lines.append("Alias Context (aliases to verified declarations):")
+            for idx, row in enumerate(alias_items, start=1):
+                lines.append(
+                    f"[{idx}] alias_name={row.get('alias_name')} alias_fq_name={row.get('alias_fq_name')} "
+                    f"alias_to_fq_name={row.get('alias_to_fq_name')}"
+                )
+
+        lines.append("")
         lines.append("Source Supplement (from MechLib .lean parsing):")
         lines.append(f"source_items_count: {len(source_items)}")
         lines.append("Import Hints:")
-        for hint in source_pack["import_hints"]:
+        for hint in combined_import_hints:
             lines.append(f"- {hint}")
         lines.append("Law-Matched Declarations:")
-        for idx, row in enumerate(source_pack["law_matched_items"], start=1):
+        for idx, row in enumerate(combined_law_items, start=1):
             lines.append(
                 f"[{idx}] theorem_name={row.get('theorem_name')} module={row.get('module')} "
                 f"kind={row.get('kind')} symbol={row.get('symbol_name')} "
-                f"score={row.get('score')} law_tags={row.get('law_tags')}"
+                f"fq_name={row.get('fq_name')} score={row.get('score')} "
+                f"law_tags={row.get('law_tags')} proof_eligible={row.get('proof_eligible')}"
             )
             lines.append(f"signature: {truncate(str(row.get('declaration_signature') or ''), 260)}")
             applicability_hint = str(row.get("applicability_hint") or "").strip()
@@ -675,12 +1276,19 @@ class MechLibRetriever:
             "domain_from_a": domain_from_a,
             "selected_tags": selected_tags,
             "summary_items": summary_items,
+            "verified_decl_items": verified_decl_items,
+            "schema_items": schema_items,
+            "alias_items": alias_items,
             "source_items": source_items,
-            "import_hints": source_pack.get("import_hints", []),
-            "law_matched_items": source_pack.get("law_matched_items", []),
+            "import_hints": combined_import_hints,
+            "law_matched_items": combined_law_items,
             "proof_style_examples": source_pack.get("proof_style_examples", []),
             "context_text": context_text,
             "summary_items_count": len(summary_items),
+            "verified_decl_items_count": len(verified_decl_items),
+            "schema_items_count": len(schema_items),
+            "alias_items_count": len(alias_items),
             "source_items_count": len(source_items),
             "final_context_chars": len(context_text),
+            "gap_schema_only": gap_schema_only,
         }

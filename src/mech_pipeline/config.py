@@ -6,9 +6,20 @@ from typing import Any
 
 import yaml
 
-
 MAX_SAMPLE_CONCURRENCY = 10
-DEFAULT_LOCAL_ARCHIVE_ROOT = "F:/AI4Mechanics/datasets/archive"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_WORKSPACE_ROOT = _REPO_ROOT.parent
+DEFAULT_LOCAL_ARCHIVE_ROOT = str(_WORKSPACE_ROOT / "archive")
+DEFAULT_LEAN4PHYS_BENCH = str(_WORKSPACE_ROOT / "Lean4PHYS" / "LeanPhysBench" / "LeanPhysBench_v0.json")
+DEFAULT_PHYSLIB_DIR = str(_WORKSPACE_ROOT / "physlib")
+DEFAULT_MECHLIB_DIR = str(_WORKSPACE_ROOT / "MechLib")
+DEFAULT_MECHLIB_CORPUS = str(_WORKSPACE_ROOT / "MechLib" / "corpus" / "theorem_corpus.jsonl")
+DEFAULT_MECHLIB_DECL_CORPUS = str(_WORKSPACE_ROOT / "MechLib" / "corpus" / "decl_corpus_enriched.jsonl")
+DEFAULT_MECHLIB_LAW_SCHEMA_CORPUS = str(_WORKSPACE_ROOT / "MechLib" / "corpus" / "law_schema_corpus.jsonl")
+DEFAULT_MECHLIB_PROBLEM_SCHEMA_CORPUS = str(_WORKSPACE_ROOT / "MechLib" / "corpus" / "problem_schema_corpus.jsonl")
+DEFAULT_MECHLIB_CONCEPT_CORPUS = str(_WORKSPACE_ROOT / "MechLib" / "corpus" / "concept_corpus.jsonl")
+DEFAULT_MECHLIB_ALIAS_MAP = str(_WORKSPACE_ROOT / "MechLib" / "corpus" / "alias_map.jsonl")
+DEFAULT_MECHLIB_ALIGNMENT_INDEX = str(_WORKSPACE_ROOT / "MechLib" / "corpus" / "decl_to_spec_index.json")
 _MOJIBAKE_SUSPECT_FRAGMENTS = (
     "鏁版嵁",
     "褰掓",
@@ -31,7 +42,7 @@ class LocalArchiveConfig:
 
 @dataclass
 class Lean4PhysConfig:
-    bench_path: str = r"F:/AI4Mechanics/coding/Lean4PHYS/LeanPhysBench/LeanPhysBench_v0.json"
+    bench_path: str = DEFAULT_LEAN4PHYS_BENCH
     category: str = "mechanics"
     level: str | None = None
 
@@ -70,11 +81,11 @@ class ModelConfig:
 @dataclass
 class LeanConfig:
     enabled: bool = True
-    physlean_dir: str = r"F:/AI4Mechanics/PhysLean-master"
-    mechlib_dir: str = r"F:/AI4Mechanics/coding/MechLib"
-    timeout_s: int = 120
+    physlean_dir: str = DEFAULT_PHYSLIB_DIR
+    mechlib_dir: str = DEFAULT_MECHLIB_DIR
+    timeout_s: int = 240
     strict_blocklist: list[str] = field(default_factory=lambda: ["sorry", "admit", "axiom"])
-    lean_header: str = "import PhysLean"
+    lean_header: str = "import Physlib"
     preflight_enabled: bool = True
     route_policy: str = "auto_by_import"
     default_backend: str = "mechlib"
@@ -84,13 +95,23 @@ class LeanConfig:
 @dataclass
 class KnowledgeConfig:
     enabled: bool = True
-    mechlib_dir: str = r"F:/AI4Mechanics/coding/MechLib"
+    mechlib_dir: str = DEFAULT_MECHLIB_DIR
     scope: str = "mechanics_si"
     top_k: int = 6
+    evidence_top_k: int = 8
     cache_path: str = "tmp/mechlib_index.jsonl"
     inject_modules: list[str] = field(default_factory=lambda: ["B"])
     context_source: str = "hybrid"
-    summary_corpus_path: str = r"F:/AI4Mechanics/coding/MechLib/theorem_corpus.jsonl"
+    structured_context_enabled: bool = True
+    summary_corpus_path: str = DEFAULT_MECHLIB_CORPUS
+    enriched_corpus_enabled: bool = True
+    decl_corpus_path: str = DEFAULT_MECHLIB_DECL_CORPUS
+    law_schema_corpus_path: str = DEFAULT_MECHLIB_LAW_SCHEMA_CORPUS
+    problem_schema_corpus_path: str = DEFAULT_MECHLIB_PROBLEM_SCHEMA_CORPUS
+    concept_corpus_path: str = DEFAULT_MECHLIB_CONCEPT_CORPUS
+    alias_map_path: str = DEFAULT_MECHLIB_ALIAS_MAP
+    alignment_index_path: str = DEFAULT_MECHLIB_ALIGNMENT_INDEX
+    lean_check_decls: bool = True
     summary_injection_mode: str = "domain_full"
     always_include_core_tags: list[str] = field(default_factory=lambda: ["SI", "Units"])
 
@@ -101,6 +122,17 @@ class StatementConfig:
     with_mechlib_context: bool = True
     feedback_loop_enabled: bool = True
     max_revision_rounds: int = 1
+    generation_mode: str = "minimal_skeleton"
+    allow_explicit_gap_laws: bool = True
+    forbid_derived_equation_hypotheses: bool = True
+    require_hypothesis_provenance: bool = True
+    require_evidence_binding: bool = True
+    max_model_ir_candidates: int = 2
+    max_sketch_steps: int = 12
+    minimal_feedback_scope: str = "routed_stage"
+    b_minimal_llm_enabled: bool = False
+    b_minimal_llm_on_retry: bool = True
+    compact_minimal_prompts: bool = True
 
 
 @dataclass
@@ -109,20 +141,73 @@ class SemanticConfig:
 
 
 @dataclass
+class LLMGuidedSearchConfig:
+    enabled: bool = True
+    max_nodes: int = 80
+    max_depth: int = 16
+    max_llm_calls: int = 12
+    proposals_per_call: int = 5
+    max_action_chars: int = 1200
+    max_failed_actions_kept: int = 20
+    final_replay_required: bool = True
+    deterministic_obligation_replay_first: bool = True
+    deterministic_side_conditions_first: bool = True
+    allow_gap_assisted_proof: bool = False
+    require_verified_decl_use: bool = True
+    require_all_proof_obligations_covered: bool = True
+    allow_llm_subgoals: bool = True
+    allow_llm_rewrite_actions: bool = True
+    allow_llm_algebra_actions: bool = True
+    forbid_sorry: bool = True
+    forbid_admit: bool = True
+    forbid_axiom: bool = True
+    forbid_set_option: bool = True
+    allow_physical_positive_hypothesis_augmentation: bool = True
+    physical_positive_types: list[str] = field(
+        default_factory=lambda: [
+            "Mass",
+            "Length",
+            "Time",
+            "Speed",
+            "Velocity",
+            "Acceleration",
+            "Force",
+            "Energy",
+            "Work",
+            "Power",
+            "Momentum",
+            "Torque",
+            "AngularMomentum",
+            "MomentOfInertia",
+            "Frequency",
+        ]
+    )
+    max_added_positive_hypotheses: int = 8
+    require_augmented_theorem_compile: bool = True
+
+
+@dataclass
 class ProofConfig:
+    mode: str = "auto"
+    legacy_fallback_enabled: bool = True
     max_attempts: int = 2
+    llm_guided_search: LLMGuidedSearchConfig = field(default_factory=LLMGuidedSearchConfig)
 
 
 @dataclass
 class PromptConfig:
     dir: str = "prompts"
     a_extract_ir: str = "A_extract_ir.txt"
+    a2_model_ir: str = "A2_model_ir.txt"
+    controlled_sketch: str = "controlled_sketch.txt"
     b_generate_statements: str = "B_generate_statements.txt"
+    b_generate_minimal_skeleton: str = "B_generate_minimal_skeleton.txt"
     b_revise_statements: str = "B_revise_statements.txt"
     d_semantic_rank: str = "D_semantic_rank.txt"
     e_plan_proof: str = "E_plan_proof.txt"
     e_generate_proof: str = "E_generate_proof.txt"
     e_repair_proof: str = "E_repair_proof.txt"
+    e_strategy_controller: str = "E_strategy_controller.md"
 
 
 @dataclass
@@ -192,7 +277,12 @@ def load_config(path: Path) -> PipelineConfig:
         knowledge=KnowledgeConfig(**merged["knowledge"]),
         statement=StatementConfig(**merged["statement"]),
         semantic=SemanticConfig(**merged["semantic"]),
-        proof=ProofConfig(**merged["proof"]),
+        proof=ProofConfig(
+            **{
+                **merged["proof"],
+                "llm_guided_search": LLMGuidedSearchConfig(**merged["proof"]["llm_guided_search"]),
+            }
+        ),
         prompts=PromptConfig(**merged["prompts"]),
         output=OutputConfig(**merged["output"]),
         runtime=RuntimeConfig(**merged["runtime"]),
@@ -228,6 +318,8 @@ def validate_config(cfg: PipelineConfig) -> None:
         raise ValueError("knowledge.scope must be one of {'mechanics', 'mechanics_si', 'all'}")
     if cfg.knowledge.top_k <= 0:
         raise ValueError("knowledge.top_k must be > 0")
+    if cfg.knowledge.evidence_top_k <= 0:
+        raise ValueError("knowledge.evidence_top_k must be > 0")
     if cfg.knowledge.context_source not in {"hybrid", "summary_only", "source_only"}:
         raise ValueError("knowledge.context_source must be one of {'hybrid', 'summary_only', 'source_only'}")
     if cfg.knowledge.summary_injection_mode not in {"domain_full"}:
@@ -242,8 +334,34 @@ def validate_config(cfg: PipelineConfig) -> None:
         raise ValueError("statement.library_target must be one of {'mechlib', 'physlean', 'auto'}")
     if cfg.statement.max_revision_rounds < 0:
         raise ValueError("statement.max_revision_rounds must be >= 0")
+    if cfg.statement.generation_mode not in {"legacy_candidate", "minimal_skeleton"}:
+        raise ValueError("statement.generation_mode must be one of {'legacy_candidate', 'minimal_skeleton'}")
+    if cfg.statement.minimal_feedback_scope not in {"routed_stage", "sketch_and_b", "all_downstream", "none", "b_only"}:
+        raise ValueError(
+            "statement.minimal_feedback_scope must be one of "
+            "{'routed_stage', 'sketch_and_b', 'all_downstream', 'none', 'b_only'}"
+        )
+    if cfg.statement.max_model_ir_candidates <= 0:
+        raise ValueError("statement.max_model_ir_candidates must be > 0")
+    if cfg.statement.max_sketch_steps <= 0:
+        raise ValueError("statement.max_sketch_steps must be > 0")
     if cfg.proof.max_attempts <= 0:
         raise ValueError("proof.max_attempts must be > 0")
+    if cfg.proof.mode not in {"auto", "legacy_full_proof", "llm_guided_search"}:
+        raise ValueError("proof.mode must be one of {'auto', 'legacy_full_proof', 'llm_guided_search'}")
+    search = cfg.proof.llm_guided_search
+    if search.max_nodes <= 0:
+        raise ValueError("proof.llm_guided_search.max_nodes must be > 0")
+    if search.max_depth <= 0:
+        raise ValueError("proof.llm_guided_search.max_depth must be > 0")
+    if search.max_llm_calls < 0:
+        raise ValueError("proof.llm_guided_search.max_llm_calls must be >= 0")
+    if search.proposals_per_call <= 0:
+        raise ValueError("proof.llm_guided_search.proposals_per_call must be > 0")
+    if search.max_action_chars <= 0:
+        raise ValueError("proof.llm_guided_search.max_action_chars must be > 0")
+    if search.max_failed_actions_kept < 0:
+        raise ValueError("proof.llm_guided_search.max_failed_actions_kept must be >= 0")
     if cfg.semantic.pass_threshold < 0 or cfg.semantic.pass_threshold > 1:
         raise ValueError("semantic.pass_threshold must be in [0, 1]")
     if cfg.runtime.sample_concurrency <= 0:
@@ -258,6 +376,12 @@ def validate_config(cfg: PipelineConfig) -> None:
         "knowledge.mechlib_dir": cfg.knowledge.mechlib_dir,
         "knowledge.cache_path": cfg.knowledge.cache_path,
         "knowledge.summary_corpus_path": cfg.knowledge.summary_corpus_path,
+        "knowledge.decl_corpus_path": cfg.knowledge.decl_corpus_path,
+        "knowledge.law_schema_corpus_path": cfg.knowledge.law_schema_corpus_path,
+        "knowledge.problem_schema_corpus_path": cfg.knowledge.problem_schema_corpus_path,
+        "knowledge.concept_corpus_path": cfg.knowledge.concept_corpus_path,
+        "knowledge.alias_map_path": cfg.knowledge.alias_map_path,
+        "knowledge.alignment_index_path": cfg.knowledge.alignment_index_path,
         "prompts.dir": cfg.prompts.dir,
         "output.output_dir": cfg.output.output_dir,
         "output.runs_dir": cfg.output.runs_dir,
@@ -267,3 +391,21 @@ def validate_config(cfg: PipelineConfig) -> None:
             raise ValueError(
                 f"{field_name} contains likely mojibake; resave the config as UTF-8 and fix the path text"
             )
+
+
+def select_proof_execution_mode(proof: ProofConfig, candidate: object | None) -> str:
+    """Resolve the proof backend mode without changing legacy ModuleE behavior."""
+    if proof.mode == "legacy_full_proof":
+        return "legacy_full_proof"
+    if proof.mode == "llm_guided_search":
+        if proof.llm_guided_search.enabled:
+            return "llm_guided_search"
+        if proof.legacy_fallback_enabled:
+            return "legacy_full_proof"
+        return "llm_guided_search"
+
+    generation_mode = str(getattr(candidate, "generation_mode", "") or "")
+    skeleton_mode = bool(getattr(candidate, "skeleton_mode", False)) or generation_mode == "minimal_skeleton"
+    if skeleton_mode and proof.llm_guided_search.enabled:
+        return "llm_guided_search"
+    return "legacy_full_proof"

@@ -22,7 +22,7 @@ from mech_pipeline.config import PipelineConfig, load_config, validate_config
 from mech_pipeline.modules import ModuleF
 from mech_pipeline.orchestrator import execute_samples
 from mech_pipeline.types import SampleRunSummary
-from mech_pipeline.utils import to_row
+from mech_pipeline.utils import load_dotenv_if_present, to_row
 from mech_pipeline.adapters import DataSourceUnavailableError
 
 
@@ -120,6 +120,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
             compile_rows=[],
             semantic_rows=[],
             proof_rows=[],
+            stage_rows=stage_rows,
         )
         stage_rows["sample_summary.jsonl"] = [to_row(s) for s in dry_summaries]
         write_outputs(
@@ -179,6 +180,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
         compile_rows=compile_rows,
         semantic_rows=semantic_rows,
         proof_rows=proof_rows,
+        stage_rows=stage_rows,
     )
     run_readme = _build_run_readme(
         samples=samples,
@@ -218,6 +220,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     _configure_utf8_console()
+    load_dotenv_if_present(Path.cwd() / ".env")
     args = parse_args(argv)
     if args.command == "run":
         return run_pipeline(args)

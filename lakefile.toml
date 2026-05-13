@@ -8,7 +8,7 @@ path = "../MechLib"
 
 [[require]]
 name = "mathlib"
-path = "../../PhysLean-master/.lake/packages/mathlib"
+path = "../../LeanShared/SharedSeed-4.29.1/.lake/packages/mathlib"
 
 [[lean_lib]]
 name = "PipelineLeanArtifacts"

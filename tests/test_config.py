@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from mech_pipeline.config import DEFAULT_LOCAL_ARCHIVE_ROOT, MAX_SAMPLE_CONCURRENCY, load_config
+from mech_pipeline.config import DEFAULT_LOCAL_ARCHIVE_ROOT, DEFAULT_MECHLIB_DECL_CORPUS, MAX_SAMPLE_CONCURRENCY, load_config
 
 
 def test_load_config_minimal(tmp_path: Path) -> None:
@@ -53,7 +53,7 @@ lean:
         encoding="utf-8",
     )
     cfg = load_config(config_path)
-    assert cfg.lean.timeout_s == 120
+    assert cfg.lean.timeout_s == 240
 
 
 def test_load_config_rejects_invalid_sample_concurrency(tmp_path: Path) -> None:
@@ -189,3 +189,23 @@ lean:
     )
     cfg = load_config(config_path)
     assert cfg.dataset.local_archive.root == DEFAULT_LOCAL_ARCHIVE_ROOT
+
+
+def test_load_config_includes_mechlib_v2_corpus_defaults(tmp_path: Path) -> None:
+    config_path = tmp_path / "cfg.yaml"
+    config_path.write_text(
+        """
+dataset:
+  source: lean4phys
+  limit: 1
+model:
+  provider: mock
+lean:
+  enabled: false
+  preflight_enabled: false
+""",
+        encoding="utf-8",
+    )
+    cfg = load_config(config_path)
+    assert cfg.knowledge.enriched_corpus_enabled is True
+    assert cfg.knowledge.decl_corpus_path == DEFAULT_MECHLIB_DECL_CORPUS

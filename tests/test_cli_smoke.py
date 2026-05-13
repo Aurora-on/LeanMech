@@ -56,6 +56,7 @@ lean:
   enabled: false
   preflight_enabled: false
 statement:
+  generation_mode: legacy_candidate
   feedback_loop_enabled: true
   max_revision_rounds: 1
 output:
@@ -249,7 +250,7 @@ def test_cli_skips_proof_stage_when_semantic_fails(tmp_path: Path, monkeypatch) 
                 StatementCandidate(
                     sample_id=grounding.sample_id,
                     candidate_id=f"c{i}",
-                    lean_header="import PhysLean",
+                    lean_header="import Physlib",
                     theorem_decl=f"theorem bad_round_{round_index}_{i} (a : Real) : a = a",
                     round_index=round_index,
                     source_round_index=(round_index - 1) if round_index > 0 else None,
@@ -343,7 +344,7 @@ def test_cli_accepts_fewer_than_four_statement_candidates_when_they_are_usable(t
                 StatementCandidate(
                     sample_id=grounding.sample_id,
                     candidate_id="c1",
-                    lean_header="import PhysLean",
+                    lean_header="import Physlib",
                     theorem_decl="theorem usable_candidate (F m a : Real) (hm : m ≠ 0) (h : F = m * a) : a = F / m",
                     round_index=round_index,
                     source_round_index=(round_index - 1) if round_index > 0 else None,
@@ -479,7 +480,7 @@ def test_cli_runs_samples_concurrently_and_preserves_output_order(tmp_path: Path
                 StatementCandidate(
                     sample_id=grounding.sample_id,
                     candidate_id=f"c{i}",
-                    lean_header="import PhysLean",
+                    lean_header="import Physlib",
                     theorem_decl=(
                         f"theorem {grounding.sample_id.replace('-', '_')}_round_{round_index}_candidate_{i} "
                         "(a F m : Real) (hm : m != 0) (h : F = m * a) : a = F / m"
@@ -647,7 +648,7 @@ def test_cli_reports_progress_before_failure(tmp_path: Path, monkeypatch, capsys
                 StatementCandidate(
                     sample_id=grounding.sample_id,
                     candidate_id=f"c{i}",
-                    lean_header="import PhysLean",
+                    lean_header="import Physlib",
                     theorem_decl=f"theorem ok_{round_index}_{i} (a : Real) : a = a",
                     round_index=round_index,
                     source_round_index=(round_index - 1) if round_index > 0 else None,
@@ -773,7 +774,7 @@ lean:
                 StatementCandidate(
                     sample_id=grounding.sample_id,
                     candidate_id="c1",
-                    lean_header="import PhysLean",
+                    lean_header="import Physlib",
                     theorem_decl="theorem ok (F m a : Real) : a = F / m",
                     round_index=round_index,
                 )
@@ -888,7 +889,7 @@ def _install_feedback_loop_stubs(monkeypatch, *, trigger: str, call_log: list[di
                 StatementCandidate(
                     sample_id=grounding.sample_id,
                     candidate_id=f"c{i}",
-                    lean_header="import PhysLean",
+                    lean_header="import Physlib",
                     theorem_decl=f"theorem round_{round_index}_candidate_{i} (a F m : Real) : a = F / m",
                     assumptions=[],
                     plan=f"round {round_index} plan {i}",
@@ -1081,6 +1082,7 @@ def test_cli_feedback_loop_honors_two_revision_rounds(tmp_path: Path, monkeypatc
         tag="test-feedback-loop-two-rounds",
         extra_yaml="""
 statement:
+  generation_mode: legacy_candidate
   feedback_loop_enabled: true
   max_revision_rounds: 2
 """.strip(),
@@ -1128,7 +1130,7 @@ statement:
                 StatementCandidate(
                     sample_id=grounding.sample_id,
                     candidate_id=f"c{i}",
-                    lean_header="import PhysLean",
+                    lean_header="import Physlib",
                     theorem_decl=f"theorem round_{round_index}_candidate_{i} (a F m : Real) : a = F / m",
                     assumptions=[],
                     plan=f"round {round_index} plan {i}",

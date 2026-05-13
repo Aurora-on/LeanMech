@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-from mech_pipeline.eval.metrics import build_metrics
+from mech_pipeline.eval.metrics import build_metrics, build_minimal_skeleton_stage_summary
 from mech_pipeline.types import CompileCheckResult, GroundingResult, ProofCheckResult, SampleRunSummary, SemanticRankResult
 
 
@@ -19,6 +19,7 @@ class ModuleF:
         retrieval_rows: list[dict[str, Any]] | None = None,
         proof_attempt_rows: list[dict[str, Any]] | None = None,
         run_metadata: dict[str, Any] | None = None,
+        stage_rows: dict[str, list[dict[str, Any]]] | None = None,
     ) -> tuple[dict[str, Any], str]:
         metrics = build_metrics(
             summaries=summaries,
@@ -29,7 +30,9 @@ class ModuleF:
             proof_rows=proof_rows,
             retrieval_rows=retrieval_rows,
             proof_attempt_rows=proof_attempt_rows,
+            stage_rows=stage_rows,
         )
+        minimal_summary = build_minimal_skeleton_stage_summary(stage_rows)
 
         counter: Counter[str] = Counter()
         sub_counter: Counter[str] = Counter()
@@ -89,6 +92,25 @@ class ModuleF:
             f"- proof_mechlib_usage_rate: {metrics['proof_mechlib_usage_rate']}",
             f"- library_grounded_selection_rate: {metrics['library_grounded_selection_rate']}",
             f"- feedback_loop_used_rate: {metrics.get('feedback_loop_used_rate', 0)}",
+            f"- model_ir_success_rate: {metrics.get('model_ir_success_rate')}",
+            f"- evidence_binding_success_rate: {metrics.get('evidence_binding_success_rate')}",
+            f"- verified_binding_rate: {metrics.get('verified_binding_rate')}",
+            f"- gap_schema_only_rate: {metrics.get('gap_schema_only_rate')}",
+            f"- sketch_audit_pass_rate: {metrics.get('sketch_audit_pass_rate')}",
+            f"- skeleton_generation_success_rate: {metrics.get('skeleton_generation_success_rate')}",
+            f"- derived_equation_hypothesis_violation_rate: {metrics.get('derived_equation_hypothesis_violation_rate')}",
+            f"- schema_as_proof_fact_violation_rate: {metrics.get('schema_as_proof_fact_violation_rate')}",
+            f"- explicit_gap_law_rate: {metrics.get('explicit_gap_law_rate')}",
+            "",
+            "## Minimal Skeleton Front Half",
+            f"- generation_mode: {minimal_summary['generation_mode']}",
+            f"- model_ir_ok: {minimal_summary['model_ir_ok']}",
+            f"- evidence_binding_count: {minimal_summary['evidence_binding_count']}",
+            f"- verified_binding_count: {minimal_summary['verified_binding_count']}",
+            f"- gap_schema_only_count: {minimal_summary['gap_schema_only_count']}",
+            f"- sketch_audit_pass: {minimal_summary['sketch_audit_pass']}",
+            f"- forbidden_hypothesis_count: {minimal_summary['forbidden_hypothesis_count']}",
+            f"- skeleton_candidate_count: {minimal_summary['skeleton_candidate_count']}",
             "",
             "## Feedback Loop",
             f"- feedback_loop_used_count: {feedback_loop_used}",
@@ -158,8 +180,14 @@ class ModuleF:
                 "",
                 "## Stage Log Files",
                 "- problem_ir.jsonl",
+                "- model_ir.jsonl",
+                "- structured_mechlib_context.jsonl",
+                "- evidence_bindings.jsonl",
+                "- controlled_sketch.jsonl",
+                "- sketch_audit.jsonl",
                 "- mechlib_retrieval.jsonl",
                 "- statement_candidates.jsonl",
+                "- theorem_skeleton_candidates.jsonl",
                 "- compile_checks.jsonl",
                 "- semantic_rank.jsonl",
                 "- proof_attempts.jsonl",
