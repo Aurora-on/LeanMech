@@ -147,6 +147,10 @@ class LLMGuidedSearchConfig:
     max_depth: int = 16
     max_llm_calls: int = 12
     proposals_per_call: int = 5
+    probe_timeout_s: int | None = 120
+    max_probe_checks: int = 80
+    max_no_progress_nodes: int = 12
+    max_wall_clock_s_per_sample: int | None = 1800
     max_action_chars: int = 1200
     max_failed_actions_kept: int = 20
     final_replay_required: bool = True
@@ -189,7 +193,7 @@ class LLMGuidedSearchConfig:
 @dataclass
 class ProofConfig:
     mode: str = "auto"
-    legacy_fallback_enabled: bool = True
+    legacy_fallback_enabled: bool = False
     max_attempts: int = 2
     llm_guided_search: LLMGuidedSearchConfig = field(default_factory=LLMGuidedSearchConfig)
 
@@ -358,6 +362,14 @@ def validate_config(cfg: PipelineConfig) -> None:
         raise ValueError("proof.llm_guided_search.max_llm_calls must be >= 0")
     if search.proposals_per_call <= 0:
         raise ValueError("proof.llm_guided_search.proposals_per_call must be > 0")
+    if search.probe_timeout_s is not None and search.probe_timeout_s <= 0:
+        raise ValueError("proof.llm_guided_search.probe_timeout_s must be > 0 when set")
+    if search.max_probe_checks <= 0:
+        raise ValueError("proof.llm_guided_search.max_probe_checks must be > 0")
+    if search.max_no_progress_nodes <= 0:
+        raise ValueError("proof.llm_guided_search.max_no_progress_nodes must be > 0")
+    if search.max_wall_clock_s_per_sample is not None and search.max_wall_clock_s_per_sample <= 0:
+        raise ValueError("proof.llm_guided_search.max_wall_clock_s_per_sample must be > 0 when set")
     if search.max_action_chars <= 0:
         raise ValueError("proof.llm_guided_search.max_action_chars must be > 0")
     if search.max_failed_actions_kept < 0:

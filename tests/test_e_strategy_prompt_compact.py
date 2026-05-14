@@ -5,7 +5,7 @@ import json
 from mech_pipeline.config import PipelineConfig
 from mech_pipeline.modules.e_search_controller import run_llm_guided_search
 from mech_pipeline.modules.e_strategy_controller import LLMStrategyController
-from mech_pipeline.types import ProofActionCheckResult, ProofContext
+from mech_pipeline.types import ProofActionCheckResult, ProofContext, ProofObligationReplayItem
 
 
 class CapturingLLM:
@@ -92,3 +92,38 @@ def test_search_trace_records_compact_prompt_summary_only() -> None:
     assert "MechLib.Dynamics.NewtonLaw.NewtonSecondLaw.to_value_equation" in summary["allowed_decls"]
     assert "THEOREM_CORPUS_FULL" not in str(summary)
     assert "retrieval_context_blob" not in str(summary)
+
+
+def test_search_prompt_keeps_remaining_obligation_details_after_replay() -> None:
+    cfg = PipelineConfig()
+    cfg.proof.llm_guided_search.max_nodes = 1
+    cfg.proof.llm_guided_search.max_llm_calls = 1
+    cfg.proof.llm_guided_search.deterministic_obligation_replay_first = False
+    cfg.proof.llm_guided_search.deterministic_side_conditions_first = False
+    context = _context()
+    context.obligation_replay_items = [
+        ProofObligationReplayItem(
+            obligation_id="sk1",
+            kind="law_to_equation",
+            from_hypothesis="h_law",
+            must_use="MechLib.Dynamics.NewtonLaw.NewtonSecondLaw.to_value_equation",
+            formal_claim="F.val = m.val * a.val",
+            produced_fact_name="h_newton_eq",
+        )
+    ]
+    llm = CapturingLLM()
+
+    trace = run_llm_guided_search(
+        proof_context=context,
+        lean_runner=InvalidLeanRunner(),
+        llm_client=llm,
+        cfg=cfg,
+    )
+
+    assert llm.prompts
+    assert '"formal_claim": "F.val = m.val * a.val"' in llm.prompts[0]
+    assert '"must_use": "MechLib.Dynamics.NewtonLaw.NewtonSecondLaw.to_value_equation"' in llm.prompts[0]
+    assert '"from_hypothesis": "h_law"' in llm.prompts[0]
+    remaining = trace.strategy_prompt_summaries[0]["remaining_obligations"]
+    assert remaining[0]["formal_claim"] == "F.val = m.val * a.val"
+    assert remaining[0]["must_use"] == "MechLib.Dynamics.NewtonLaw.NewtonSecondLaw.to_value_equation"

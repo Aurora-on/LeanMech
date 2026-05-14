@@ -136,6 +136,15 @@ ActionGuard 会拒绝：
 - 自然语言或明显 placeholder
 - 超长 tactic block
 
+搜索控制器还有独立的 watchdog，避免某个样本长期占用 E 阶段：
+
+- `proof.llm_guided_search.probe_timeout_s`：单次 `probe_proof_prefix` 超时，默认 `120` 秒；只作用于局部 probe，最终 `verify_proof` replay 仍使用 Lean runner 的正常验证路径。
+- `proof.llm_guided_search.max_probe_checks`：每个 candidate 最多执行的 Lean prefix probe 次数，默认 `80`。
+- `proof.llm_guided_search.max_wall_clock_s_per_sample`：单个 search 的墙钟预算，默认 `1800` 秒。
+- `proof.llm_guided_search.max_no_progress_nodes`：连续展开但没有产生可审计进展的节点上限，默认 `12`。
+
+“可审计进展”只在 Lean 接受该 prefix 后计入，条件包括：新增 local fact、覆盖剩余 obligation、关闭目标，或 Lean 返回的 goals excerpt 相比父节点发生变化。完全相同的 proof prefix 会直接标记为 `duplicate_probe_prefix`，不再重复调用 Lean。
+
 ## 7. 输出文件说明
 
 ### `proof_search_trace.jsonl`
@@ -144,6 +153,8 @@ ActionGuard 会拒绝：
 
 - `nodes_expanded`
 - `llm_calls`
+- `probe_checks`
+- `search_elapsed_s`
 - `accepted_actions`
 - `rejected_actions`
 - `final_proof_body`
@@ -166,6 +177,21 @@ ActionGuard 会拒绝：
 - `stderr_excerpt`
 - `goals_excerpt`
 - `accepted`
+- `cache_hit`
+- `probe_checks_used`
+- `new_local_facts`
+- `covered_obligations`
+- `remaining_obligations_after`
+
+常见 E search watchdog 失败类型包括：
+
+- `max_probe_checks_exhausted`
+- `wall_clock_budget_exhausted`
+- `max_no_progress_nodes_exhausted`
+- `duplicate_probe_prefix`
+- `no_meaningful_progress`
+
+每个样本完成后，orchestrator 会把该样本的 stage rows 追加写入 run directory 的 JSONL 文件。完整运行结束时仍会由最终 writer 覆盖生成一致的聚合文件；如果运行被某个后续样本卡住或中断，已完成样本的 `proof_attempts.jsonl`、`proof_checks.jsonl` 和 trace/audit rows 仍可用于诊断。
 
 ### `proof_strategy_prompts.jsonl`
 
@@ -232,6 +258,6 @@ E 阶段新增指标包括：
 1. DependencyAudit 主要基于 proof body 文本检查 required declaration 和 produced fact，尚未从 Lean proof term 中抽取真实 used constants。
 2. SideConditionAnalyzer 先支持简单分母和正性事实，尚未做 Lean AST 级分析。
 3. SearchController 是初版 best-first/beam 风格搜索，不是完整 MCTS。
-4. legacy fallback 仍保留，但 fallback proof 不自动标记为 `fully_mechlib_verified`。
+4. legacy full-proof 模式仍保留作显式对照；自动 legacy fallback 默认关闭。若通过配置显式开启 fallback，fallback proof 也不自动标记为 `fully_mechlib_verified`。
 
 后续改进方向是从 Lean replay 中导出真实依赖、增强 proof state parsing，并把 `missing_side_condition` 回传到前段 failure routing。

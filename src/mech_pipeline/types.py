@@ -639,6 +639,7 @@ class ProofSearchNode:
     proof_prefix: str
     local_facts: list[str] = field(default_factory=list)
     remaining_obligations: list[str] = field(default_factory=list)
+    goals_excerpt: str | None = None
     last_action_id: str | None = None
     score: float = 0.0
 
@@ -652,11 +653,13 @@ class ProofSearchTrace:
     candidate_id: str
     nodes_expanded: int = 0
     llm_calls: int = 0
+    probe_checks: int = 0
     accepted_actions: list[dict[str, Any]] = field(default_factory=list)
     rejected_actions: list[dict[str, Any]] = field(default_factory=list)
     final_proof_body: str | None = None
     search_status: str = "not_started"
     failure_reason: str | None = None
+    search_elapsed_s: float | None = None
     strategy_prompt_summaries: list[dict[str, Any]] = field(default_factory=list)
     physical_assumption_augmented: bool = False
     added_physical_assumptions: list[dict[str, Any]] = field(default_factory=list)

@@ -53,7 +53,7 @@ semantic:
 
 proof:
   mode: auto
-  legacy_fallback_enabled: true
+  legacy_fallback_enabled: false
   max_attempts: 2
 
 prompts:

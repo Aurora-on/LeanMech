@@ -96,9 +96,12 @@ def _compact_obligation(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "obligation_id": _compact_text(row.get("obligation_id"), 120),
         "kind": _compact_text(row.get("kind"), 80),
+        "from_hypothesis": _compact_text(row.get("from_hypothesis"), 160),
         "formal_claim": _compact_text(row.get("formal_claim"), 500),
         "produced_fact_name": _compact_text(row.get("produced_fact_name"), 120),
         "must_use": _compact_text(row.get("must_use"), 240),
+        "replay_status": _compact_text(row.get("replay_status"), 80),
+        "error": _compact_text(row.get("error"), 120),
     }
 
 
@@ -127,9 +130,12 @@ def compact_proof_state_payload(
             {
                 "obligation_id": item.obligation_id,
                 "kind": item.kind,
+                "from_hypothesis": item.from_hypothesis,
                 "formal_claim": item.formal_claim,
                 "produced_fact_name": item.produced_fact_name,
                 "must_use": item.must_use,
+                "replay_status": item.replay_status,
+                "error": item.error,
             }
             for item in proof_context.obligation_replay_items
         ]

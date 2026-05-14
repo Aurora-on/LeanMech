@@ -4,7 +4,7 @@ import json
 
 from mech_pipeline.config import PipelineConfig
 from mech_pipeline.modules.e_search_controller import run_llm_guided_search
-from mech_pipeline.types import ProofActionCheckResult, ProofContext
+from mech_pipeline.types import ProofActionCheckResult, ProofContext, ProofObligationReplayItem
 
 
 class FakeLLM:
@@ -28,6 +28,7 @@ class FakeLeanRunner:
         self.closed_token = closed_token
         self.progress_token = progress_token
         self.probes: list[str] = []
+        self.timeouts: list[int | None] = []
         self.verify_calls: list[str] = []
         self.compile_calls: list[str] = []
 
@@ -37,8 +38,9 @@ class FakeLeanRunner:
         return {"compile_pass": True, "syntax_ok": True, "elaboration_ok": True}
 
     def probe_proof_prefix(self, *, lean_header, theorem_decl, proof_prefix, timeout_s=None):
-        _ = (lean_header, theorem_decl, timeout_s)
+        _ = (lean_header, theorem_decl)
         self.probes.append(proof_prefix)
+        self.timeouts.append(timeout_s)
         if self.closed_token in proof_prefix:
             return ProofActionCheckResult(
                 action_id="probe",
@@ -116,6 +118,7 @@ def test_search_controller_accepts_valid_progress_action_into_node() -> None:
     assert trace.accepted_actions
     assert trace.accepted_actions[0]["status"] == "progress"
     assert trace.nodes_expanded <= 2
+    assert trace.probe_checks == 1
 
 
 def test_search_controller_rejects_invalid_probe_action() -> None:
@@ -238,6 +241,154 @@ def test_search_controller_augments_typed_physical_positive_assumption_before_si
     assert runner.compile_calls and "(h_m_pos : 0 < m.val)" in runner.compile_calls[0]
     assert any(row["strategy"] == "augment_physical_positive_hypotheses" for row in trace.accepted_actions)
     assert any("hden" in probe for probe in runner.probes)
+
+
+def test_search_controller_uses_configured_probe_timeout() -> None:
+    llm = FakeLLM(
+        [
+            {
+                "strategy": "introduce_intermediate_have",
+                "tactic_block": "have progress_action : True := by\n  exact h",
+                "uses_facts": ["h"],
+                "uses_decls": [],
+            }
+        ]
+    )
+    runner = FakeLeanRunner(progress_token="progress_action")
+    cfg = _cfg(max_nodes=2, max_llm_calls=1)
+    cfg.lean.timeout_s = 240
+    cfg.proof.llm_guided_search.probe_timeout_s = 120
+
+    run_llm_guided_search(
+        proof_context=_context(),
+        lean_runner=runner,
+        llm_client=llm,
+        cfg=cfg,
+    )
+
+    assert runner.timeouts == [120]
+
+
+def test_search_controller_stops_after_max_probe_checks() -> None:
+    llm = FakeLLM(
+        [
+            {
+                "strategy": "introduce_intermediate_have",
+                "tactic_block": "have progress_action : True := by\n  exact h",
+                "uses_facts": ["h"],
+                "uses_decls": [],
+            },
+            {
+                "strategy": "introduce_intermediate_have",
+                "tactic_block": "have progress_action_2 : True := by\n  exact h",
+                "uses_facts": ["h"],
+                "uses_decls": [],
+            },
+        ]
+    )
+    cfg = _cfg(max_nodes=4, max_llm_calls=1)
+    cfg.proof.llm_guided_search.max_probe_checks = 1
+
+    trace = run_llm_guided_search(
+        proof_context=_context(),
+        lean_runner=FakeLeanRunner(progress_token="progress_action"),
+        llm_client=llm,
+        cfg=cfg,
+    )
+
+    assert trace.probe_checks == 1
+    assert trace.failure_reason == "max_probe_checks_exhausted"
+
+
+def test_search_controller_rejects_duplicate_probe_prefix_without_second_lean_call() -> None:
+    llm = FakeLLM(
+        [
+            {
+                "action_id": "p1",
+                "strategy": "introduce_intermediate_have",
+                "tactic_block": "have progress_action : True := by\n  exact h",
+                "uses_facts": ["h"],
+                "uses_decls": [],
+            },
+            {
+                "action_id": "p2",
+                "strategy": "introduce_intermediate_have",
+                "tactic_block": "have progress_action : True := by\n  exact h",
+                "uses_facts": ["h"],
+                "uses_decls": [],
+            },
+        ]
+    )
+    runner = FakeLeanRunner(progress_token="progress_action")
+
+    trace = run_llm_guided_search(
+        proof_context=_context(),
+        lean_runner=runner,
+        llm_client=llm,
+        cfg=_cfg(max_nodes=2, max_llm_calls=1),
+    )
+
+    assert len(runner.probes) == 1
+    assert any(row["error_type"] == "duplicate_probe_prefix" for row in trace.rejected_actions)
+
+
+def test_search_controller_rejects_no_progress_with_unchanged_goals() -> None:
+    llm = FakeLLM(
+        [
+            {
+                "strategy": "algebra",
+                "tactic_block": "simp",
+                "uses_facts": [],
+                "uses_decls": [],
+            }
+        ]
+    )
+    runner = FakeLeanRunner(progress_token="simp")
+
+    trace = run_llm_guided_search(
+        proof_context=_context(),
+        lean_runner=runner,
+        llm_client=llm,
+        cfg=_cfg(max_nodes=4, max_llm_calls=2),
+    )
+
+    assert len(runner.probes) == 2
+    assert any(row["error_type"] == "no_meaningful_progress" for row in trace.rejected_actions)
+
+
+def test_search_controller_marks_obligation_covered_by_llm_action() -> None:
+    context = _context()
+    context.allowed_verified_decls = ["MechLib.Newton.second_law"]
+    context.obligation_replay_items = [
+        ProofObligationReplayItem(
+            obligation_id="obl_newton",
+            kind="law_to_equation",
+            from_hypothesis=None,
+            must_use="MechLib.Newton.second_law",
+            formal_claim="True",
+            produced_fact_name="h_newton",
+        )
+    ]
+    llm = FakeLLM(
+        [
+            {
+                "strategy": "introduce_intermediate_have",
+                "tactic_block": "have h_newton : True := by\n  exact h",
+                "uses_facts": ["h"],
+                "uses_decls": ["MechLib.Newton.second_law"],
+            }
+        ]
+    )
+
+    trace = run_llm_guided_search(
+        proof_context=context,
+        lean_runner=FakeLeanRunner(progress_token="h_newton"),
+        llm_client=llm,
+        cfg=_cfg(max_nodes=2, max_llm_calls=1),
+    )
+
+    assert trace.accepted_actions[0]["covered_obligations"] == ["obl_newton"]
+    assert trace.accepted_actions[0]["remaining_obligations_after"] == []
 
 
 def test_search_controller_does_not_augment_non_physical_missing_side_condition() -> None:

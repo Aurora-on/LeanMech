@@ -85,6 +85,8 @@ sample
 
 新增阶段只在 minimal skeleton 模式启用。E 阶段目前不重构。
 
+当前交接状态见 [docs/handoff_minimal_pipeline_token_optimization_20260513.md](/Users/weizhixin/AI4Mechanics/LeanMech/docs/handoff_minimal_pipeline_token_optimization_20260513.md)。该文档记录了最近一次 token 优化、12 题真实评测中止原因、新 E proof search 长尾问题，以及后续建议。
+
 ## 核心数据结构
 
 ### ProblemIR
@@ -384,6 +386,9 @@ statement:
   max_model_ir_candidates: 2
   max_sketch_steps: 12
   minimal_feedback_scope: routed_stage
+  b_minimal_llm_enabled: false
+  b_minimal_llm_on_retry: true
+  compact_minimal_prompts: true
 
 knowledge:
   structured_context_enabled: true
@@ -409,6 +414,13 @@ knowledge:
 - `tmp/minimal_random10_plus_mechanics73_20260509_181342.yaml`
 
 该集合包含 `Mechanics73`。比较 minimal mode 改动时，应优先复用这组样本，避免每次重新抽样导致结果不可比。
+
+近期 12 题评测集：
+
+- `fixtures/bench_testset_v1_selected12.json`
+- `configs/minimal_testset_v1_selected12.yaml`
+
+该配置使用 `gpt-5.4` 和 minimal skeleton。注意：在 `proof.mode=auto` 且 selected candidate 为 minimal skeleton 时，E 会进入 `llm_guided_search`。默认搜索预算较大，真实并发评测可能长时间停留在 `pipeline_proof_probe_*.lean`。不要为了绕开该问题静默改成 legacy proof；如果只想评估 D 前流程或限预算测试新 E，应显式创建单独配置并在报告中说明。
 
 ## Lean / MechLib / Mathlib
 

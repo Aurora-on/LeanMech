@@ -175,7 +175,30 @@ def test_legacy_candidate_routes_to_legacy_full_proof(tmp_path: Path) -> None:
     assert "__TASK_E_PLAN_PROOF__" in client.prompts[0]
 
 
-def test_llm_guided_search_failure_marks_legacy_fallback(tmp_path: Path) -> None:
+def test_llm_guided_search_failure_does_not_fallback_by_default(tmp_path: Path) -> None:
+    proof_config = ProofConfig(mode="auto")
+    client = SequenceClient([json.dumps({"proposals": []})])
+    runner = RoutingLeanRunner(search_closes=False)
+    module = _module(tmp_path, client, runner, proof_config)
+    candidate = TheoremSkeletonCandidate(
+        sample_id="s1",
+        candidate_id="c1",
+        lean_header="import Mathlib",
+        theorem_decl="theorem t (h : True) : True",
+    )
+
+    attempts, check = module.run(_grounding(), candidate, tmp_path)
+
+    assert len(attempts) == 1
+    assert attempts[0].proof_mode == "llm_guided_search"
+    assert attempts[0].fallback_to_legacy_full_proof is False
+    assert check.fallback_to_legacy_full_proof is False
+    assert check.proof_mode == "llm_guided_search"
+    assert check.proof_success is False
+    assert "__TASK_E_PLAN_PROOF__" not in "".join(client.prompts)
+
+
+def test_llm_guided_search_failure_marks_explicit_legacy_fallback(tmp_path: Path) -> None:
     proof_config = ProofConfig(mode="auto", legacy_fallback_enabled=True)
     client = SequenceClient([
         json.dumps({"proposals": []}),

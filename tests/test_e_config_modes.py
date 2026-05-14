@@ -29,9 +29,13 @@ proof:
     cfg = load_config(config_path)
     assert cfg.proof.max_attempts == 3
     assert cfg.proof.mode == "auto"
-    assert cfg.proof.legacy_fallback_enabled is True
+    assert cfg.proof.legacy_fallback_enabled is False
     assert cfg.proof.llm_guided_search.enabled is True
     assert cfg.proof.llm_guided_search.max_nodes == 80
+    assert cfg.proof.llm_guided_search.probe_timeout_s == 120
+    assert cfg.proof.llm_guided_search.max_probe_checks == 80
+    assert cfg.proof.llm_guided_search.max_no_progress_nodes == 12
+    assert cfg.proof.llm_guided_search.max_wall_clock_s_per_sample == 1800
 
 
 def test_default_proof_mode_is_auto() -> None:

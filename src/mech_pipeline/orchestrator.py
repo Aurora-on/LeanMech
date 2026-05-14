@@ -31,7 +31,7 @@ from mech_pipeline.types import (
     SketchAuditResult,
     StatementCandidate,
 )
-from mech_pipeline.utils import to_row
+from mech_pipeline.utils import append_jsonl, to_row
 
 
 class ProcessSampleResult(TypedDict):
@@ -56,6 +56,21 @@ class ExecutionResult(TypedDict):
 
 def new_stage_rows(stage_row_files: tuple[str, ...]) -> dict[str, list[dict[str, object]]]:
     return {name: [] for name in stage_row_files}
+
+
+def _append_completed_sample_rows(
+    *,
+    run_dir: Path,
+    stage_row_files: tuple[str, ...],
+    result: ProcessSampleResult,
+) -> None:
+    for name in stage_row_files:
+        if name == "sample_summary.jsonl":
+            continue
+        rows = result["stage_rows"].get(name, [])
+        if rows:
+            append_jsonl(run_dir / name, rows)
+    append_jsonl(run_dir / "sample_summary.jsonl", [to_row(result["summary"])])
 
 
 def process_sample(
@@ -846,6 +861,7 @@ def execute_samples(
                 emit_console_line(f"progress: failed after {completed_samples}/{total_samples} completed, sample={sample.sample_id}")
                 raise
             ordered_worker_results[idx] = result
+            _append_completed_sample_rows(run_dir=run_dir, stage_row_files=stage_row_files, result=result)
             completed_samples += 1
             emit_console_line(f"progress: {completed_samples}/{total_samples} completed, sample={sample.sample_id}")
     else:
@@ -864,6 +880,7 @@ def execute_samples(
                     executor.shutdown(wait=False, cancel_futures=True)
                     raise
                 ordered_worker_results[idx] = result
+                _append_completed_sample_rows(run_dir=run_dir, stage_row_files=stage_row_files, result=result)
                 completed_samples += 1
                 emit_console_line(f"progress: {completed_samples}/{total_samples} completed, sample={sample_id}")
         except Exception:
