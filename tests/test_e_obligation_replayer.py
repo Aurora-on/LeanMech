@@ -147,3 +147,32 @@ def test_replayer_tries_structured_alternatives_after_failure() -> None:
     assert result.action_checks[0].status == "invalid"
     assert result.action_checks[1].status == "progress"
     assert "simpa using" in result.proof_prefix
+
+
+def test_replayer_reports_type_mismatch_as_extractor_decl_mismatch() -> None:
+    item = ProofObligationReplayItem(
+        obligation_id="sk1",
+        kind="law_to_equation",
+        from_hypothesis="glider_law",
+        must_use=EXTRACTOR,
+        formal_claim="Fnet.val = m.val * a.val",
+        produced_fact_name="h_obl_1",
+    )
+
+    def checker(_context: ProofContext, _prefix: str, proposal: ProofActionProposal) -> ProofActionCheckResult:
+        return ProofActionCheckResult(
+            action_id=proposal.action_id,
+            strategy=proposal.strategy,
+            tactic_block=proposal.tactic_block,
+            status="invalid",
+            error_type="type_mismatch",
+            error_message="Application type mismatch: The argument",
+        )
+
+    result = ProofObligationReplayer(action_checker=checker).replay(_context(item))
+
+    assert result.replay_status == "blocked"
+    assert result.proof_prefix == ""
+    assert result.blocked_items[0].error == "missing_proof_friendly_extractor"
+    assert result.failure_tags == ["missing_proof_friendly_extractor"]
+    assert len(result.action_checks) == 1

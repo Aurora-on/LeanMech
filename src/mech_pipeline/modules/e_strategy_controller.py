@@ -13,7 +13,6 @@ STRATEGY_CARDS = [
     "derive_law_equation",
     "derive_model_equation",
     "prove_side_condition",
-    "split_conjunction",
     "algebra_solve",
     "rewrite_forward",
     "rewrite_backward",
@@ -32,7 +31,7 @@ You may use only:
 - listed proof obligations,
 - listed verified declarations,
 - listed algebra strategy cards,
-- standard tactics: simp, simp_all, rw, have, exact, apply, constructor, field_simp, ring_nf, linarith, nlinarith.
+- standard tactics: simp, simp_all, rw, have, exact, apply, field_simp, ring_nf, linarith, nlinarith.
 
 Do not:
 - introduce new assumptions,
@@ -40,12 +39,13 @@ Do not:
 - use sorry/admit/axiom,
 - use declarations outside whitelist,
 - use schema/problem metadata as proof facts.
+- do not use constructor or split goals in the linear prefix search; close conjunctions with exact ⟨..., ...⟩ only when all components are already available.
+- if a prior extractor preflight failed, do not assume `must_use from_hypothesis` is the only call shape; propose one local action using the listed facts and allowed declaration candidates.
 
 Available strategy cards:
 - derive_law_equation
 - derive_model_equation
 - prove_side_condition
-- split_conjunction
 - algebra_solve
 - rewrite_forward
 - rewrite_backward
@@ -105,6 +105,38 @@ def _compact_obligation(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _unique(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        item = str(value or "").strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
+
+
+def _relevant_allowed_decls(proof_context: ProofContext, obligations: list[dict[str, Any]]) -> list[str]:
+    allowed = set(proof_context.allowed_verified_decls)
+    required = _unique(
+        [
+            str(row.get("must_use") or "").strip()
+            for row in obligations
+            if str(row.get("must_use") or "").strip()
+        ]
+    )
+    if required:
+        return [decl for decl in required if decl in allowed]
+    return list(proof_context.allowed_verified_decls)
+
+
+def _allowed_decl_candidates(proof_context: ProofContext, required_decls: list[str]) -> list[str]:
+    required = [decl for decl in required_decls if decl]
+    extras = [decl for decl in proof_context.allowed_verified_decls if decl not in set(required)]
+    return _unique([*required, *extras])
+
+
 def _compact_failed_action(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "action_id": _compact_text(row.get("action_id"), 120),
@@ -123,6 +155,8 @@ def compact_proof_state_payload(
     proof_prefix_summary: str | None = None,
     last_error: str | None = None,
     failed_actions: list[dict[str, Any]] | None = None,
+    active_goals: str | None = None,
+    include_decl_candidates: bool = False,
 ) -> dict[str, Any]:
     obligations = remaining_obligations
     if obligations is None:
@@ -143,12 +177,21 @@ def compact_proof_state_payload(
     compact_obligations = [_compact_obligation(row) for row in obligations[:MAX_OBLIGATIONS]]
     if len(obligations) > MAX_OBLIGATIONS:
         compact_obligations.append({"omitted": len(obligations) - MAX_OBLIGATIONS})
+    required_decls = _relevant_allowed_decls(proof_context, compact_obligations)
+    allowed_decls = (
+        _allowed_decl_candidates(proof_context, required_decls)
+        if include_decl_candidates
+        else required_decls
+    )
     return {
         "target": _compact_text(proof_context.target_formula, MAX_TARGET_CHARS),
+        "active_goals": _compact_text(active_goals, MAX_TARGET_CHARS),
         "proof_prefix_summary": _compact_text(proof_prefix_summary, MAX_PREFIX_CHARS),
         "local_facts": _compact_list(facts, limit=MAX_FACTS),
         "remaining_obligations": compact_obligations,
-        "allowed_decls": _compact_list(list(proof_context.allowed_verified_decls), limit=MAX_DECLS, item_chars=240),
+        "required_decls": _compact_list(required_decls, limit=MAX_DECLS, item_chars=240),
+        "allowed_decls": _compact_list(allowed_decls, limit=MAX_DECLS, item_chars=240),
+        "decl_candidate_mode": bool(include_decl_candidates),
         "available_strategy_cards": list(STRATEGY_CARDS),
         "available_algebra_strategy_cards": available_algebra_strategy_cards(proof_context, facts),
         "last_error": _compact_text(last_error, MAX_ERROR_CHARS),
@@ -173,6 +216,8 @@ class LLMStrategyController:
         proof_prefix_summary: str | None = None,
         last_error: str | None = None,
         failed_actions: list[dict[str, Any]] | None = None,
+        active_goals: str | None = None,
+        include_decl_candidates: bool = False,
     ) -> str:
         payload = compact_proof_state_payload(
             proof_context=proof_context,
@@ -181,6 +226,8 @@ class LLMStrategyController:
             proof_prefix_summary=proof_prefix_summary,
             last_error=last_error,
             failed_actions=failed_actions,
+            active_goals=active_goals,
+            include_decl_candidates=include_decl_candidates,
         )
         prompt = render_template(
             self.prompt_template,
@@ -191,7 +238,9 @@ class LLMStrategyController:
         payload["failed_actions"] = []
         payload["local_facts"] = payload["local_facts"][:20]
         payload["allowed_decls"] = payload["allowed_decls"][:20]
+        payload["required_decls"] = payload["required_decls"][:20]
         payload["target"] = _compact_text(payload.get("target"), 700)
+        payload["active_goals"] = _compact_text(payload.get("active_goals"), 700)
         payload["proof_prefix_summary"] = _compact_text(payload.get("proof_prefix_summary"), 700)
         prompt = render_template(
             self.prompt_template,

@@ -14,7 +14,7 @@ from mech_pipeline.config import LLMGuidedSearchConfig, PipelineConfig
 from mech_pipeline.modules.e_action_guard import validate_action_proposal
 from mech_pipeline.modules.e_certified_replay import run_deterministic_obligation_replay_with_probe
 from mech_pipeline.modules.e_physical_assumption_augmenter import augment_context_for_missing_side_condition
-from mech_pipeline.modules.e_side_conditions import propose_side_condition_actions
+from mech_pipeline.modules.e_side_conditions import normalize_side_condition_expression, propose_side_condition_actions
 from mech_pipeline.modules.e_strategy_controller import LLMStrategyController
 from mech_pipeline.types import (
     ProofActionCheckResult,
@@ -26,6 +26,26 @@ from mech_pipeline.types import (
 from mech_pipeline.utils import normalize_lean_text, truncate
 
 _HAVE_FACT_RE = re.compile(r"^\s*have\s+([A-Za-z_][A-Za-z0-9_']*)\b", re.MULTILINE)
+_HAVE_CLAIM_RE = re.compile(
+    r"^\s*have\s+[A-Za-z_][A-Za-z0-9_']*\s*:\s*(?P<claim>.*?)\s*:=\s*by\b",
+    re.MULTILINE,
+)
+_HAVE_CLAIM_BY_NAME_RE = re.compile(
+    r"^\s*have\s+(?P<name>[A-Za-z_][A-Za-z0-9_']*)\s*:\s*(?P<claim>.*?)\s*:=\s*by\b",
+    re.MULTILINE,
+)
+_HAVE_NAME_SHAPE_RE = re.compile(
+    r"(?m)^(\s*have\s+)[A-Za-z_][A-Za-z0-9_']*(\s*:|\s*:=)"
+)
+_CONSTRUCTOR_LINE_RE = re.compile(r"(?m)^\s*constructor\b")
+_SIDE_CONDITION_EXPECTED_RE = re.compile(
+    r"(?:prove denominator nonzero:|missing_side_condition: denominator)\s*"
+    r"(?P<denom>.*?)(?:\s+requires positivity facts for|$)"
+)
+_SIDE_CONDITION_CLAIM_RE = re.compile(
+    r"^\s*have\s+[A-Za-z_][A-Za-z0-9_']*\s*:\s*(?P<denom>.*?)\s*≠\s*0\s*:=\s*by\b",
+    re.MULTILINE,
+)
 
 
 def _search_cfg(cfg: Any) -> LLMGuidedSearchConfig:
@@ -115,6 +135,93 @@ def _fact_names_from_tactic(tactic_block: str) -> list[str]:
     return [match.group(1) for match in _HAVE_FACT_RE.finditer(tactic_block or "")]
 
 
+def _normalize_fact_claim(text: str) -> str:
+    return normalize_lean_text(text).replace(" != ", " ≠ ").strip()
+
+
+def _fact_claims_from_tactic(tactic_block: str) -> list[str]:
+    claims: list[str] = []
+    for match in _HAVE_CLAIM_RE.finditer(tactic_block or ""):
+        claim = _normalize_fact_claim(match.group("claim"))
+        if claim:
+            claims.append(claim)
+    return list(dict.fromkeys(claims))
+
+
+def _fact_claims_by_name_from_tactic(tactic_block: str) -> dict[str, str]:
+    claims: dict[str, str] = {}
+    for match in _HAVE_CLAIM_BY_NAME_RE.finditer(tactic_block or ""):
+        name = match.group("name").strip()
+        claim = _normalize_fact_claim(match.group("claim"))
+        if name and claim:
+            claims[name] = claim
+    return claims
+
+
+def _fact_types_from_binder_text(text: str) -> dict[str, str]:
+    cleaned = normalize_lean_text(text or "").strip()
+    if not cleaned or ":" not in cleaned:
+        return {}
+    names_part, type_part = cleaned.split(":", 1)
+    type_text = type_part.strip()
+    if not type_text:
+        return {}
+    names = re.findall(r"\b[A-Za-z_][A-Za-z0-9_']*\b", names_part)
+    return {name: type_text for name in names}
+
+
+def _local_fact_types_from_context(proof_context: ProofContext) -> dict[str, str]:
+    fact_types: dict[str, str] = {}
+    for chunk in [*proof_context.local_binders, *proof_context.allowed_local_facts]:
+        fact_types.update(_fact_types_from_binder_text(chunk))
+    return fact_types
+
+
+def _local_fact_summaries(proof_context: ProofContext, node: ProofSearchNode) -> list[str]:
+    fact_types = _local_fact_types_from_context(proof_context)
+    fact_types.update(node.local_fact_types)
+    summaries: list[str] = []
+    for fact in node.local_facts:
+        if ":" in fact:
+            summaries.append(fact)
+            continue
+        claim = fact_types.get(fact)
+        summaries.append(f"{fact} : {claim}" if claim else fact)
+    return list(dict.fromkeys(summaries))
+
+
+def _branching_constructor_disallowed(proposal: ProofActionProposal) -> bool:
+    block = normalize_lean_text(proposal.tactic_block or "")
+    return proposal.strategy == "split_conjunction" or bool(_CONSTRUCTOR_LINE_RE.search(block))
+
+
+def _action_shape(proposal: ProofActionProposal) -> str:
+    block = normalize_lean_text(proposal.tactic_block or "").strip()
+    block = _HAVE_NAME_SHAPE_RE.sub(r"\1_\2", block)
+    block = re.sub(r"\s+", " ", block)
+    return f"{proposal.strategy}:{block}"
+
+
+def _failed_action_shape_key(node: ProofSearchNode, proposal: ProofActionProposal) -> str:
+    prefix_hash = sha256(normalize_lean_text(node.proof_prefix or "").encode("utf-8")).hexdigest()
+    return f"{prefix_hash}:{_action_shape(proposal)}"
+
+
+def _side_condition_denominator_from_action(proposal: ProofActionProposal) -> str | None:
+    if proposal.strategy not in {"prove_side_condition", "missing_side_condition"}:
+        return None
+    expected = proposal.expected_effect or ""
+    match = _SIDE_CONDITION_EXPECTED_RE.search(expected)
+    if match:
+        denom = normalize_side_condition_expression(match.group("denom"))
+        return denom or None
+    match = _SIDE_CONDITION_CLAIM_RE.search(proposal.tactic_block or "")
+    if match:
+        denom = normalize_side_condition_expression(match.group("denom"))
+        return denom or None
+    return None
+
+
 def _covered_obligation_ids_from_action(
     *,
     proof_context: ProofContext,
@@ -152,11 +259,14 @@ def _meaningful_progress(
     node: ProofSearchNode,
     check: ProofActionCheckResult,
     new_fact_names: list[str],
+    new_fact_claims: list[str],
     covered_obligation_ids: list[str],
 ) -> bool:
     if check.status == "closed":
         return True
-    if any(fact not in node.local_facts for fact in new_fact_names):
+    if any(claim not in node.local_fact_claims for claim in new_fact_claims):
+        return True
+    if new_fact_names and not new_fact_claims and any(fact not in node.local_facts for fact in new_fact_names):
         return True
     if covered_obligation_ids:
         return True
@@ -178,6 +288,10 @@ def _action_payload(
     accepted: bool,
     parent_node_id: str | None = None,
 ) -> dict[str, Any]:
+    check_payload = check.to_dict()
+    for key in ("error_line", "error_col", "error_snippet", "probe_full_proof_body"):
+        if check_payload.get(key) is None:
+            check_payload.pop(key, None)
     return {
         "sample_id": proof_context.sample_id,
         "candidate_id": proof_context.candidate_id,
@@ -188,7 +302,7 @@ def _action_payload(
         "expected_effect": proposal.expected_effect,
         "priority": proposal.priority,
         "parent_node_id": parent_node_id,
-        **check.to_dict(),
+        **check_payload,
     }
 
 
@@ -251,6 +365,10 @@ def _probe_action(
             error_message=result.error_message,
             stderr_excerpt=result.stderr_excerpt,
             goals_excerpt=result.goals_excerpt,
+            error_line=result.error_line,
+            error_col=result.error_col,
+            error_snippet=result.error_snippet,
+            probe_full_proof_body=result.probe_full_proof_body,
         ),
         trial_prefix,
     )
@@ -338,6 +456,29 @@ def _remaining_obligation_payloads(proof_context: ProofContext, obligation_ids: 
     return [dict(by_id.get(oid, {"obligation_id": oid})) for oid in obligation_ids]
 
 
+def _allowed_decls_for_prompt_summary(
+    proof_context: ProofContext,
+    remaining_obligations: list[dict[str, Any]],
+    *,
+    include_decl_candidates: bool = False,
+) -> list[str]:
+    required = list(
+        dict.fromkeys(
+            str(row.get("must_use") or "").strip()
+            for row in remaining_obligations
+            if str(row.get("must_use") or "").strip()
+        )
+    )
+    if required:
+        allowed = set(proof_context.allowed_verified_decls)
+        required_allowed = [decl for decl in required if decl in allowed]
+        if include_decl_candidates:
+            extras = [decl for decl in proof_context.allowed_verified_decls if decl not in set(required_allowed)]
+            return [*required_allowed, *extras]
+        return required_allowed
+    return list(proof_context.allowed_verified_decls)
+
+
 def _score_child(
     *,
     parent: ProofSearchNode,
@@ -367,6 +508,7 @@ def _prompt_summary(
     llm_call_index: int,
     remaining_obligations: list[dict[str, Any]],
     failed_action_count: int,
+    include_decl_candidates: bool = False,
 ) -> dict[str, Any]:
     return {
         "sample_id": proof_context.sample_id,
@@ -376,10 +518,18 @@ def _prompt_summary(
         "depth": node.depth,
         "prompt_chars": len(prompt),
         "target_excerpt": truncate(str(proof_context.target_formula or ""), 500),
+        "active_goals_excerpt": truncate(str(node.goals_excerpt or ""), 800),
         "proof_prefix_excerpt": truncate(node.proof_prefix, 800),
-        "local_facts": list(node.local_facts[:40]),
+        "local_facts": list(_local_fact_summaries(proof_context, node)[:40]),
         "remaining_obligations": list(remaining_obligations[:20]),
-        "allowed_decls": list(proof_context.allowed_verified_decls[:40]),
+        "allowed_decls": list(
+            _allowed_decls_for_prompt_summary(
+                proof_context,
+                remaining_obligations,
+                include_decl_candidates=include_decl_candidates,
+            )[:40]
+        ),
+        "decl_candidate_mode": bool(include_decl_candidates),
         "failed_action_count": failed_action_count,
         "prompt_excerpt": truncate(prompt, 1600),
         "omitted_context": [
@@ -416,6 +566,10 @@ def run_llm_guided_search(
     covered_obligations: set[str] = set()
     prefix = ""
     local_facts = list(dict.fromkeys([*proof_context.allowed_local_facts, *proof_context.local_hypotheses]))
+    local_fact_types = _local_fact_types_from_context(proof_context)
+    strategy_prompt_summaries: list[dict[str, Any]] = []
+    replay_failure_tags: set[str] = set()
+    last_error: str | None = None
 
     if search_cfg.deterministic_obligation_replay_first and proof_context.obligation_replay_items:
         replay = run_deterministic_obligation_replay_with_probe(
@@ -427,9 +581,27 @@ def run_llm_guided_search(
         rejected_actions.extend(replay.trace.rejected_actions)
         probe_checks = len(replay.trace.accepted_actions) + len(replay.trace.rejected_actions)
         prefix = replay.replay_result.proof_prefix
+        replay_failure_tags = set(replay.replay_result.failure_tags)
+        if replay_failure_tags:
+            last_error = ";".join(sorted(replay_failure_tags))
+        if replay.replay_result.blocked_items:
+            proof_context = replace(
+                proof_context,
+                obligation_replay_blocked=list(
+                    {
+                        item.obligation_id: item
+                        for item in [
+                            *proof_context.obligation_replay_blocked,
+                            *replay.replay_result.blocked_items,
+                        ]
+                    }.values()
+                ),
+            )
         covered_obligations.update(item.obligation_id for item in replay.replay_result.replayed_items)
         for item in replay.replay_result.replayed_items:
             local_facts.append(item.produced_fact_name)
+            if item.produced_fact_name and item.formal_claim:
+                local_fact_types[item.produced_fact_name] = item.formal_claim
     else:
         probe_checks = 0
 
@@ -439,16 +611,18 @@ def run_llm_guided_search(
         depth=0,
         proof_prefix=prefix,
         local_facts=list(dict.fromkeys(local_facts)),
+        local_fact_claims=[],
+        local_fact_types=dict(local_fact_types),
         remaining_obligations=_remaining_after_replay(proof_context, covered_obligations),
+        side_condition_denominators=[],
         score=0.0,
     )
     queue: list[ProofSearchNode] = [root]
     nodes_expanded = 0
     llm_calls = 0
     seen_action_blocks: set[str] = set()
-    last_error: str | None = None
+    failed_action_shapes: set[str] = set()
     controller = LLMStrategyController()
-    strategy_prompt_summaries: list[dict[str, Any]] = []
     probe_cache: dict[str, ProofActionCheckResult] = {}
     seen_probe_prefixes: set[str] = set()
     no_progress_nodes = 0
@@ -468,22 +642,31 @@ def run_llm_guided_search(
 
         deterministic_proposals: list[ProofActionProposal] = []
         if search_cfg.deterministic_side_conditions_first:
-            deterministic_proposals.extend(propose_side_condition_actions(proof_context, node.local_facts))
+            deterministic_proposals.extend(
+                propose_side_condition_actions(
+                    proof_context,
+                    node.local_facts,
+                    known_denominators=node.side_condition_denominators,
+                )
+            )
 
         llm_proposals: list[ProofActionProposal] = []
-        if llm_calls < search_cfg.max_llm_calls:
+        if not deterministic_proposals and llm_calls < search_cfg.max_llm_calls:
             if _wall_clock_exhausted(start_time, search_cfg.max_wall_clock_s_per_sample):
                 search_stop_reason = "wall_clock_budget_exhausted"
                 break
             remaining_payload = _remaining_obligation_payloads(proof_context, node.remaining_obligations)
             failed_slice = rejected_actions[-search_cfg.max_failed_actions_kept :]
+            include_decl_candidates = "missing_proof_friendly_extractor" in replay_failure_tags
             prompt = controller.build_prompt(
                 proof_context=proof_context,
-                local_facts=node.local_facts,
+                local_facts=_local_fact_summaries(proof_context, node),
                 remaining_obligations=remaining_payload,
                 proof_prefix_summary=truncate(node.proof_prefix, 1200),
                 last_error=last_error,
                 failed_actions=failed_slice,
+                active_goals=node.goals_excerpt,
+                include_decl_candidates=include_decl_candidates,
             )
             llm_calls += 1
             strategy_prompt_summaries.append(
@@ -494,6 +677,7 @@ def run_llm_guided_search(
                     llm_call_index=llm_calls,
                     remaining_obligations=remaining_payload,
                     failed_action_count=len(failed_slice),
+                    include_decl_candidates=include_decl_candidates,
                 )
             )
             try:
@@ -572,6 +756,12 @@ def run_llm_guided_search(
                                 ]
                             )
                         )
+                        new_local_fact_types = dict(node.local_fact_types)
+                        for item in proof_context.added_physical_assumptions:
+                            name = str(item.get("name") or "").strip()
+                            claim = str(item.get("claim") or item.get("proposition") or item.get("type") or "").strip()
+                            if name and claim:
+                                new_local_fact_types[name] = claim
                         queue.insert(
                             0,
                             ProofSearchNode(
@@ -580,8 +770,11 @@ def run_llm_guided_search(
                                 depth=node.depth + 1,
                                 proof_prefix=node.proof_prefix,
                                 local_facts=new_local_facts,
+                                local_fact_claims=list(node.local_fact_claims),
+                                local_fact_types=new_local_fact_types,
                                 remaining_obligations=list(node.remaining_obligations),
                                 goals_excerpt=node.goals_excerpt,
+                                side_condition_denominators=list(node.side_condition_denominators),
                                 last_action_id=augment_proposal.action_id,
                                 score=node.score + float(augment_proposal.priority or 0.0),
                             ),
@@ -604,6 +797,47 @@ def run_llm_guided_search(
                 last_error = check.error_message
                 continue
 
+            shape_key = _failed_action_shape_key(node, proposal)
+            if proposal.source == "llm" and _branching_constructor_disallowed(proposal):
+                check = _invalid_probe_check(
+                    proposal=proposal,
+                    error_type="branching_constructor_disallowed_linear_prefix",
+                    error_message="linear prefix search cannot safely replay constructor/split_conjunction actions",
+                    goals_excerpt=node.goals_excerpt,
+                )
+                payload = _action_payload(
+                    proof_context=proof_context,
+                    proposal=proposal,
+                    check=check,
+                    accepted=False,
+                    parent_node_id=node.node_id,
+                )
+                payload["action_shape"] = _action_shape(proposal)
+                rejected_actions.append(payload)
+                failed_action_shapes.add(shape_key)
+                last_error = check.error_message
+                continue
+
+            if proposal.source == "llm" and shape_key in failed_action_shapes:
+                check = _invalid_probe_check(
+                    proposal=proposal,
+                    error_type="repeated_failed_action_shape",
+                    error_message="same action shape already failed at this proof prefix",
+                    goals_excerpt=node.goals_excerpt,
+                )
+                payload = _action_payload(
+                    proof_context=proof_context,
+                    proposal=proposal,
+                    check=check,
+                    accepted=False,
+                    parent_node_id=node.node_id,
+                )
+                payload["action_shape"] = _action_shape(proposal)
+                payload["cache_hit"] = True
+                rejected_actions.append(payload)
+                last_error = check.error_message
+                continue
+
             dynamic_context = replace(
                 proof_context,
                 allowed_local_facts=list(dict.fromkeys([*proof_context.allowed_local_facts, *node.local_facts])),
@@ -622,6 +856,8 @@ def run_llm_guided_search(
                         parent_node_id=node.node_id,
                     )
                 )
+                if proposal.source == "llm":
+                    failed_action_shapes.add(shape_key)
                 last_error = check.error_message
                 continue
 
@@ -644,6 +880,8 @@ def run_llm_guided_search(
                 )
                 payload["cache_hit"] = True
                 rejected_actions.append(payload)
+                if proposal.source == "llm":
+                    failed_action_shapes.add(shape_key)
                 last_error = check.error_message
                 continue
             if probe_checks >= search_cfg.max_probe_checks:
@@ -667,14 +905,22 @@ def run_llm_guided_search(
                 cache_hit = False
             seen_probe_prefixes.add(trial_prefix)
             accepted = check.status in {"progress", "closed"}
-            new_fact_names = _fact_names_from_tactic(proposal.tactic_block)
-            covered_now = _covered_obligation_ids_from_action(
-                proof_context=proof_context,
-                remaining_obligations=node.remaining_obligations,
-                proposal=proposal,
-                new_fact_names=new_fact_names,
+            proposed_fact_names = _fact_names_from_tactic(proposal.tactic_block)
+            proposed_fact_claims = _fact_claims_from_tactic(proposal.tactic_block)
+            new_fact_names = list(proposed_fact_names) if accepted else []
+            new_fact_claims = list(proposed_fact_claims) if accepted else []
+            covered_now = (
+                _covered_obligation_ids_from_action(
+                    proof_context=proof_context,
+                    remaining_obligations=node.remaining_obligations,
+                    proposal=proposal,
+                    new_fact_names=new_fact_names,
+                )
+                if accepted
+                else []
             )
             remaining_after_action = [oid for oid in node.remaining_obligations if oid not in set(covered_now)]
+            side_condition_denominator = _side_condition_denominator_from_action(proposal)
             payload = _action_payload(
                 proof_context=proof_context,
                 proposal=proposal,
@@ -684,17 +930,25 @@ def run_llm_guided_search(
             )
             payload["cache_hit"] = cache_hit
             payload["probe_checks_used"] = probe_checks
+            payload["proposed_local_facts"] = list(proposed_fact_names)
+            payload["proposed_local_fact_claims"] = list(proposed_fact_claims)
             payload["new_local_facts"] = list(new_fact_names)
+            payload["new_local_fact_claims"] = list(new_fact_claims)
             payload["covered_obligations"] = list(covered_now)
             payload["remaining_obligations_after"] = list(remaining_after_action)
+            payload["side_condition_denominator"] = side_condition_denominator
             if not accepted:
+                payload.setdefault("probe_full_proof_body", trial_prefix)
                 rejected_actions.append(payload)
+                if proposal.source == "llm":
+                    failed_action_shapes.add(shape_key)
                 last_error = check.error_message or check.error_type or check.stderr_excerpt
                 continue
             if not _meaningful_progress(
                 node=node,
                 check=check,
                 new_fact_names=new_fact_names,
+                new_fact_claims=new_fact_claims,
                 covered_obligation_ids=covered_now,
             ):
                 no_progress_check = _invalid_probe_check(
@@ -713,10 +967,17 @@ def run_llm_guided_search(
                 no_progress_payload["raw_probe_status"] = check.status
                 no_progress_payload["cache_hit"] = cache_hit
                 no_progress_payload["probe_checks_used"] = probe_checks
-                no_progress_payload["new_local_facts"] = list(new_fact_names)
-                no_progress_payload["covered_obligations"] = list(covered_now)
-                no_progress_payload["remaining_obligations_after"] = list(remaining_after_action)
+                no_progress_payload["proposed_local_facts"] = list(proposed_fact_names)
+                no_progress_payload["proposed_local_fact_claims"] = list(proposed_fact_claims)
+                no_progress_payload["new_local_facts"] = []
+                no_progress_payload["new_local_fact_claims"] = []
+                no_progress_payload["covered_obligations"] = []
+                no_progress_payload["remaining_obligations_after"] = list(node.remaining_obligations)
+                no_progress_payload["side_condition_denominator"] = side_condition_denominator
+                no_progress_payload["probe_full_proof_body"] = trial_prefix
                 rejected_actions.append(no_progress_payload)
+                if proposal.source == "llm":
+                    failed_action_shapes.add(shape_key)
                 last_error = no_progress_check.error_message
                 continue
 
@@ -724,14 +985,25 @@ def run_llm_guided_search(
             node_made_progress = True
             covered_obligations.update(covered_now)
             new_facts = list(dict.fromkeys([*node.local_facts, *new_fact_names]))
+            new_fact_claims_all = list(dict.fromkeys([*node.local_fact_claims, *new_fact_claims]))
+            new_fact_types = dict(node.local_fact_types)
+            new_fact_types.update(_fact_claims_by_name_from_tactic(proposal.tactic_block))
+            new_side_condition_denominators = list(node.side_condition_denominators)
+            if proposal.strategy == "prove_side_condition" and side_condition_denominator:
+                new_side_condition_denominators = list(
+                    dict.fromkeys([*new_side_condition_denominators, side_condition_denominator])
+                )
             child = ProofSearchNode(
                 node_id=f"node_{nodes_expanded}_{len(accepted_actions)}",
                 parent_id=node.node_id,
                 depth=node.depth + 1,
                 proof_prefix=trial_prefix,
                 local_facts=new_facts,
+                local_fact_claims=new_fact_claims_all,
+                local_fact_types=new_fact_types,
                 remaining_obligations=remaining_after_action,
                 goals_excerpt=check.goals_excerpt,
+                side_condition_denominators=new_side_condition_denominators,
                 last_action_id=proposal.action_id,
                 score=_score_child(parent=node, proposal=proposal, check=check, repeated=repeated),
             )
@@ -782,6 +1054,8 @@ def run_llm_guided_search(
                         parent_node_id=node.node_id,
                     )
                 )
+                if proposal.source == "llm":
+                    failed_action_shapes.add(shape_key)
                 last_error = replay_check.error_message
                 continue
 
@@ -801,6 +1075,10 @@ def run_llm_guided_search(
 
     if search_stop_reason is not None:
         reason = search_stop_reason
+    elif "missing_proof_friendly_extractor" in replay_failure_tags and llm_calls > 0:
+        reason = "proof_action_synthesis_failed_after_preflight"
+    elif "missing_proof_friendly_extractor" in replay_failure_tags:
+        reason = "missing_proof_friendly_extractor"
     elif nodes_expanded >= search_cfg.max_nodes:
         reason = "max_nodes_exhausted"
     elif llm_calls >= search_cfg.max_llm_calls:

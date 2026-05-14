@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from mech_pipeline.types import ProofActionProposal, ProofContext
@@ -26,6 +27,10 @@ class SideConditionNeed:
 
 def _normalize_term(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip()).strip("() ")
+
+
+def normalize_side_condition_expression(text: str) -> str:
+    return _normalize_term(text)
 
 
 def extract_denominators(target: str | None) -> list[str]:
@@ -141,6 +146,7 @@ def _missing_side_condition_proposal(
 def propose_side_condition_actions(
     proof_context: ProofContext,
     current_facts: list[str],
+    known_denominators: Iterable[str] | None = None,
 ) -> list[ProofActionProposal]:
     """Propose deterministic nonzero-denominator actions from already checked facts.
 
@@ -153,10 +159,13 @@ def propose_side_condition_actions(
     if not denoms:
         return []
 
+    known = {normalize_side_condition_expression(denom) for denom in known_denominators or []}
     pos_facts = _positive_fact_map([*current_facts, *_context_positive_facts(proof_context)])
     used_names = set(current_facts) | set(proof_context.allowed_local_facts) | set(proof_context.local_hypotheses)
     proposals: list[ProofActionProposal] = []
     for idx, denom in enumerate(denoms, start=1):
+        if normalize_side_condition_expression(denom) in known:
+            continue
         terms = _required_positive_terms(denom)
         missing = [term for term in terms if term not in pos_facts]
         if missing:

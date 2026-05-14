@@ -15,6 +15,7 @@ from mech_pipeline.utils import ensure_dir, normalize_lean_text, safe_stem, trun
 _SUBPROCESS_TEXT_ENCODING = "utf-8"
 _SUBPROCESS_TEXT_ERRORS = "replace"
 _LEAN_ERROR_LOC_RE = re.compile(r":(?P<line>\d+):(?P<col>\d+):\s*error:\s*(?P<msg>[^\n]+)")
+_LEAN_ERROR_MSG_RE = re.compile(r":\d+:\d+:\s*error:\s*(?P<msg>[^\n]+)")
 _MECHLIB_HEADER_LINES = (
     "import Mathlib",
     "import MechLib",
@@ -150,12 +151,22 @@ def extract_lean_error_details(stdout: str, stderr: str) -> dict[str, str | int 
     normalized = normalize_lean_text((stderr or "").strip() or (stdout or "").strip())
     excerpt = truncate(normalized, 240)
     line: int | None = None
+    col: int | None = None
     message: str | None = None
     snippet: str | None = None
 
-    match = _LEAN_ERROR_LOC_RE.search(normalized)
-    if match:
+    matches = list(_LEAN_ERROR_LOC_RE.finditer(normalized))
+    if matches:
+        match = next(
+            (
+                candidate
+                for candidate in matches
+                if candidate.group("msg").strip().lower() != "unsolved goals"
+            ),
+            matches[0],
+        )
         line = int(match.group("line"))
+        col = int(match.group("col"))
         message = match.group("msg").strip()
         snippet = truncate(match.group(0).strip(), 240)
     else:
@@ -167,6 +178,7 @@ def extract_lean_error_details(stdout: str, stderr: str) -> dict[str, str | int 
     return {
         "stderr_excerpt": excerpt or None,
         "error_line": line,
+        "error_col": col,
         "error_message": message,
         "error_snippet": snippet,
     }
@@ -186,6 +198,8 @@ def classify_compile_sub_error(error_type: str | None, stderr: str) -> str | Non
         return "symbol_hallucination"
     if "function expected at" in text or "invalid field notation" in text:
         return "wrong_api_shape"
+    if "no goals to be solved" in text:
+        return "tactic_no_goals"
     if "application type mismatch" in text or "type mismatch" in text:
         return "type_mismatch"
     if error_type == "missing_import_or_namespace":
@@ -208,29 +222,36 @@ def _probe_goals_excerpt(text: str, limit: int = 800) -> str | None:
     return truncate(normalized[idx:], limit) or None
 
 
+def _lean_error_messages(text: str) -> list[str]:
+    normalized = normalize_lean_text(text)
+    messages = [match.group("msg").strip() for match in _LEAN_ERROR_MSG_RE.finditer(normalized)]
+    if not messages and "error:" in normalized.lower():
+        for raw in normalized.splitlines():
+            line = raw.strip()
+            lowered = line.lower()
+            if "error:" in lowered:
+                messages.append(line.split("error:", 1)[1].strip())
+    return messages
+
+
+def _has_non_goal_probe_error(text: str) -> bool:
+    messages = _lean_error_messages(text)
+    return any(msg.strip().lower() != "unsolved goals" for msg in messages)
+
+
 def classify_proof_probe_result(
     *,
     ok: bool,
     stdout: str,
     stderr: str,
     tactic_block: str,
+    probe_full_proof_body: str | None = None,
 ) -> ProofActionCheckResult:
     merged = _merged_output(stdout, stderr)
     lowered = merged.lower()
     details = extract_lean_error_details(stdout, stderr)
     stderr_excerpt = _stderr_excerpt(stdout, stderr, limit=800) or None
 
-    if "unsolved goals" in lowered:
-        return ProofActionCheckResult(
-            action_id="probe",
-            strategy="probe_proof_prefix",
-            tactic_block=tactic_block,
-            status="progress",
-            error_type="unsolved_goals",
-            error_message=details["error_message"],
-            stderr_excerpt=stderr_excerpt,
-            goals_excerpt=_probe_goals_excerpt(merged),
-        )
     if "[pipeline_timeout]" in lowered or "[pipeline_exception]" in lowered:
         return ProofActionCheckResult(
             action_id="probe",
@@ -243,6 +264,42 @@ def classify_proof_probe_result(
             error_message=details["error_message"],
             stderr_excerpt=stderr_excerpt,
             goals_excerpt=None,
+            error_line=details["error_line"],
+            error_col=details["error_col"],
+            error_snippet=details["error_snippet"],
+            probe_full_proof_body=probe_full_proof_body,
+        )
+
+    if _has_non_goal_probe_error(merged):
+        error_type = classify_compile_sub_error("elaboration_failure", merged) or "proof_elaboration_error"
+        return ProofActionCheckResult(
+            action_id="probe",
+            strategy="probe_proof_prefix",
+            tactic_block=tactic_block,
+            status="invalid",
+            error_type=error_type,
+            error_message=details["error_message"],
+            stderr_excerpt=stderr_excerpt,
+            goals_excerpt=None,
+            error_line=details["error_line"],
+            error_col=details["error_col"],
+            error_snippet=details["error_snippet"],
+            probe_full_proof_body=probe_full_proof_body,
+        )
+
+    if "unsolved goals" in lowered:
+        return ProofActionCheckResult(
+            action_id="probe",
+            strategy="probe_proof_prefix",
+            tactic_block=tactic_block,
+            status="progress",
+            error_type="unsolved_goals",
+            error_message=details["error_message"],
+            stderr_excerpt=stderr_excerpt,
+            goals_excerpt=_probe_goals_excerpt(merged),
+            error_line=details["error_line"],
+            error_col=details["error_col"],
+            error_snippet=details["error_snippet"],
         )
 
     invalid_patterns = [
@@ -270,6 +327,10 @@ def classify_proof_probe_result(
                 error_message=details["error_message"],
                 stderr_excerpt=stderr_excerpt,
                 goals_excerpt=None,
+                error_line=details["error_line"],
+                error_col=details["error_col"],
+                error_snippet=details["error_snippet"],
+                probe_full_proof_body=probe_full_proof_body,
             )
 
     if ok and "error:" not in lowered:
@@ -293,6 +354,10 @@ def classify_proof_probe_result(
         error_message=details["error_message"],
         stderr_excerpt=stderr_excerpt,
         goals_excerpt=None,
+        error_line=details["error_line"],
+        error_col=details["error_col"],
+        error_snippet=details["error_snippet"],
+        probe_full_proof_body=probe_full_proof_body,
     )
 
 
@@ -795,6 +860,7 @@ class LeanRunner:
                 error_message="Proof prefix contains a forbidden token.",
                 stderr_excerpt=None,
                 goals_excerpt=None,
+                probe_full_proof_body=prefix,
             )
 
         ok, stdout, stderr = self._run_probe_code(
@@ -808,6 +874,7 @@ class LeanRunner:
             stdout=stdout,
             stderr=stderr,
             tactic_block=proof_prefix,
+            probe_full_proof_body=prefix,
         )
 
     def probe_proof_prefix(

@@ -295,7 +295,7 @@ def build_proof_context(
         hypothesis_provenance=hypothesis_provenance,
         proof_obligations=proof_obligations,
         allowed_verified_decls=allowed_verified_decls,
-        allowed_local_facts=_unique(local_hypotheses + [item.produced_fact_name for item in replay_items]),
+        allowed_local_facts=_unique(local_hypotheses),
         gap_laws=gap_laws,
         model_predicate_bindings=model_predicate_bindings,
         explicit_model_gaps=explicit_model_gaps,

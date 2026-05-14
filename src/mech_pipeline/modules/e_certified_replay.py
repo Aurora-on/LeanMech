@@ -34,6 +34,10 @@ def probe_action_checker(lean_runner: LeanRunner, timeout_s: int | None = None):
             error_message=result.error_message,
             stderr_excerpt=result.stderr_excerpt,
             goals_excerpt=result.goals_excerpt,
+            error_line=result.error_line,
+            error_col=result.error_col,
+            error_snippet=result.error_snippet,
+            probe_full_proof_body=result.probe_full_proof_body,
         )
 
     return _check
@@ -62,11 +66,15 @@ def _action_payload(
     proposal: ProofActionProposal | None,
     accepted: bool,
 ) -> dict[str, object]:
+    check_payload = check.to_dict()
+    for key in ("error_line", "error_col", "error_snippet", "probe_full_proof_body"):
+        if check_payload.get(key) is None:
+            check_payload.pop(key, None)
     payload = {
         "sample_id": context.sample_id,
         "candidate_id": context.candidate_id,
         "accepted": accepted,
-        **check.to_dict(),
+        **check_payload,
     }
     if proposal is not None:
         payload["source"] = proposal.source

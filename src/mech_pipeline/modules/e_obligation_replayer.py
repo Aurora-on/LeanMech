@@ -18,6 +18,14 @@ REPLAY_FAILURE_TAGS = {
     "extractor_decl_mismatch",
     "formal_claim_shape_mismatch",
     "from_hypothesis_missing",
+    "missing_proof_friendly_extractor",
+}
+EXTRACTOR_PREFLIGHT_FAILURES = {
+    "symbol_hallucination",
+    "type_mismatch",
+    "wrong_api_shape",
+    "proof_elaboration_error",
+    "namespace_or_import_issue",
 }
 
 ActionChecker = Callable[[ProofContext, str, ProofActionProposal], ProofActionCheckResult]
@@ -154,6 +162,9 @@ class ProofObligationReplayer:
                     accepted = True
                     break
                 last_error = check.error_type or check.error_message or "obligation_replay_failed"
+                if proposal.strategy == "deterministic_exact_extractor" and self._is_extractor_preflight_failure(check):
+                    last_error = "missing_proof_friendly_extractor"
+                    break
 
             if not accepted:
                 failure = self._normalize_failure(last_error)
@@ -241,11 +252,16 @@ class ProofObligationReplayer:
             error=error,
         )
 
+    def _is_extractor_preflight_failure(self, check: ProofActionCheckResult) -> bool:
+        return check.status == "invalid" and (check.error_type in EXTRACTOR_PREFLIGHT_FAILURES)
+
     def _normalize_failure(self, error: str | None) -> str:
         if error in REPLAY_FAILURE_TAGS:
             return error
         if error in {"missing_verified_extractor_decl", "must_use_not_allowed_verified_decl"}:
             return "extractor_decl_mismatch"
+        if error in {"symbol_hallucination", "type_mismatch", "wrong_api_shape", "proof_elaboration_error"}:
+            return "missing_proof_friendly_extractor"
         if error == "missing_formal_claim":
             return "formal_claim_shape_mismatch"
         return "obligation_replay_failed"

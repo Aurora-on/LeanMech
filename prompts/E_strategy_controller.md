@@ -7,7 +7,7 @@ You may use only:
 - listed proof obligations,
 - listed verified declarations,
 - listed algebra strategy cards,
-- standard tactics: simp, simp_all, rw, have, exact, apply, constructor, field_simp, ring_nf, linarith, nlinarith.
+- standard tactics: simp, simp_all, rw, have, exact, apply, field_simp, ring_nf, linarith, nlinarith.
 
 Do not:
 - introduce new assumptions,
@@ -15,12 +15,13 @@ Do not:
 - use sorry/admit/axiom,
 - use declarations outside whitelist,
 - use schema/problem metadata as proof facts.
+- do not use constructor or split goals in the linear prefix search; close conjunctions with exact ⟨..., ...⟩ only when all components are already available.
+- if a prior extractor preflight failed, do not assume `must_use from_hypothesis` is the only call shape; propose one local action using the listed facts and allowed declaration candidates.
 
 Available strategy cards:
 - derive_law_equation
 - derive_model_equation
 - prove_side_condition
-- split_conjunction
 - algebra_solve
 - rewrite_forward
 - rewrite_backward

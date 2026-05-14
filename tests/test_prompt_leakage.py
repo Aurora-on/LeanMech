@@ -215,3 +215,35 @@ def test_redact_leakage_text_preserves_proof_style_problem_requests() -> None:
 def test_redact_leakage_text_still_cuts_answer_sections() -> None:
     text = "Find the acceleration of the box. Answer: a = F / m"
     assert redact_leakage_text(text) == "Find the acceleration of the box."
+
+
+def test_redact_leakage_text_cuts_chinese_solution_sections() -> None:
+    text = """9-1如图a所示一汽车转过半径为 R 的圆弯。求最大速度。
+
+![](images/curve.jpg)
+题9-1图
+
+解：分析汽车，受力如图b所示。
+
+由质点运动方程有 v^2 / R = g。
+
+解得
+
+v = 11.5 m/s
+"""
+
+    redacted = redact_leakage_text(text)
+
+    assert redacted == "9-1如图a所示一汽车转过半径为 R 的圆弯。求最大速度。\n\n![](images/curve.jpg)\n题9-1图"
+    assert "解：" not in redacted
+    assert "11.5" not in redacted
+
+
+def test_redact_leakage_text_cuts_solution_marker_and_following_work() -> None:
+    text = """Find the acceleration of the box.
+
+Solution: apply Newton's second law.
+F = m * a
+"""
+
+    assert redact_leakage_text(text) == "Find the acceleration of the box."

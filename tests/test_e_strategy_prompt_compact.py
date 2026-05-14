@@ -101,6 +101,7 @@ def test_search_prompt_keeps_remaining_obligation_details_after_replay() -> None
     cfg.proof.llm_guided_search.deterministic_obligation_replay_first = False
     cfg.proof.llm_guided_search.deterministic_side_conditions_first = False
     context = _context()
+    context.allowed_verified_decls.append("MechLib.Examples.Unrelated.uniformAccelerationDisplacement_byCalculation")
     context.obligation_replay_items = [
         ProofObligationReplayItem(
             obligation_id="sk1",
@@ -124,6 +125,8 @@ def test_search_prompt_keeps_remaining_obligation_details_after_replay() -> None
     assert '"formal_claim": "F.val = m.val * a.val"' in llm.prompts[0]
     assert '"must_use": "MechLib.Dynamics.NewtonLaw.NewtonSecondLaw.to_value_equation"' in llm.prompts[0]
     assert '"from_hypothesis": "h_law"' in llm.prompts[0]
+    assert "MechLib.Examples.Unrelated.uniformAccelerationDisplacement_byCalculation" not in llm.prompts[0]
     remaining = trace.strategy_prompt_summaries[0]["remaining_obligations"]
     assert remaining[0]["formal_claim"] == "F.val = m.val * a.val"
     assert remaining[0]["must_use"] == "MechLib.Dynamics.NewtonLaw.NewtonSecondLaw.to_value_equation"
+    assert "MechLib.Examples.Unrelated.uniformAccelerationDisplacement_byCalculation" not in trace.strategy_prompt_summaries[0]["allowed_decls"]

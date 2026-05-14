@@ -626,6 +626,10 @@ class ProofActionCheckResult:
     error_message: str | None = None
     stderr_excerpt: str | None = None
     goals_excerpt: str | None = None
+    error_line: int | None = None
+    error_col: int | None = None
+    error_snippet: str | None = None
+    probe_full_proof_body: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -638,8 +642,11 @@ class ProofSearchNode:
     depth: int
     proof_prefix: str
     local_facts: list[str] = field(default_factory=list)
+    local_fact_claims: list[str] = field(default_factory=list)
+    local_fact_types: dict[str, str] = field(default_factory=dict)
     remaining_obligations: list[str] = field(default_factory=list)
     goals_excerpt: str | None = None
+    side_condition_denominators: list[str] = field(default_factory=list)
     last_action_id: str | None = None
     score: float = 0.0
 

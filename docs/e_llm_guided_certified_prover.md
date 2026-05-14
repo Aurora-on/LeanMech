@@ -46,10 +46,13 @@ LLM 不再直接输出完整 proof。它的角色包括：
 LLM 输入必须是 compact proof state。允许字段包括：
 
 - `target`
+- `active_goals`
 - `proof_prefix_summary`
 - `local_facts`
 - `remaining_obligations`
+- `required_decls`
 - `allowed_decls`
+- `decl_candidate_mode`
 - `available_strategy_cards`
 - `available_algebra_strategy_cards`
 - `last_error`
@@ -66,6 +69,8 @@ LLM 输入必须是 compact proof state。允许字段包括：
 
 prompt 会做长度控制，目标是保持在 8000 字符以内。
 
+当前 prompt 中的 `local_facts` 优先使用 `name : proposition/type` 形式；对 LLM 新增且已被 Lean 接受的 `have`，后续节点会记录该 fact 的命题。正常情况下 `allowed_decls` 会优先收缩到当前 remaining obligations 的 `must_use`，避免把无关 example theorem 作为策略噪声传给 LLM；如果 deterministic extractor preflight 已经证明 `must_use from_hypothesis` 的固定调用形态不成立，prompt 会打开 `decl_candidate_mode`，把 required decl 和其他 allowed verified decl candidates 一并给 LLM，用于局部 proof action synthesis。
+
 ## 4. Lean 的角色
 
 Lean 是唯一的证明裁判。新的 E 阶段中，Lean 负责：
@@ -73,7 +78,7 @@ Lean 是唯一的证明裁判。新的 E 阶段中，Lean 负责：
 1. **validate each action**：每个 LLM 或 deterministic 生成的 local tactic block 都通过 `probe_proof_prefix` 检查。
 2. **区分 action 状态**：
    - `closed`：当前 proof prefix 已关闭目标；
-   - `progress`：当前 prefix 类型正确，但仍有未解决 goals；
+   - `progress`：当前 prefix 没有 elaboration error，但仍有未解决 goals；
    - `invalid`：语法、类型、引用或 tactic 失败。
 3. **final replay**：即使 probe 返回 `closed`，最终 proof body 仍必须通过 `verify_proof` replay，才算 proof success。
 
@@ -88,6 +93,8 @@ MechLib 在新 E 阶段中不是普通文本上下文，而是 verified proof so
 - **verified extractor declarations**：例如从课程层 predicate 抽取 value-level equation 的 theorem。
 - **proof obligations**：由 ControlledSketch / EvidenceBinding 提供，说明必须从哪个 hypothesis 使用哪个 verified declaration 得到哪个 formal claim。
 - **allowed verified declarations**：proof whitelist。LLM action 只能使用 whitelist 内的 MechLib declaration。
+
+`proof_obligations[*].produced_fact_name` 只是期望产物名，不是已存在 proof fact。只有 deterministic replay 或 LLM action 经 Lean probe 接受后，该 fact 才能进入后续 local facts / prompt。
 
 典型 obligation：
 
@@ -136,6 +143,8 @@ ActionGuard 会拒绝：
 - 自然语言或明显 placeholder
 - 超长 tactic block
 
+线性 prefix search 还会在 Lean probe 前拒绝 `constructor` 和 `split_conjunction`。当前模式不维护分支子目标状态，因此 conjunction 只能在所有分量事实已经可用时用 `exact ⟨..., ...⟩` 一次性关闭；真正的分支式 `constructor` 需要等 branch-aware search 实现后再放开。
+
 搜索控制器还有独立的 watchdog，避免某个样本长期占用 E 阶段：
 
 - `proof.llm_guided_search.probe_timeout_s`：单次 `probe_proof_prefix` 超时，默认 `120` 秒；只作用于局部 probe，最终 `verify_proof` replay 仍使用 Lean runner 的正常验证路径。
@@ -143,7 +152,15 @@ ActionGuard 会拒绝：
 - `proof.llm_guided_search.max_wall_clock_s_per_sample`：单个 search 的墙钟预算，默认 `1800` 秒。
 - `proof.llm_guided_search.max_no_progress_nodes`：连续展开但没有产生可审计进展的节点上限，默认 `12`。
 
-“可审计进展”只在 Lean 接受该 prefix 后计入，条件包括：新增 local fact、覆盖剩余 obligation、关闭目标，或 Lean 返回的 goals excerpt 相比父节点发生变化。完全相同的 proof prefix 会直接标记为 `duplicate_probe_prefix`，不再重复调用 Lean。
+“可审计进展”只在 Lean 接受该 prefix 后计入。Lean 输出中只有 `unsolved goals` 这一类目标未闭合信息时才允许标记为 `progress`；只要同时出现其他 `error:`，例如 `Application type mismatch`、`unknown identifier`、`type mismatch`，该 action 必须标记为 `invalid`。通过该认证边界后，进展条件包括：新增 local fact claim、覆盖剩余 obligation、关闭目标，或 Lean 返回的 goals excerpt 相比父节点发生变化。只更换 `have` 名称但命题相同，不再算作有效进展。完全相同的 proof prefix 会直接标记为 `duplicate_probe_prefix`，不再重复调用 Lean。
+
+同一个 proof prefix 下，已经失败的 LLM action shape 会被记录；如果后续只更换 `have` 名称但 tactic 结构相同，系统会返回 `repeated_failed_action_shape`，不再重复消耗 Lean probe 或继续扩展该无效方向。
+
+无效 action 不能改变 search state。`proof_action_checks.jsonl` 中的 `proposed_local_facts` / `proposed_local_fact_claims` 只是候选动作诊断；只有 accepted action 的 `new_local_facts` / `new_local_fact_claims` 才能进入后续节点。无效 action 也不能覆盖 proof obligation。
+
+deterministic obligation replay 把 `exact must_use from_hypothesis` 作为 extractor preflight。若该 preflight 出现 type/API/symbol 级错误，说明当前固定调用形态不成立，该 action 本身会被标记为 invalid，且不会产生 fact；search 随后进入 LLM local-action synthesis fallback。LLM 只能提出局部 `have` / rewrite / algebra action，仍需经过 ActionGuard、Lean probe 和最终 replay。若 fallback 仍失败，search 会报告 `proof_action_synthesis_failed_after_preflight` 或相应 budget/watchdog failure。
+
+确定性 side-condition action 会在 LLM strategy prompt 前执行；当当前节点存在可执行的 deterministic side-condition proposal 时，本节点不会先消耗一次 LLM call。side-condition 使用 denominator expression 做语义去重，例如已经证明过 `m1.val + m2.val ≠ 0` 后，不会再用不同 `have` 名称重复证明同一 denominator。
 
 ## 7. 输出文件说明
 
@@ -179,9 +196,13 @@ ActionGuard 会拒绝：
 - `accepted`
 - `cache_hit`
 - `probe_checks_used`
+- `proposed_local_facts`
+- `proposed_local_fact_claims`
 - `new_local_facts`
+- `new_local_fact_claims`
 - `covered_obligations`
 - `remaining_obligations_after`
+- `side_condition_denominator`
 
 常见 E search watchdog 失败类型包括：
 
@@ -190,6 +211,9 @@ ActionGuard 会拒绝：
 - `max_no_progress_nodes_exhausted`
 - `duplicate_probe_prefix`
 - `no_meaningful_progress`
+- `branching_constructor_disallowed_linear_prefix`
+- `repeated_failed_action_shape`
+- `proof_action_synthesis_failed_after_preflight`
 
 每个样本完成后，orchestrator 会把该样本的 stage rows 追加写入 run directory 的 JSONL 文件。完整运行结束时仍会由最终 writer 覆盖生成一致的聚合文件；如果运行被某个后续样本卡住或中断，已完成样本的 `proof_attempts.jsonl`、`proof_checks.jsonl` 和 trace/audit rows 仍可用于诊断。
 
@@ -199,10 +223,12 @@ ActionGuard 会拒绝：
 
 - `prompt_chars`
 - `target_excerpt`
+- `active_goals_excerpt`
 - `proof_prefix_excerpt`
 - `local_facts`
 - `remaining_obligations`
 - `allowed_decls`
+- `decl_candidate_mode`
 - `failed_action_count`
 - `prompt_excerpt`
 - `omitted_context`

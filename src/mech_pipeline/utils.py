@@ -27,6 +27,8 @@ INLINE_LEAKAGE_CUTOFF_PATTERNS = [
     re.compile(r"参考答案\s*[:：]"),
     re.compile(r"解析\s*[:：]"),
     re.compile(r"解答\s*[:：]"),
+    re.compile(r"(?m)^\s*解\s*[:：]"),
+    re.compile(r"(?m)^\s*解得\b"),
 ]
 ALLOWED_IR_KEYS = {
     "objects",
@@ -178,6 +180,13 @@ def truncate(text: str, limit: int = 500) -> str:
 
 
 def redact_leakage_text(text: str) -> str:
+    cut_idx = len(text)
+    for pattern in INLINE_LEAKAGE_CUTOFF_PATTERNS:
+        m = pattern.search(text)
+        if m:
+            cut_idx = min(cut_idx, m.start())
+    text = text[:cut_idx]
+
     lines = text.splitlines()
     kept: list[str] = []
     for line in lines:
@@ -185,12 +194,7 @@ def redact_leakage_text(text: str) -> str:
             continue
         kept.append(line)
     merged = "\n".join(kept).strip()
-    cut_idx = len(merged)
-    for pattern in INLINE_LEAKAGE_CUTOFF_PATTERNS:
-        m = pattern.search(merged)
-        if m:
-            cut_idx = min(cut_idx, m.start())
-    return merged[:cut_idx].strip()
+    return merged.strip()
 
 
 def sanitize_problem_ir_for_llm(ir: dict[str, Any] | None) -> dict[str, Any]:

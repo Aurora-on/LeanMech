@@ -138,6 +138,18 @@ def test_build_proof_context_maps_source_model_to_hypothesis_and_extractor() -> 
     assert replay.replay_status == "pending"
 
 
+def test_build_proof_context_does_not_expose_pending_obligation_output_as_fact() -> None:
+    context = build_proof_context(
+        sample_id="s1",
+        problem_ir={},
+        selected_candidate=_candidate(),
+        mechlib_context=None,
+    )
+
+    assert "glider_law" in context.allowed_local_facts
+    assert "h_newton_value" not in context.allowed_local_facts
+
+
 def test_build_proof_context_blocks_schema_only_obligation() -> None:
     context = build_proof_context(
         sample_id="s1",
