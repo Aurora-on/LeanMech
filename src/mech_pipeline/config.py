@@ -199,6 +199,16 @@ class ProofConfig:
 
 
 @dataclass
+class SolutionRendererConfig:
+    enabled: bool = True
+    natural_language_enabled: bool = False
+    repair_on_audit_fail: bool = True
+    max_trace_steps_for_prompt: int = 24
+    max_prompt_chars: int = 8000
+    max_natural_solution_chars_in_readme: int = 2400
+
+
+@dataclass
 class PromptConfig:
     dir: str = "prompts"
     a_extract_ir: str = "A_extract_ir.txt"
@@ -212,6 +222,7 @@ class PromptConfig:
     e_generate_proof: str = "E_generate_proof.txt"
     e_repair_proof: str = "E_repair_proof.txt"
     e_strategy_controller: str = "E_strategy_controller.md"
+    solution_renderer: str = "F_solution_renderer.md"
 
 
 @dataclass
@@ -235,6 +246,7 @@ class PipelineConfig:
     statement: StatementConfig = field(default_factory=StatementConfig)
     semantic: SemanticConfig = field(default_factory=SemanticConfig)
     proof: ProofConfig = field(default_factory=ProofConfig)
+    solution_renderer: SolutionRendererConfig = field(default_factory=SolutionRendererConfig)
     prompts: PromptConfig = field(default_factory=PromptConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
@@ -287,6 +299,7 @@ def load_config(path: Path) -> PipelineConfig:
                 "llm_guided_search": LLMGuidedSearchConfig(**merged["proof"]["llm_guided_search"]),
             }
         ),
+        solution_renderer=SolutionRendererConfig(**merged["solution_renderer"]),
         prompts=PromptConfig(**merged["prompts"]),
         output=OutputConfig(**merged["output"]),
         runtime=RuntimeConfig(**merged["runtime"]),
@@ -374,6 +387,12 @@ def validate_config(cfg: PipelineConfig) -> None:
         raise ValueError("proof.llm_guided_search.max_action_chars must be > 0")
     if search.max_failed_actions_kept < 0:
         raise ValueError("proof.llm_guided_search.max_failed_actions_kept must be >= 0")
+    if cfg.solution_renderer.max_trace_steps_for_prompt <= 0:
+        raise ValueError("solution_renderer.max_trace_steps_for_prompt must be > 0")
+    if cfg.solution_renderer.max_prompt_chars <= 0:
+        raise ValueError("solution_renderer.max_prompt_chars must be > 0")
+    if cfg.solution_renderer.max_natural_solution_chars_in_readme <= 0:
+        raise ValueError("solution_renderer.max_natural_solution_chars_in_readme must be > 0")
     if cfg.semantic.pass_threshold < 0 or cfg.semantic.pass_threshold > 1:
         raise ValueError("semantic.pass_threshold must be in [0, 1]")
     if cfg.runtime.sample_concurrency <= 0:

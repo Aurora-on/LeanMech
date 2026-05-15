@@ -15,6 +15,7 @@ from .e_side_conditions import propose_side_condition_actions
 from .e_strategy_controller import LLMStrategyController
 from .sketch_audit import SketchAuditor
 from .sketch_builder import ModuleControlledSketch
+from .solution_renderer import ModuleSolutionRenderer
 
 __all__ = [
     "ModuleA",
@@ -25,6 +26,7 @@ __all__ = [
     "ModuleD",
     "ModuleE",
     "ModuleF",
+    "ModuleSolutionRenderer",
     "SketchAuditor",
     "ModuleZDirectFormalize",
     "LLMStrategyController",

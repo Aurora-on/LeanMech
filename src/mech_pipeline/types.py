@@ -704,6 +704,93 @@ class ProofDependencyAudit:
 
 
 @dataclass
+class SolutionFormula:
+    formula_id: str
+    formal_formula: str
+    display_formula: str | None = None
+    source: str | None = None
+    verified: bool = False
+    provenance: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class SolutionStep:
+    step_id: str
+    kind: str
+    title: str
+    text_intent: str | None = None
+    formal_formula: str | None = None
+    display_formula: str | None = None
+    input_formulas: list[SolutionFormula] = field(default_factory=list)
+    output_formulas: list[SolutionFormula] = field(default_factory=list)
+    source_artifacts: list[str] = field(default_factory=list)
+    proof_obligation_id: str | None = None
+    verified_decl: str | None = None
+    proof_action_id: str | None = None
+    verified: bool = False
+    gap_assisted: bool = False
+    notes: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class SolutionTrace:
+    sample_id: str
+    candidate_id: str | None
+    proof_status: str
+    target_formal: str | None
+    target_display: str | None
+    steps: list[SolutionStep] = field(default_factory=list)
+    final_answers: list[SolutionFormula] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    source_status: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class SolutionRenderAudit:
+    sample_id: str
+    candidate_id: str | None
+    render_success: bool
+    audit_pass: bool
+    failure_tags: list[str] = field(default_factory=list)
+    failure_summary: str | None = None
+    formula_coverage_pass: bool = False
+    law_step_coverage_pass: bool = False
+    unsupported_formula_count: int = 0
+    gap_disclosure_pass: bool = True
+    proof_status_disclosure_pass: bool = True
+    target_match_pass: bool = False
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class SolutionRenderResult:
+    sample_id: str
+    candidate_id: str | None
+    render_success: bool
+    proof_status: str
+    solution_trace: SolutionTrace | None
+    natural_solution: str | None
+    render_audit: SolutionRenderAudit | None
+    raw_llm_response: str | None = None
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class ProofContext:
     sample_id: str
     candidate_id: str

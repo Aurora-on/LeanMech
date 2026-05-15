@@ -25,6 +25,7 @@ from mech_pipeline.modules import (
     ModuleD,
     ModuleE,
     ModuleF,
+    ModuleSolutionRenderer,
 )
 from mech_pipeline.orchestrator import (
     execute_samples,
@@ -58,6 +59,9 @@ STAGE_ROW_FILES = (
     "proof_action_checks.jsonl",
     "proof_strategy_prompts.jsonl",
     "proof_dependency_audit.jsonl",
+    "solution_trace.jsonl",
+    "natural_solution.jsonl",
+    "solution_render_audit.jsonl",
     "sample_summary.jsonl",
 )
 
@@ -166,7 +170,12 @@ def _build_worker_modules(cfg: PipelineConfig, prompt_dir: Path):
         max_attempts=cfg.proof.max_attempts,
         proof_config=cfg.proof,
     )
-    return module_a, module_a2, module_sketch, module_b, module_c, module_d, module_e
+    module_solution_renderer = ModuleSolutionRenderer(
+        model_client=model_client,
+        prompt_path=prompt_dir / cfg.prompts.solution_renderer,
+        config=cfg.solution_renderer,
+    )
+    return module_a, module_a2, module_sketch, module_b, module_c, module_d, module_e, module_solution_renderer
 
 
 def _empty_metrics_with_error(error_type: str) -> dict[str, object]:
@@ -191,6 +200,15 @@ def _empty_metrics_with_error(error_type: str) -> dict[str, object]:
         "derived_equation_hypothesis_violation_rate": None,
         "schema_as_proof_fact_violation_rate": None,
         "explicit_gap_law_rate": None,
+        "solution_render_success_rate": None,
+        "solution_render_audit_pass_rate": None,
+        "solution_final_answer_coverage_rate": None,
+        "solution_law_step_coverage_rate": None,
+        "solution_gap_disclosure_pass_rate": None,
+        "solution_unsupported_formula_avg": None,
+        "solution_verified_trace_rate": None,
+        "solution_legacy_no_audit_rate": None,
+        "solution_partial_or_failed_explanation_rate": None,
         "error_type_distribution": {error_type: 1},
     }
 

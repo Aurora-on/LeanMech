@@ -507,6 +507,8 @@ def build_run_readme(
     semantic_rows = stage_rows.get("semantic_rank.jsonl", [])
     proof_attempt_rows = stage_rows.get("proof_attempts.jsonl", [])
     proof_rows = stage_rows.get("proof_checks.jsonl", [])
+    natural_solution_rows = stage_rows.get("natural_solution.jsonl", [])
+    solution_audit_rows = stage_rows.get("solution_render_audit.jsonl", [])
     minimal_summary = build_minimal_skeleton_stage_summary(stage_rows)
     compile_sub_counter: dict[str, int] = {}
     for row in compile_rows:
@@ -548,6 +550,8 @@ def build_run_readme(
     for sid in proof_attempts_by_sid:
         proof_attempts_by_sid[sid].sort(key=lambda x: _as_int(x.get("attempt_index"), 0))
     proof_map = {str(r["sample_id"]): r for r in proof_rows}
+    natural_solution_map = {str(r["sample_id"]): r for r in natural_solution_rows}
+    solution_audit_map = {str(r["sample_id"]): r for r in solution_audit_rows}
 
     lines = [
         "# Run README",
@@ -578,6 +582,15 @@ def build_run_readme(
         f"- derived_equation_hypothesis_violation_rate: {metrics.get('derived_equation_hypothesis_violation_rate')}",
         f"- schema_as_proof_fact_violation_rate: {metrics.get('schema_as_proof_fact_violation_rate')}",
         f"- explicit_gap_law_rate: {metrics.get('explicit_gap_law_rate')}",
+        f"- solution_render_success_rate: {metrics.get('solution_render_success_rate')}",
+        f"- solution_render_audit_pass_rate: {metrics.get('solution_render_audit_pass_rate')}",
+        f"- solution_final_answer_coverage_rate: {metrics.get('solution_final_answer_coverage_rate')}",
+        f"- solution_law_step_coverage_rate: {metrics.get('solution_law_step_coverage_rate')}",
+        f"- solution_gap_disclosure_pass_rate: {metrics.get('solution_gap_disclosure_pass_rate')}",
+        f"- solution_unsupported_formula_avg: {metrics.get('solution_unsupported_formula_avg')}",
+        f"- solution_verified_trace_rate: {metrics.get('solution_verified_trace_rate')}",
+        f"- solution_legacy_no_audit_rate: {metrics.get('solution_legacy_no_audit_rate')}",
+        f"- solution_partial_or_failed_explanation_rate: {metrics.get('solution_partial_or_failed_explanation_rate')}",
         f"- sample_concurrency: {sample_concurrency}",
         f"- environment_health: {environment_health}",
         f"- environment_warnings_count: {len(environment_warnings)}",
@@ -744,6 +757,8 @@ def build_run_readme(
                 lines.append("```")
 
         proof = proof_map.get(sid)
+        natural_solution_row = natural_solution_map.get(sid)
+        solution_audit = solution_audit_map.get(sid)
         lines.extend(
             [
                 "",
@@ -754,6 +769,17 @@ def build_run_readme(
                 f"- attempts_used: {proof.get('attempts_used') if proof else None}",
                 f"- proof_error_type: {proof.get('error_type') if proof else None}",
                 f"- proof_backend_used: {proof.get('backend_used') if proof else None}",
+                "",
+                "**Natural Solution**",
+                "",
+                f"- render_success: {natural_solution_row.get('render_success') if natural_solution_row else None}",
+                f"- proof_status: {natural_solution_row.get('proof_status') if natural_solution_row else None}",
+                f"- render_audit_pass: {solution_audit.get('audit_pass') if solution_audit else natural_solution_row.get('render_audit_pass') if natural_solution_row else None}",
+                f"- audit_failure_tags: {solution_audit.get('failure_tags') if solution_audit else None}",
+                "",
+                "```text",
+                truncate(str(natural_solution_row.get("natural_solution") or ""), 2400) if natural_solution_row else "",
+                "```",
                 "",
                 "**Result**",
                 "",

@@ -146,6 +146,7 @@ def process_sample(
         }
 
     worker_modules = build_worker_modules(cfg, prompt_dir)
+    module_solution_renderer = None
     if len(worker_modules) == 5:
         module_a, module_b, module_c, module_d, module_e = worker_modules
         module_a2 = None
@@ -155,6 +156,8 @@ def process_sample(
         module_sketch = None
     else:
         module_a, module_a2, module_sketch, module_b, module_c, module_d, module_e = worker_modules[:7]
+        if len(worker_modules) > 7:
+            module_solution_renderer = worker_modules[7]
 
     model_ir_for_b: ModelIR | None = None
     evidence_bindings_for_b: list[EvidenceBinding] = []
@@ -740,6 +743,39 @@ def process_sample(
     proof_rows.append(proof_check)
     stage_rows["proof_attempts.jsonl"].extend(to_row(a) for a in proof_attempts)
     stage_rows["proof_checks.jsonl"].append(to_row(proof_check))
+
+    if module_solution_renderer is not None and bool(getattr(cfg.solution_renderer, "enabled", True)):
+        solution_result = module_solution_renderer.run(
+            sample=sample,
+            grounding=grounding,
+            model_ir=model_ir_for_b,
+            controlled_sketch=controlled_sketch_for_b,
+            selected_candidate=selected_candidate,
+            proof_attempts=proof_attempts,
+            proof_check=proof_check,
+        )
+        if solution_result.solution_trace is not None:
+            trace_row = solution_result.solution_trace.to_dict()
+            trace_row["round_index"] = final_round_index
+            stage_rows.setdefault("solution_trace.jsonl", []).append(trace_row)
+        natural_row = {
+            "sample_id": solution_result.sample_id,
+            "candidate_id": solution_result.candidate_id,
+            "round_index": final_round_index,
+            "render_success": solution_result.render_success,
+            "proof_status": solution_result.proof_status,
+            "natural_solution": solution_result.natural_solution,
+            "raw_llm_response": solution_result.raw_llm_response,
+            "error": solution_result.error,
+            "render_audit_pass": (
+                solution_result.render_audit.audit_pass if solution_result.render_audit is not None else False
+            ),
+        }
+        stage_rows.setdefault("natural_solution.jsonl", []).append(natural_row)
+        if solution_result.render_audit is not None:
+            audit_row = solution_result.render_audit.to_dict()
+            audit_row["round_index"] = final_round_index
+            stage_rows.setdefault("solution_render_audit.jsonl", []).append(audit_row)
 
     end_to_end = (
         grounding.parse_ok

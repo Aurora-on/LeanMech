@@ -36,6 +36,18 @@ LLM_GUIDED_E_METRIC_KEYS = (
     "average_lean_action_checks_per_proof",
 )
 
+SOLUTION_RENDERER_METRIC_KEYS = (
+    "solution_render_success_rate",
+    "solution_render_audit_pass_rate",
+    "solution_final_answer_coverage_rate",
+    "solution_law_step_coverage_rate",
+    "solution_gap_disclosure_pass_rate",
+    "solution_unsupported_formula_avg",
+    "solution_verified_trace_rate",
+    "solution_legacy_no_audit_rate",
+    "solution_partial_or_failed_explanation_rate",
+)
+
 
 def _safe_rate(num: int, den: int) -> float:
     if den <= 0:
@@ -398,6 +410,73 @@ def _llm_guided_e_metrics(
         "average_llm_calls_per_proof": avg_llm_calls,
         "average_lean_action_checks_per_proof": avg_action_checks,
     }
+
+
+def _solution_renderer_metrics(
+    *,
+    stage_rows: dict[str, list[dict[str, Any]]] | None,
+    final_round_map: dict[str, int],
+) -> dict[str, Any]:
+    natural_rows = _final_stage_rows(_stage_rows(stage_rows, "natural_solution.jsonl"), final_round_map)
+    audit_rows = _final_stage_rows(_stage_rows(stage_rows, "solution_render_audit.jsonl"), final_round_map)
+    trace_rows = _final_stage_rows(_stage_rows(stage_rows, "solution_trace.jsonl"), final_round_map)
+    if not natural_rows and not audit_rows and not trace_rows:
+        return {key: None for key in SOLUTION_RENDERER_METRIC_KEYS}
+
+    render_den = len(natural_rows) or len(trace_rows) or len(audit_rows)
+    audit_den = len(audit_rows)
+    status_rows = natural_rows or trace_rows
+    statuses = Counter(str(row.get("proof_status") or "") for row in status_rows)
+    render_success = sum(1 for row in natural_rows if _row_bool(row, "render_success") and str(row.get("natural_solution") or "").strip())
+    audit_pass = sum(1 for row in audit_rows if _row_bool(row, "audit_pass"))
+    final_answer_coverage = sum(1 for row in audit_rows if _row_bool(row, "formula_coverage_pass"))
+    law_step_coverage = sum(1 for row in audit_rows if _row_bool(row, "law_step_coverage_pass"))
+    unsupported_total = sum(int(row.get("unsupported_formula_count") or 0) for row in audit_rows)
+
+    disclosure_rows = [
+        row
+        for row in audit_rows
+        if any(
+            token in str((row.get("details") or {}).get("proof_status") or "")
+            for token in ("gap", "partial", "legacy", "proof_failed", "skipped", "not_checked", "algebra_only")
+        )
+    ]
+    if not disclosure_rows:
+        disclosure_rows = [
+            row
+            for row in natural_rows
+            if any(
+                token in str(row.get("proof_status") or "")
+                for token in ("gap", "partial", "legacy", "proof_failed", "skipped", "not_checked", "algebra_only")
+            )
+        ]
+    disclosure_pass = sum(1 for row in disclosure_rows if _row_bool(row, "gap_disclosure_pass") or _row_bool(row, "proof_status_disclosure_pass"))
+
+    partial_statuses = {
+        "partial_mechlib_verified",
+        "gap_assisted_success",
+        "algebra_only_success",
+        "legacy_verified_no_audit",
+        "proof_failed",
+        "proof_skipped_due_to_semantic_fail",
+        "not_checked",
+    }
+    partial_rows = [row for row in natural_rows if str(row.get("proof_status") or "") in partial_statuses]
+    partial_explained = sum(1 for row in partial_rows if _row_bool(row, "render_success") and str(row.get("natural_solution") or "").strip())
+
+    return {
+        "solution_render_success_rate": _safe_rate(render_success, render_den),
+        "solution_render_audit_pass_rate": _safe_rate(audit_pass, audit_den),
+        "solution_final_answer_coverage_rate": _safe_rate(final_answer_coverage, audit_den),
+        "solution_law_step_coverage_rate": _safe_rate(law_step_coverage, audit_den),
+        "solution_gap_disclosure_pass_rate": _safe_rate(disclosure_pass, len(disclosure_rows)),
+        "solution_unsupported_formula_avg": round(unsupported_total / audit_den, 6) if audit_den else 0.0,
+        "solution_verified_trace_rate": _safe_rate(statuses["fully_mechlib_verified"], len(status_rows)),
+        "solution_legacy_no_audit_rate": _safe_rate(statuses["legacy_verified_no_audit"], len(status_rows)),
+        "solution_partial_or_failed_explanation_rate": _safe_rate(partial_explained, len(partial_rows)),
+    }
+
+
 def _retrieval_refs_by_sample(retrieval_rows: list[dict[str, Any]]) -> dict[str, set[str]]:
     refs: dict[str, set[str]] = {}
     for row in retrieval_rows:
@@ -575,4 +654,5 @@ def build_metrics(
             final_round_map=final_round_map,
         )
     )
+    metrics.update(_solution_renderer_metrics(stage_rows=stage_rows, final_round_map=final_round_map))
     return metrics
