@@ -20,4 +20,6 @@ def test_solution_renderer_prompt_constraints_and_compact_payload():
     assert "返回 JSON" in prompt
     assert "完整 Lean proof" in prompt
     assert "完整 MechLib context" in prompt
+    assert "教材式中文解题过程" in prompt
+    assert "轨迹中给出" in prompt
     assert "SECRET_FULL_PROOF" not in prompt

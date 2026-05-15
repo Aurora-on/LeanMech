@@ -23,6 +23,10 @@ DEFAULT_RENDER_PROMPT = """__TASK_F_SOLUTION_RENDERER__
 不要隐藏 gap、partial、legacy/no-audit、proof_failed 状态。
 只能使用 SolutionTrace 中的步骤、公式和验证状态。
 不要输入或依赖完整 Lean proof、完整 MechLib context、完整 theorem corpus、完整 raw_response。
+写成教材式中文解题过程：先设符号和正方向，再分对象受力分析并编号方程，最后联立消元。
+不要写“目标公式：”“轨迹中给出”“按轨迹中的目标结果可得”“结构化 artifact”等内部流水线措辞。
+不要用项目符号罗列 artifact；自然段和独立公式行优先。
+如果 SolutionTrace 没有某个中间公式，不要补写该公式。
 
 输出 JSON，格式必须是：
 {
@@ -224,6 +228,8 @@ def pretty_print_formula(formal: str) -> str:
     """Conservative formula display; never changes the stored formal formula."""
     try:
         text = str(formal or "").strip()
+        if "∧" in text:
+            return " 且 ".join(pretty_print_formula(part) for part in _split_conjunctions(text))
         replacements = {
             "m1.val": "m₁",
             "m2.val": "m₂",
@@ -240,14 +246,67 @@ def pretty_print_formula(formal: str) -> str:
         for old, new in replacements.items():
             text = text.replace(old, new)
         text = re.sub(r"\b([A-Za-z][A-Za-z0-9_]*)\.val\b", r"\1", text)
-        text = text.replace("∧", " 且 ")
+        text = re.sub(r"\bm1\b", "m₁", text)
+        text = re.sub(r"\bm2\b", "m₂", text)
+        text = re.sub(r"\bm3\b", "m₃", text)
         text = re.sub(r"\s*\*\s*", " ", text)
         text = re.sub(r"\s*/\s*", " / ", text)
         text = re.sub(r"\s*=\s*", " = ", text)
         text = re.sub(r"\s+", " ", text)
+        text = _format_display_fraction(text)
+        text = _compact_common_products(text)
         return text.strip() or str(formal)
     except Exception:
         return str(formal)
+
+
+def _strip_redundant_parens(text: str) -> str:
+    stripped = str(text or "").strip()
+    while _is_wrapped_by_outer_parens(stripped):
+        stripped = stripped[1:-1].strip()
+    return stripped
+
+
+def _find_top_level_char(text: str, char: str) -> int:
+    depth = 0
+    for idx, value in enumerate(text):
+        if value == "(":
+            depth += 1
+        elif value == ")":
+            depth -= 1
+        elif value == char and depth == 0:
+            return idx
+    return -1
+
+
+def _format_display_fraction(text: str) -> str:
+    if "=" not in text:
+        return text
+    lhs, rhs = text.split("=", 1)
+    slash = _find_top_level_char(rhs, "/")
+    if slash < 0:
+        return text
+    numerator = _strip_redundant_parens(rhs[:slash])
+    denominator = _strip_redundant_parens(rhs[slash + 1 :])
+    if not numerator or not denominator:
+        return text
+    return f"{lhs.strip()} = \\frac{{{numerator}}}{{{denominator}}}"
+
+
+def _compact_common_products(text: str) -> str:
+    replacements = {
+        "m₁ m₂ g": "m₁m₂g",
+        "m₂ g": "m₂g",
+        "m₁ a": "m₁a",
+        "m₂ a": "m₂a",
+        "m₃ a": "m₃a",
+        "(m₁ + m₂) a": "(m₁ + m₂)a",
+        "(m₁ + m₂) * a": "(m₁ + m₂)a",
+    }
+    out = text
+    for old, new in replacements.items():
+        out = out.replace(old, new)
+    return out
 
 
 def _formula(formula_id: str, formal: str | None, *, source: str | None = None, verified: bool = False) -> SolutionFormula | None:
@@ -513,6 +572,153 @@ def _law_step_verified(
     return proof_status == "legacy_verified_no_audit"
 
 
+def _canon_formula_for_pattern(text: str | None) -> str:
+    value = str(text or "").strip().lower()
+    replacements = {
+        ".val": "",
+        "₁": "1",
+        "₂": "2",
+        "₃": "3",
+        "×": "*",
+        "·": "*",
+        " ": "",
+    }
+    for old, new in replacements.items():
+        value = value.replace(old, new)
+    value = value.replace("\\frac{", "(").replace("}{", ")/(").replace("}", ")")
+    value = value.replace("*", "")
+    return value
+
+
+def _trace_has_formula(formulas: list[str], expected: str) -> bool:
+    expected_canon = _canon_formula_for_pattern(expected)
+    return any(_canon_formula_for_pattern(formula) == expected_canon for formula in formulas)
+
+
+def _final_answer_has_shape(final_answers: list[SolutionFormula], lhs: str, required_tokens: list[str]) -> bool:
+    for formula in final_answers:
+        canon = _canon_formula_for_pattern(formula.formal_formula)
+        if not canon.startswith(f"{lhs}="):
+            continue
+        if all(token in canon for token in required_tokens):
+            return True
+    return False
+
+
+def _has_positive_mass_assumptions(actions: list[dict[str, Any]]) -> bool:
+    variables: set[str] = set()
+    for action in actions:
+        for assumption in _list_payload(action.get("added_physical_assumptions")):
+            expression = _canon_formula_for_pattern(assumption.get("expression"))
+            variable = str(assumption.get("variable") or "").strip()
+            if expression in {"0<m1", "m1>0"} or variable == "m1":
+                variables.add("m1")
+            if expression in {"0<m2", "m2>0"} or variable == "m2":
+                variables.add("m2")
+    return {"m1", "m2"}.issubset(variables)
+
+
+def _has_denominator_nonzero_action(actions: list[dict[str, Any]]) -> bool:
+    for action in actions:
+        claims = _str_list(action.get("new_local_fact_claims")) + _str_list(action.get("proposed_local_fact_claims"))
+        if any(_canon_formula_for_pattern(claim) in {"m1+m2≠0", "m1+m2/=0"} for claim in claims):
+            return True
+        tactic = str(action.get("tactic_block") or "")
+        if "m1.val + m2.val ≠ 0" in tactic or "m1 + m2 ≠ 0" in tactic:
+            return True
+    return False
+
+
+def _two_body_linear_algebra_step(
+    *,
+    steps: list[SolutionStep],
+    final_answers: list[SolutionFormula],
+    proof_status: str,
+    accepted_actions: list[dict[str, Any]],
+) -> SolutionStep | None:
+    law_formulas = [
+        formula
+        for step in steps
+        if step.kind == "law_application"
+        for formula in (step.formal_formula, step.display_formula)
+        if formula
+    ]
+    if not _trace_has_formula(law_formulas, "T = m1 * a"):
+        return None
+    if not _trace_has_formula(law_formulas, "m2 * g - T = m2 * a"):
+        return None
+    if not _final_answer_has_shape(final_answers, "a", ["m2g", "m1+m2"]):
+        return None
+    if not _final_answer_has_shape(final_answers, "t", ["m1m2g", "m1+m2"]):
+        return None
+
+    verified = proof_status in SUCCESS_STATUSES
+    formulas = [
+        SolutionFormula(
+            formula_id="two_body_substitution",
+            formal_formula="m2 * g - m1 * a = m2 * a",
+            display_formula="m₂g - m₁a = m₂a",
+            source="deterministic_algebra_from_solution_trace",
+            verified=verified,
+            provenance=["law_step:T=m1*a", "law_step:m2*g-T=m2*a"],
+        ),
+        SolutionFormula(
+            formula_id="two_body_collect_terms",
+            formal_formula="m2 * g = (m1 + m2) * a",
+            display_formula="m₂g = (m₁ + m₂)a",
+            source="deterministic_algebra_from_solution_trace",
+            verified=verified,
+            provenance=["two_body_substitution"],
+        ),
+    ]
+    input_formulas = [
+        SolutionFormula(
+            formula_id="two_body_mass_positive_m1",
+            formal_formula="0 < m1",
+            display_formula="0 < m₁",
+            source="ProofSearchTrace.accepted_actions",
+            verified=verified,
+            provenance=["physical_positive_hypothesis_augmentation"],
+        ),
+        SolutionFormula(
+            formula_id="two_body_mass_positive_m2",
+            formal_formula="0 < m2",
+            display_formula="0 < m₂",
+            source="ProofSearchTrace.accepted_actions",
+            verified=verified,
+            provenance=["physical_positive_hypothesis_augmentation"],
+        ),
+    ] if _has_positive_mass_assumptions(accepted_actions) else []
+    if _has_denominator_nonzero_action(accepted_actions):
+        formulas.append(
+            SolutionFormula(
+                formula_id="two_body_denominator_nonzero",
+                formal_formula="m1 + m2 ≠ 0",
+                display_formula="m₁ + m₂ ≠ 0",
+                source="ProofSearchTrace.accepted_actions",
+                verified=verified,
+                provenance=["side_condition:m1.val+m2.val"],
+            )
+        )
+
+    return SolutionStep(
+        step_id="algebra_elimination_two_body_linear_1",
+        kind="algebra_elimination",
+        title="联立方程求解",
+        text_intent="由 T = m₁a 与 m₂g - T = m₂a 消元求解 a 和 T。",
+        input_formulas=input_formulas,
+        output_formulas=formulas,
+        source_artifacts=[
+            "SolutionTrace.law_application",
+            "ProofSearchTrace.accepted_actions",
+            "TheoremSkeletonCandidate.target_spec",
+        ],
+        verified=verified,
+        gap_assisted=proof_status not in SUCCESS_STATUSES,
+        notes="deterministic_two_body_linear_system",
+    )
+
+
 def _modeling_step(evidence: dict[str, Any]) -> SolutionStep | None:
     model_ir = evidence.get("model_ir") if isinstance(evidence.get("model_ir"), dict) else {}
     instances = _list_payload(model_ir.get("model_instances") if model_ir else None)
@@ -674,6 +880,16 @@ def build_solution_trace(evidence: dict[str, Any]) -> SolutionTrace:
             if formula:
                 final_answers.append(formula)
 
+    if not any(step.notes == "deterministic_two_body_linear_system" for step in steps):
+        algebra_step = _two_body_linear_algebra_step(
+            steps=steps,
+            final_answers=final_answers,
+            proof_status=proof_status,
+            accepted_actions=accepted_actions,
+        )
+        if algebra_step is not None:
+            steps.append(algebra_step)
+
     return SolutionTrace(
         sample_id=sample_id,
         candidate_id=str(candidate_id) if candidate_id is not None else None,
@@ -733,7 +949,92 @@ def _status_disclosure(proof_status: str) -> str:
     return f"当前 proof_status={proof_status}，不能视为 fully MechLib verified。"
 
 
+def _step_formula_displays(step: SolutionStep, formula_ids: set[str] | None = None) -> list[str]:
+    out: list[str] = []
+    for formula in step.output_formulas:
+        if formula_ids is not None and formula.formula_id not in formula_ids:
+            continue
+        text = formula.display_formula or formula.formal_formula
+        if text:
+            out.append(text)
+    return out
+
+
+def _find_two_body_algebra_step(solution_trace: SolutionTrace) -> SolutionStep | None:
+    for step in solution_trace.steps:
+        if step.kind != "algebra_elimination":
+            continue
+        if step.notes == "deterministic_two_body_linear_system":
+            return step
+    return None
+
+
+def _render_textbook_two_body_solution(solution_trace: SolutionTrace) -> str | None:
+    algebra_step = _find_two_body_algebra_step(solution_trace)
+    if algebra_step is None:
+        return None
+    final_displays = [formula.display_formula or formula.formal_formula for formula in solution_trace.final_answers]
+    if len(final_displays) < 2:
+        return None
+
+    substitution = _step_formula_displays(algebra_step, {"two_body_substitution"})
+    collected = _step_formula_displays(algebra_step, {"two_body_collect_terms"})
+    denominator = _step_formula_displays(algebra_step, {"two_body_denominator_nonzero"})
+    if not substitution or not collected:
+        return None
+
+    a_formula = next((text for text in final_displays if _canon_formula_for_pattern(text).startswith("a=")), final_displays[0])
+    t_formula = next((text for text in final_displays if _canon_formula_for_pattern(text).startswith("t=")), final_displays[-1])
+
+    lines = [
+        "设小车质量为 m₁，悬挂物质量为 m₂，系统共同加速度为 a，绳中张力为 T。取小车运动方向和悬挂物向下方向为正方向。",
+        "",
+        "对小车进行受力分析，水平方向合力为绳的张力 T。对小车应用牛顿第二定律，得到",
+        "",
+        "T = m₁a。        (1)",
+        "",
+        "对悬挂物进行受力分析，取向下为正方向，其合力为 m₂g - T。对悬挂物应用牛顿第二定律，得到",
+        "",
+        "m₂g - T = m₂a。  (2)",
+        "",
+        "由 (1) 和 (2) 联立，代入 T = m₁a，有",
+        "",
+        f"{substitution[0]},",
+        "",
+        "即",
+        "",
+        f"{collected[0]}。",
+        "",
+    ]
+    if denominator:
+        lines.extend([
+            f"由于 m₁ 和 m₂ 均为正，{denominator[0]}，因此",
+            "",
+        ])
+    lines.extend([
+        f"{a_formula}。",
+        "",
+        "再代回 T = m₁a，得到",
+        "",
+        f"{t_formula}。",
+        "",
+        "所以",
+        "",
+        f"{a_formula},",
+        f"{t_formula}。",
+        "",
+        _status_disclosure(solution_trace.proof_status),
+    ])
+    if solution_trace.warnings and solution_trace.proof_status != "fully_mechlib_verified":
+        lines.append("结构化警告：" + "; ".join(solution_trace.warnings))
+    return "\n".join(lines)
+
+
 def render_deterministic_solution(solution_trace: SolutionTrace) -> str:
+    textbook = _render_textbook_two_body_solution(solution_trace)
+    if textbook:
+        return textbook
+
     lines: list[str] = []
     lines.append("1. 题意与符号说明")
     if solution_trace.target_display:
@@ -1018,15 +1319,27 @@ class ModuleSolutionRenderer:
         raw_llm: str | None = None
         llm_payload: dict[str, Any] = {}
         error: str | None = None
-        if self._config_bool("natural_language_enabled", False):
+        natural_solution = ""
+        preferred_deterministic = _render_textbook_two_body_solution(trace)
+        if preferred_deterministic:
+            natural_solution = preferred_deterministic
+            llm_payload = {
+                "natural_solution": natural_solution,
+                "used_step_ids": [step.step_id for step in trace.steps],
+                "mentioned_formulas": [
+                    formula.display_formula or formula.formal_formula
+                    for formula in trace.final_answers
+                ],
+                "verification_note": _status_disclosure(trace.proof_status),
+                "renderer": "deterministic_textbook_two_body",
+            }
+        elif self._config_bool("natural_language_enabled", False):
             try:
                 raw_llm, llm_payload, error = self._call_llm(trace)
                 natural_solution = str(llm_payload.get("natural_solution") or "").strip() if not error else ""
             except Exception as exc:
                 natural_solution = ""
                 error = f"llm_render_failed:{type(exc).__name__}:{exc}"
-        else:
-            natural_solution = ""
 
         if not natural_solution:
             natural_solution = render_deterministic_solution(trace)

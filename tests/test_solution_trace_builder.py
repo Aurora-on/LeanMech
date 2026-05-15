@@ -81,3 +81,50 @@ def test_conjunction_target_splits_without_dropping_denominator_parentheses():
         "a.val = (m2.val * g.val) / (m1.val + m2.val)",
         "T.val = (m1.val * m2.val * g.val) / (m1.val + m2.val)",
     ]
+
+
+def test_two_body_linear_system_adds_structured_algebra_step():
+    evidence = _base_evidence("proof_failed")
+    evidence["target"] = (
+        "a = (m2 * g) / (m1 + m2)"
+        " ∧ T = (m1 * m2 * g) / (m1 + m2)"
+    )
+    evidence["controlled_sketch_steps"] = [
+        {
+            "step_id": "sk1",
+            "kind": "law_to_equation",
+            "formal_claim": "T = m1 * a",
+            "binding_status": "ok",
+            "proof_fact_allowed": True,
+            "verified_decl": "MechLib.Compat.PHYSlib.SI.newton_second_law",
+        },
+        {
+            "step_id": "sk2",
+            "kind": "law_to_equation",
+            "formal_claim": "m2 * g - T = m2 * a",
+            "binding_status": "ok",
+            "proof_fact_allowed": True,
+            "verified_decl": "MechLib.Compat.PHYSlib.SI.newton_second_law",
+        },
+    ]
+    evidence["final_answers"] = []
+    evidence["accepted_actions"] = [
+        {
+            "action_id": "augment_physical_positive_hypotheses_1",
+            "added_physical_assumptions": [
+                {"variable": "m1", "expression": "0 < m1.val"},
+                {"variable": "m2", "expression": "0 < m2.val"},
+            ],
+        },
+        {"action_id": "side_condition_1", "new_local_fact_claims": ["m1.val + m2.val ≠ 0"]},
+    ]
+
+    trace = build_solution_trace(evidence)
+    algebra = next(step for step in trace.steps if step.step_id == "algebra_elimination_two_body_linear_1")
+
+    assert algebra.verified is False
+    assert [formula.display_formula for formula in algebra.output_formulas] == [
+        "m₂g - m₁a = m₂a",
+        "m₂g = (m₁ + m₂)a",
+        "m₁ + m₂ ≠ 0",
+    ]

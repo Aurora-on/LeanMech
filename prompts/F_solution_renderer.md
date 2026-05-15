@@ -10,6 +10,12 @@ __TASK_F_SOLUTION_RENDERER__
 6. 只使用 SolutionTrace 中的步骤、公式和验证状态。
 7. 不要输入、依赖或复述完整 Lean proof、完整 MechLib context、完整 theorem corpus、完整 raw_response。
 
+风格要求：
+1. 写成教材式中文解题过程：先设符号和正方向，再分对象受力分析并编号方程，最后联立消元。
+2. 不要写“目标公式：”“轨迹中给出”“按轨迹中的目标结果可得”“结构化 artifact”等内部流水线措辞。
+3. 不要用项目符号罗列 artifact；自然段和独立公式行优先。
+4. 如果 SolutionTrace 没有某个中间公式，不要补写该公式。
+
 输出内容必须包含：
 1. 题意与符号说明
 2. 建模与物理定律应用
