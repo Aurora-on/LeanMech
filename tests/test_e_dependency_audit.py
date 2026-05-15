@@ -69,6 +69,42 @@ def test_dependency_audit_classifies_algebra_only_success() -> None:
     assert audit.fully_mechlib_verified is False
 
 
+def test_dependency_audit_does_not_cover_obligation_from_algebra_fact_name_only() -> None:
+    proof = """
+have h_obl_1 : Fnet1.val = m1.val * a.val := by
+  linarith [h1, h2]
+linarith [h_obl_1]
+"""
+
+    audit = audit_proof_dependencies(
+        proof_context=_context(),
+        proof_body=proof,
+        final_replay_pass=True,
+    )
+
+    assert audit.classification == "algebra_only_success"
+    assert audit.covered_obligations == []
+    assert audit.missing_obligations == ["obl1", "obl2"]
+
+
+def test_dependency_audit_uses_exact_lean_identifier_boundaries() -> None:
+    proof = f"""
+have h_obl_1_pos : True := by
+  exact True.intro
+have h_decl := {EXTRACTOR_1} glider_law
+exact h_obl_1_pos
+"""
+
+    audit = audit_proof_dependencies(
+        proof_context=_context(),
+        proof_body=proof,
+        final_replay_pass=True,
+    )
+
+    assert audit.covered_obligations == []
+    assert audit.missing_obligations == ["obl1", "obl2"]
+
+
 def test_dependency_audit_classifies_gap_assisted_success() -> None:
     proof = f"""
 have h_obl_1 := {EXTRACTOR_1} glider_law

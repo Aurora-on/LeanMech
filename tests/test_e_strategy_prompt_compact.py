@@ -89,7 +89,8 @@ def test_search_trace_records_compact_prompt_summary_only() -> None:
     assert trace.strategy_prompt_summaries
     summary = trace.strategy_prompt_summaries[0]
     assert summary["prompt_chars"] < 8000
-    assert "MechLib.Dynamics.NewtonLaw.NewtonSecondLaw.to_value_equation" in summary["allowed_decls"]
+    assert summary["search_mode"] == "target_proof_from_available_facts"
+    assert summary["allowed_decls"] == []
     assert "THEOREM_CORPUS_FULL" not in str(summary)
     assert "retrieval_context_blob" not in str(summary)
 

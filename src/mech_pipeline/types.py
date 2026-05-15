@@ -647,6 +647,7 @@ class ProofSearchNode:
     remaining_obligations: list[str] = field(default_factory=list)
     goals_excerpt: str | None = None
     side_condition_denominators: list[str] = field(default_factory=list)
+    planned_actions: list[ProofActionProposal] = field(default_factory=list)
     last_action_id: str | None = None
     score: float = 0.0
 
@@ -666,6 +667,8 @@ class ProofSearchTrace:
     final_proof_body: str | None = None
     search_status: str = "not_started"
     failure_reason: str | None = None
+    search_mode: str | None = None
+    blocked_obligations: list[dict[str, Any]] = field(default_factory=list)
     search_elapsed_s: float | None = None
     strategy_prompt_summaries: list[dict[str, Any]] = field(default_factory=list)
     physical_assumption_augmented: bool = False

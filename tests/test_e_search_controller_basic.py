@@ -23,6 +23,39 @@ class FakeLLM:
         return Response()
 
 
+class PayloadFakeLLM:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.payload = payload
+        self.calls = 0
+        self.prompts: list[str] = []
+
+    def generate_text(self, prompt: str):
+        self.calls += 1
+        self.prompts.append(prompt)
+
+        class Response:
+            text = json.dumps(self.payload)
+
+        return Response()
+
+
+class SequentialPayloadFakeLLM:
+    def __init__(self, payloads: list[dict[str, object]]) -> None:
+        self.payloads = list(payloads)
+        self.calls = 0
+        self.prompts: list[str] = []
+
+    def generate_text(self, prompt: str):
+        self.calls += 1
+        self.prompts.append(prompt)
+        payload = self.payloads[min(self.calls - 1, len(self.payloads) - 1)]
+
+        class Response:
+            text = json.dumps(payload)
+
+        return Response()
+
+
 class SequentialFakeLLM:
     def __init__(self, proposal_batches: list[list[dict[str, object]]]) -> None:
         self.proposal_batches = proposal_batches
@@ -89,6 +122,103 @@ class FakeLeanRunner:
         _ = (sample_id, candidate_id, lean_header, theorem_decl, run_dir)
         self.verify_calls.append(proof_body)
         return {"strict_pass": True}
+
+
+class NoGoalsRepairLeanRunner(FakeLeanRunner):
+    def probe_proof_prefix(self, *, lean_header, theorem_decl, proof_prefix, timeout_s=None):
+        _ = (lean_header, theorem_decl)
+        self.probes.append(proof_prefix)
+        self.timeouts.append(timeout_s)
+        if "exact h_final" in proof_prefix:
+            return ProofActionCheckResult(
+                action_id="probe",
+                strategy="probe_proof_prefix",
+                tactic_block=proof_prefix,
+                status="closed",
+            )
+        if "have h_final" in proof_prefix:
+            h_final_block = proof_prefix.split("have h_final", 1)[1]
+            if "ring_nf" in h_final_block or "simp" in h_final_block:
+                return ProofActionCheckResult(
+                    action_id="probe",
+                    strategy="probe_proof_prefix",
+                    tactic_block=proof_prefix,
+                    status="invalid",
+                    error_type="tactic_no_goals",
+                    error_message="No goals to be solved",
+                    stderr_excerpt="error: No goals to be solved",
+                )
+            if "exact h_one" in h_final_block:
+                return ProofActionCheckResult(
+                    action_id="probe",
+                    strategy="probe_proof_prefix",
+                    tactic_block=proof_prefix,
+                    status="progress",
+                    goals_excerpt="unsolved goals",
+                )
+        if "have h_one" in proof_prefix:
+            return ProofActionCheckResult(
+                action_id="probe",
+                strategy="probe_proof_prefix",
+                tactic_block=proof_prefix,
+                status="progress",
+                goals_excerpt="unsolved goals",
+            )
+        return super().probe_proof_prefix(
+            lean_header=lean_header,
+            theorem_decl=theorem_decl,
+            proof_prefix=proof_prefix,
+            timeout_s=timeout_s,
+        )
+
+
+class ClaimRepairLeanRunner(FakeLeanRunner):
+    def probe_proof_prefix(self, *, lean_header, theorem_decl, proof_prefix, timeout_s=None):
+        _ = (lean_header, theorem_decl)
+        self.probes.append(proof_prefix)
+        self.timeouts.append(timeout_s)
+        if "exact h_final" in proof_prefix:
+            return ProofActionCheckResult(
+                action_id="probe",
+                strategy="probe_proof_prefix",
+                tactic_block=proof_prefix,
+                status="closed",
+            )
+        if "have h_final" in proof_prefix:
+            h_final_block = proof_prefix.split("have h_final", 1)[1]
+            if "bad_fact" in h_final_block:
+                return ProofActionCheckResult(
+                    action_id="probe",
+                    strategy="probe_proof_prefix",
+                    tactic_block=proof_prefix,
+                    status="invalid",
+                    error_type="type_mismatch",
+                    error_message="Type mismatch: bad_fact has type False but expected True",
+                    stderr_excerpt="error: Type mismatch: bad_fact has type False but expected True",
+                    goals_excerpt="unsolved goals\nh_one : True\n⊢ True",
+                )
+            if "exact h_one" in h_final_block:
+                return ProofActionCheckResult(
+                    action_id="probe",
+                    strategy="probe_proof_prefix",
+                    tactic_block=proof_prefix,
+                    status="progress",
+                    goals_excerpt="unsolved goals",
+                )
+        if "have h_one" in proof_prefix:
+            return ProofActionCheckResult(
+                action_id="probe",
+                strategy="probe_proof_prefix",
+                tactic_block=proof_prefix,
+                status="progress",
+                goals_excerpt="unsolved goals",
+            )
+        return super().probe_proof_prefix(
+            lean_header=lean_header,
+            theorem_decl=theorem_decl,
+            proof_prefix=proof_prefix,
+            timeout_s=timeout_s,
+        )
 
 
 def _cfg(*, max_nodes: int = 4, max_llm_calls: int = 1) -> PipelineConfig:
@@ -643,8 +773,8 @@ def test_search_controller_does_not_credit_rejected_action_facts_or_obligations(
     assert rejected["remaining_obligations_after"] == ["obl_newton"]
 
 
-def test_search_controller_falls_back_to_llm_after_extractor_preflight_fails() -> None:
-    cfg = _cfg(max_nodes=4, max_llm_calls=3)
+def test_search_controller_blocks_failed_preflight_and_runs_target_fact_plan() -> None:
+    cfg = _cfg(max_nodes=4, max_llm_calls=1)
     cfg.proof.llm_guided_search.deterministic_obligation_replay_first = True
     context = _context()
     context.allowed_verified_decls = ["MechLib.Newton.second_law", "MechLib.Newton.alternative_form"]
@@ -658,6 +788,270 @@ def test_search_controller_falls_back_to_llm_after_extractor_preflight_fails() -
             produced_fact_name="h_newton",
         )
     ]
+    llm = PayloadFakeLLM(
+        {
+            "fact_plan": [
+                {
+                    "name": "h_done",
+                    "claim": "True",
+                    "from": ["h"],
+                    "tactic": "exact h",
+                }
+            ],
+            "close": "exact h_done",
+        }
+    )
+
+    trace = run_llm_guided_search(
+        proof_context=context,
+        lean_runner=FakeLeanRunner(closed_token="exact h_done", progress_token="h_done"),
+        llm_client=llm,
+        cfg=cfg,
+    )
+
+    assert llm.calls == 1
+    assert trace.llm_calls == 1
+    assert trace.search_status == "success"
+    assert trace.search_mode == "target_proof_from_available_facts"
+    assert trace.blocked_obligations
+    assert trace.blocked_obligations[0]["obligation_id"] == "obl_newton"
+    assert trace.blocked_obligations[0]["reason"] == "missing_proof_friendly_extractor"
+    assert trace.strategy_prompt_summaries[0]["search_mode"] == "target_proof_from_available_facts"
+    assert trace.strategy_prompt_summaries[0]["remaining_obligations"] == []
+    assert trace.strategy_prompt_summaries[0]["blocked_obligations"][0]["reason"] == "missing_proof_friendly_extractor"
+    assert trace.strategy_prompt_summaries[0]["allowed_decls"] == []
+    assert trace.strategy_prompt_summaries[0]["decl_candidate_mode"] is False
+    assert "MechLib.Newton.alternative_form" not in llm.prompts[0]
+    assert '"remaining_obligations": []' in llm.prompts[0]
+    assert '"search_mode": "target_proof_from_available_facts"' in llm.prompts[0]
+    assert "blocked_obligations" in llm.prompts[0]
+    assert [row["strategy"] for row in trace.accepted_actions] == [
+        "target_fact_plan_have",
+        "target_fact_plan_close",
+    ]
+    assert trace.rejected_actions[0]["error_type"] == "symbol_hallucination"
+
+
+def test_search_controller_sequences_target_fact_plan_without_extra_llm_calls() -> None:
+    cfg = _cfg(max_nodes=4, max_llm_calls=1)
+    context = _context()
+    llm = PayloadFakeLLM(
+        {
+            "fact_plan": [
+                {
+                    "name": "h_one",
+                    "claim": "True",
+                    "from": ["h"],
+                    "tactic": "exact h",
+                },
+                {
+                    "name": "h_two",
+                    "claim": "True = True",
+                    "from": ["h_one"],
+                    "tactic": " exact rfl",
+                },
+            ],
+            "close": "exact h_two",
+        }
+    )
+
+    trace = run_llm_guided_search(
+        proof_context=context,
+        lean_runner=FakeLeanRunner(closed_token="exact h_two", progress_token="h_"),
+        llm_client=llm,
+        cfg=cfg,
+    )
+
+    assert llm.calls == 1
+    assert trace.search_status == "success"
+    assert [row["strategy"] for row in trace.accepted_actions] == [
+        "target_fact_plan_have",
+        "target_fact_plan_have",
+        "target_fact_plan_close",
+    ]
+    assert "h_one" in trace.accepted_actions[1]["uses_facts"]
+    assert "\n   exact rfl" not in trace.accepted_actions[1]["tactic_block"]
+
+
+def test_search_controller_accepts_fact_plan_item_with_full_have_tactic() -> None:
+    cfg = _cfg(max_nodes=3, max_llm_calls=1)
+    llm = PayloadFakeLLM(
+        {
+            "fact_plan": [
+                {
+                    "name": "h_one",
+                    "claim": "True",
+                    "from": ["h"],
+                    "tactic": "have h_one : True := by\nexact h",
+                }
+            ],
+            "close": "exact h_one",
+        }
+    )
+
+    trace = run_llm_guided_search(
+        proof_context=_context(),
+        lean_runner=FakeLeanRunner(closed_token="exact h_one", progress_token="h_one"),
+        llm_client=llm,
+        cfg=cfg,
+    )
+
+    assert trace.search_status == "success"
+    assert trace.accepted_actions[0]["tactic_block"] == "have h_one : True := by\n  exact h"
+
+
+def test_search_controller_repairs_fact_plan_tactic_no_goals_without_dropping_prefix() -> None:
+    cfg = _cfg(max_nodes=6, max_llm_calls=1)
+    llm = PayloadFakeLLM(
+        {
+            "fact_plan": [
+                {
+                    "name": "h_one",
+                    "claim": "True",
+                    "from": ["h"],
+                    "tactic": "exact h",
+                },
+                {
+                    "name": "h_final",
+                    "claim": "True",
+                    "from": ["h_one"],
+                    "tactic": "exact h_one\nsimp\nring_nf",
+                },
+            ],
+            "close": "exact h_final",
+        }
+    )
+    runner = NoGoalsRepairLeanRunner()
+
+    trace = run_llm_guided_search(
+        proof_context=_context(),
+        lean_runner=runner,
+        llm_client=llm,
+        cfg=cfg,
+    )
+
+    assert llm.calls == 1
+    assert trace.search_status == "success"
+    assert [row["strategy"] for row in trace.accepted_actions] == [
+        "target_fact_plan_have",
+        "target_fact_plan_have_repair_no_goals",
+        "target_fact_plan_close",
+    ]
+    repair = trace.accepted_actions[1]
+    assert repair["repair_of"] == "llm_plan_1_2"
+    assert repair["tactic_block"] == "have h_final : True := by\n  exact h_one"
+    assert repair["new_local_facts"] == ["h_final"]
+    assert trace.accepted_actions[2]["uses_facts"] == []
+    assert "have h_one : True := by\n  exact h" in trace.final_proof_body
+    assert "have h_final : True := by\n  exact h_one" in trace.final_proof_body
+    original_failure = next(row for row in trace.rejected_actions if row["action_id"] == "llm_plan_1_2")
+    assert original_failure["repair_attempted"] is True
+    assert original_failure["repair_accepted_action_id"] == "llm_plan_1_2_repair_no_goals_1"
+    rejected_repair = next(
+        row for row in trace.rejected_actions if row["action_id"] == "llm_plan_1_2_repair_no_goals_2"
+    )
+    assert rejected_repair["error_type"] == "tactic_no_goals"
+
+
+def test_search_controller_claim_level_repair_uses_error_and_keeps_plan_prefix() -> None:
+    cfg = _cfg(max_nodes=6, max_llm_calls=2)
+    llm = SequentialPayloadFakeLLM(
+        [
+            {
+                "fact_plan": [
+                    {
+                        "name": "h_one",
+                        "claim": "True",
+                        "from": ["h"],
+                        "tactic": "exact h",
+                    },
+                    {
+                        "name": "h_final",
+                        "claim": "True",
+                        "from": ["h_one"],
+                        "tactic": "exact bad_fact",
+                    },
+                ],
+                "close": "exact h_final",
+            },
+            {
+                "tactic_block": "have h_final : True := by\nexact h_one",
+                "uses_facts": ["h_one"],
+                "uses_decls": [],
+            },
+        ]
+    )
+    runner = ClaimRepairLeanRunner()
+
+    trace = run_llm_guided_search(
+        proof_context=_context(),
+        lean_runner=runner,
+        llm_client=llm,
+        cfg=cfg,
+    )
+
+    assert llm.calls == 2
+    assert trace.search_status == "success"
+    assert [row["strategy"] for row in trace.accepted_actions] == [
+        "target_fact_plan_have",
+        "target_fact_plan_have_claim_repair",
+        "target_fact_plan_close",
+    ]
+    repair = trace.accepted_actions[1]
+    assert repair["repair_of"] == "llm_plan_1_2"
+    assert repair["repair_kind"] == "claim_level_llm_repair"
+    assert repair["tactic_block"] == "have h_final : True := by\n  exact h_one"
+    assert "have h_final : True := by\n  have h_final" not in trace.final_proof_body
+    assert "have h_one : True := by\n  exact h" in trace.final_proof_body
+    assert "have h_final : True := by\n  exact h_one" in trace.final_proof_body
+    original_failure = next(row for row in trace.rejected_actions if row["action_id"] == "llm_plan_1_2")
+    assert original_failure["claim_repair_attempted"] is True
+    assert original_failure["claim_repair_accepted_action_id"] == "llm_plan_1_2_claim_repair_1"
+    assert "Type mismatch" in llm.prompts[1]
+    assert "repair_current_fact_plan_claim_only" in llm.prompts[1]
+    assert "failed_tactic_block" in llm.prompts[1]
+    assert any(row.get("prompt_type") == "claim_level_repair" for row in trace.strategy_prompt_summaries)
+
+
+def test_search_controller_rejects_mechlib_decl_in_target_mode() -> None:
+    cfg = _cfg(max_nodes=1, max_llm_calls=1)
+    context = _context()
+    context.allowed_verified_decls = ["MechLib.Newton.second_law"]
+    llm = FakeLLM(
+        [
+            {
+                "strategy": "close_goal",
+                "tactic_block": "exact MechLib.Newton.second_law",
+                "uses_facts": ["h"],
+                "uses_decls": ["MechLib.Newton.second_law"],
+            }
+        ]
+    )
+
+    trace = run_llm_guided_search(
+        proof_context=context,
+        lean_runner=FakeLeanRunner(progress_token="not_present"),
+        llm_client=llm,
+        cfg=cfg,
+    )
+
+    assert llm.calls == 1
+    assert trace.search_mode == "target_proof_from_available_facts"
+    assert trace.rejected_actions[0]["error_type"] == "action_guard_failed"
+    assert "unauthorized_mechlib_decl" in trace.rejected_actions[0]["error_message"]
+
+
+def test_search_controller_calls_llm_after_target_side_condition_probe_fails() -> None:
+    cfg = _cfg(max_nodes=4, max_llm_calls=1)
+    cfg.proof.llm_guided_search.deterministic_side_conditions_first = True
+    context = _context()
+    context.target_formula = "x.val / (m1.val + m2.val) = x.val"
+    context.allowed_local_facts = [
+        "h : True",
+        "h_m1_pos : 0 < m1.val",
+        "h_m2_pos : 0 < m2.val",
+    ]
+    context.local_hypotheses = ["h", "h_m1_pos", "h_m2_pos"]
     llm = FakeLLM(
         [
             {
@@ -671,21 +1065,17 @@ def test_search_controller_falls_back_to_llm_after_extractor_preflight_fails() -
 
     trace = run_llm_guided_search(
         proof_context=context,
-        lean_runner=FakeLeanRunner(progress_token="not_present"),
+        lean_runner=FakeLeanRunner(closed_token="exact h", progress_token="not_present"),
         llm_client=llm,
         cfg=cfg,
     )
 
     assert llm.calls == 1
-    assert trace.llm_calls == 1
-    assert trace.failure_reason == "proof_action_synthesis_failed_after_preflight"
-    assert trace.accepted_actions == []
-    assert len(trace.rejected_actions) == 2
-    assert trace.rejected_actions[0]["error_type"] == "symbol_hallucination"
-    assert trace.rejected_actions[1]["error_type"] == "symbol_hallucination"
-    assert trace.strategy_prompt_summaries[0]["decl_candidate_mode"] is True
-    assert "MechLib.Newton.alternative_form" in trace.strategy_prompt_summaries[0]["allowed_decls"]
-    assert '"error": "missing_proof_friendly_extractor"' in llm.prompts[0]
+    assert trace.search_status == "success"
+    assert trace.search_mode == "target_proof_from_available_facts"
+    assert trace.rejected_actions[0]["strategy"] == "prove_side_condition"
+    assert trace.strategy_prompt_summaries[0]["remaining_obligations"] == []
+    assert trace.strategy_prompt_summaries[0]["allowed_decls"] == []
 
 
 def test_search_controller_does_not_augment_non_physical_missing_side_condition() -> None:

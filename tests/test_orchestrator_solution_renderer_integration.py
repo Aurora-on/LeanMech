@@ -177,9 +177,9 @@ def test_orchestrator_writes_solution_rows_after_proof_success(tmp_path):
     assert rows["natural_solution.jsonl"][0]["proof_status"] == "legacy_verified_no_audit"
 
 
-def test_orchestrator_writes_partial_solution_after_proof_skipped(tmp_path):
+def test_orchestrator_skips_solution_renderer_after_proof_failure(tmp_path):
     result = _run_process(tmp_path, semantic_pass=False)
     rows = result["stage_rows"]
-    assert rows["natural_solution.jsonl"]
-    assert rows["natural_solution.jsonl"][0]["proof_status"] == "proof_skipped_due_to_semantic_fail"
-    assert "只展示" in rows["natural_solution.jsonl"][0]["natural_solution"]
+    assert rows["solution_trace.jsonl"] == []
+    assert rows["natural_solution.jsonl"] == []
+    assert rows["solution_render_audit.jsonl"] == []

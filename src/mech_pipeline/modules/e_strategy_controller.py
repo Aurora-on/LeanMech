@@ -26,12 +26,21 @@ DEFAULT_STRATEGY_CONTROLLER_PROMPT = """You are a Lean proof strategy controller
 
 Your task is to propose the next proof action, not a complete proof.
 
-You may use only:
+Use the compact proof state's `search_mode` field.
+
+When `search_mode` is `obligation_guided_search`, you may use only:
 - listed local facts,
 - listed proof obligations,
 - listed verified declarations,
 - listed algebra strategy cards,
 - standard tactics: simp, simp_all, rw, have, exact, apply, field_simp, ring_nf, linarith, nlinarith.
+
+When `search_mode` is `target_proof_from_available_facts`:
+- the required proof obligations are either already handled or blocked by preflight;
+- blocked obligations are diagnostic context, not active tasks;
+- do not try to use blocked declarations or any unlisted declaration;
+- prove the theorem target from available local facts and accepted proof-prefix facts;
+- prefer a short target-proof fact plan with algebraic `have` facts plus a final closing tactic.
 
 Do not:
 - introduce new assumptions,
@@ -40,7 +49,7 @@ Do not:
 - use declarations outside whitelist,
 - use schema/problem metadata as proof facts.
 - do not use constructor or split goals in the linear prefix search; close conjunctions with exact ⟨..., ...⟩ only when all components are already available.
-- if a prior extractor preflight failed, do not assume `must_use from_hypothesis` is the only call shape; propose one local action using the listed facts and allowed declaration candidates.
+- if extractor preflight blocked an obligation, do not keep trying that extractor shape.
 
 Available strategy cards:
 - derive_law_equation
@@ -54,9 +63,13 @@ Available strategy cards:
 - introduce_intermediate_have
 - close_goal
 
-Return JSON only:
+Return JSON only. In `obligation_guided_search`, return local proof action proposals:
 
 {"proposals":[{"strategy":"derive_model_equation","tactic_block":"have hT : T.val = m1.val * a.val := by\\n  linarith [hFnet1, h_mi1]","uses_facts":["hFnet1","h_mi1"],"uses_decls":[],"expected_effect":"derive a local equation from checked facts","priority":0.9}]}
+
+In `target_proof_from_available_facts`, prefer a fact plan:
+
+{"fact_plan":[{"name":"hTma","claim":"T.val = m1.val * a.val","from":["hFnet1","h_mi1"],"tactic":"nlinarith [hFnet1, h_mi1]"}],"close":"exact ⟨ha, hTfinal⟩"}
 
 Compact proof state:
 
@@ -102,6 +115,7 @@ def _compact_obligation(row: dict[str, Any]) -> dict[str, Any]:
         "must_use": _compact_text(row.get("must_use"), 240),
         "replay_status": _compact_text(row.get("replay_status"), 80),
         "error": _compact_text(row.get("error"), 120),
+        "reason": _compact_text(row.get("reason"), 120),
     }
 
 
@@ -152,12 +166,15 @@ def compact_proof_state_payload(
     proof_context: ProofContext,
     local_facts: list[str] | None = None,
     remaining_obligations: list[dict[str, Any]] | None = None,
+    blocked_obligations: list[dict[str, Any]] | None = None,
     proof_prefix_summary: str | None = None,
     last_error: str | None = None,
     failed_actions: list[dict[str, Any]] | None = None,
     active_goals: str | None = None,
     include_decl_candidates: bool = False,
+    search_mode: str | None = None,
 ) -> dict[str, Any]:
+    mode = search_mode or "obligation_guided_search"
     obligations = remaining_obligations
     if obligations is None:
         obligations = [
@@ -173,26 +190,68 @@ def compact_proof_state_payload(
             }
             for item in proof_context.obligation_replay_items
         ]
+    blocked = blocked_obligations
+    if blocked is None:
+        blocked = [
+            {
+                "obligation_id": item.obligation_id,
+                "kind": item.kind,
+                "from_hypothesis": item.from_hypothesis,
+                "formal_claim": item.formal_claim,
+                "produced_fact_name": item.produced_fact_name,
+                "must_use": item.must_use,
+                "replay_status": item.replay_status,
+                "error": item.error,
+                "reason": item.error,
+            }
+            for item in proof_context.obligation_replay_blocked
+        ]
     facts = list(local_facts) if local_facts is not None else list(proof_context.allowed_local_facts)
+    if mode == "target_proof_from_available_facts":
+        obligations = []
     compact_obligations = [_compact_obligation(row) for row in obligations[:MAX_OBLIGATIONS]]
     if len(obligations) > MAX_OBLIGATIONS:
         compact_obligations.append({"omitted": len(obligations) - MAX_OBLIGATIONS})
-    required_decls = _relevant_allowed_decls(proof_context, compact_obligations)
-    allowed_decls = (
-        _allowed_decl_candidates(proof_context, required_decls)
-        if include_decl_candidates
-        else required_decls
-    )
+    compact_blocked = [_compact_obligation(row) for row in blocked[:MAX_OBLIGATIONS]]
+    if len(blocked) > MAX_OBLIGATIONS:
+        compact_blocked.append({"omitted": len(blocked) - MAX_OBLIGATIONS})
+    if mode == "target_proof_from_available_facts":
+        required_decls: list[str] = []
+        allowed_decls: list[str] = []
+        strategy_cards = [
+            "algebra_solve",
+            "rewrite_forward",
+            "rewrite_backward",
+            "simp_normalize",
+            "introduce_intermediate_have",
+            "close_goal",
+        ]
+        mode_instruction = (
+            "Required proof obligations are not active. Prove the target from available "
+            "local facts and accepted proof-prefix facts; do not use blocked declarations."
+        )
+    else:
+        required_decls = _relevant_allowed_decls(proof_context, compact_obligations)
+        allowed_decls = (
+            _allowed_decl_candidates(proof_context, required_decls)
+            if include_decl_candidates
+            else required_decls
+        )
+        strategy_cards = list(STRATEGY_CARDS)
+        mode_instruction = "Propose the next Lean-checked action for the active proof obligations."
     return {
+        "search_mode": mode,
+        "mode_instruction": mode_instruction,
         "target": _compact_text(proof_context.target_formula, MAX_TARGET_CHARS),
         "active_goals": _compact_text(active_goals, MAX_TARGET_CHARS),
         "proof_prefix_summary": _compact_text(proof_prefix_summary, MAX_PREFIX_CHARS),
         "local_facts": _compact_list(facts, limit=MAX_FACTS),
         "remaining_obligations": compact_obligations,
+        "blocked_obligations": compact_blocked,
         "required_decls": _compact_list(required_decls, limit=MAX_DECLS, item_chars=240),
         "allowed_decls": _compact_list(allowed_decls, limit=MAX_DECLS, item_chars=240),
         "decl_candidate_mode": bool(include_decl_candidates),
-        "available_strategy_cards": list(STRATEGY_CARDS),
+        "available_strategy_cards": strategy_cards,
         "available_algebra_strategy_cards": available_algebra_strategy_cards(proof_context, facts),
         "last_error": _compact_text(last_error, MAX_ERROR_CHARS),
         "failed_actions": [_compact_failed_action(row) for row in list(failed_actions or [])[:MAX_FAILED_ACTIONS]],
@@ -213,21 +272,25 @@ class LLMStrategyController:
         proof_context: ProofContext,
         local_facts: list[str] | None = None,
         remaining_obligations: list[dict[str, Any]] | None = None,
+        blocked_obligations: list[dict[str, Any]] | None = None,
         proof_prefix_summary: str | None = None,
         last_error: str | None = None,
         failed_actions: list[dict[str, Any]] | None = None,
         active_goals: str | None = None,
         include_decl_candidates: bool = False,
+        search_mode: str | None = None,
     ) -> str:
         payload = compact_proof_state_payload(
             proof_context=proof_context,
             local_facts=local_facts,
             remaining_obligations=remaining_obligations,
+            blocked_obligations=blocked_obligations,
             proof_prefix_summary=proof_prefix_summary,
             last_error=last_error,
             failed_actions=failed_actions,
             active_goals=active_goals,
             include_decl_candidates=include_decl_candidates,
+            search_mode=search_mode,
         )
         prompt = render_template(
             self.prompt_template,
@@ -239,6 +302,7 @@ class LLMStrategyController:
         payload["local_facts"] = payload["local_facts"][:20]
         payload["allowed_decls"] = payload["allowed_decls"][:20]
         payload["required_decls"] = payload["required_decls"][:20]
+        payload["blocked_obligations"] = payload["blocked_obligations"][:10]
         payload["target"] = _compact_text(payload.get("target"), 700)
         payload["active_goals"] = _compact_text(payload.get("active_goals"), 700)
         payload["proof_prefix_summary"] = _compact_text(payload.get("proof_prefix_summary"), 700)

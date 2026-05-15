@@ -28,18 +28,29 @@ def _required_obligation_ids(proof_context: ProofContext) -> list[str]:
     return [item.obligation_id for item in proof_context.obligation_replay_items if item.obligation_id]
 
 
+def _contains_lean_identifier(text: str, identifier: str | None) -> bool:
+    name = normalize_lean_text(identifier or "").strip()
+    if not name:
+        return False
+    pattern = rf"(?<![A-Za-z0-9_']){re.escape(name)}(?![A-Za-z0-9_'])"
+    return bool(re.search(pattern, text))
+
+
 def _covered_obligation_ids(proof_context: ProofContext, proof_body: str) -> list[str]:
     body = normalize_lean_text(proof_body or "")
     covered: list[str] = []
     for item in proof_context.obligation_replay_items:
-        if item.produced_fact_name and item.produced_fact_name in body:
-            covered.append(item.obligation_id)
+        if not _contains_lean_identifier(body, item.produced_fact_name):
+            continue
+        if item.must_use and not _contains_lean_identifier(body, item.must_use):
+            continue
+        covered.append(item.obligation_id)
     return covered
 
 
 def _used_required_decls(required: list[str], proof_body: str) -> list[str]:
     body = normalize_lean_text(proof_body or "")
-    return sorted({decl for decl in required if decl and decl in body})
+    return sorted({decl for decl in required if _contains_lean_identifier(body, decl)})
 
 
 def _uses_gap_law(proof_context: ProofContext, proof_body: str) -> bool:

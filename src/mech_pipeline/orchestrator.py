@@ -744,7 +744,11 @@ def process_sample(
     stage_rows["proof_attempts.jsonl"].extend(to_row(a) for a in proof_attempts)
     stage_rows["proof_checks.jsonl"].append(to_row(proof_check))
 
-    if module_solution_renderer is not None and bool(getattr(cfg.solution_renderer, "enabled", True)):
+    if (
+        module_solution_renderer is not None
+        and bool(getattr(cfg.solution_renderer, "enabled", True))
+        and bool(proof_check.proof_success)
+    ):
         solution_result = module_solution_renderer.run(
             sample=sample,
             grounding=grounding,
