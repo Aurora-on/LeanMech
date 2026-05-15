@@ -19,6 +19,17 @@ def _candidate():
     }
 
 
+def _multi_target_candidate():
+    candidate = _candidate()
+    candidate["target_spec"] = {
+        "lean_formula": "a.val = (m2.val * g.val) / (m1.val + m2.val)",
+        "secondary_formulas": [
+            "T.val = (m1.val * m2.val * g.val) / (m1.val + m2.val)",
+        ],
+    }
+    return candidate
+
+
 def test_collect_llm_guided_with_dependency_audit():
     evidence = collect_solution_evidence(
         problem_ir=None,
@@ -94,3 +105,25 @@ def test_collect_uses_embedded_trace_when_file_trace_empty():
         dependency_audit=None,
     )
     assert evidence["accepted_actions"][0]["action_id"] == "embedded"
+
+
+def test_collect_target_spec_secondary_formulas_as_final_answers():
+    evidence = collect_solution_evidence(
+        problem_ir=None,
+        model_ir=None,
+        controlled_sketch=None,
+        theorem_candidate=_multi_target_candidate(),
+        proof_attempt={"sample_id": "s1", "attempt_index": 0, "proof_mode": "llm_guided_search"},
+        proof_check={"sample_id": "s1", "proof_success": False},
+        proof_search_trace=None,
+        dependency_audit=None,
+    )
+
+    assert evidence["target"] == (
+        "a.val = (m2.val * g.val) / (m1.val + m2.val)"
+        " ∧ T.val = (m1.val * m2.val * g.val) / (m1.val + m2.val)"
+    )
+    assert [row["formal_formula"] for row in evidence["final_answers"]] == [
+        "a.val = (m2.val * g.val) / (m1.val + m2.val)",
+        "T.val = (m1.val * m2.val * g.val) / (m1.val + m2.val)",
+    ]

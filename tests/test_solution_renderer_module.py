@@ -52,6 +52,17 @@ def _candidate():
     }
 
 
+def _multi_target_candidate():
+    candidate = _candidate()
+    candidate["target_spec"] = {
+        "lean_formula": "a.val = (m2.val * g.val) / (m1.val + m2.val)",
+        "secondary_formulas": [
+            "T.val = (m1.val * m2.val * g.val) / (m1.val + m2.val)",
+        ],
+    }
+    return candidate
+
+
 def _config(enabled=False, repair=True):
     return SimpleNamespace(
         natural_language_enabled=enabled,
@@ -149,3 +160,31 @@ def test_module_legacy_success_no_audit_disclosure():
     )
     assert result.proof_status == "legacy_verified_no_audit"
     assert "不能确认所有物理步骤" in result.natural_solution
+
+
+def test_module_falls_back_when_llm_omits_secondary_final_answer():
+    bad = {
+        "natural_solution": (
+            "最终答案 a = m₂ g / (m₁ + m₂)。"
+            "当前形式化证明未通过，因此以下只展示已构造的建模和计划步骤，不作为最终 verified solution。"
+        ),
+        "used_step_ids": [],
+        "mentioned_formulas": ["a = m₂ g / (m₁ + m₂)"],
+    }
+    model = _MockModel([json.dumps(bad, ensure_ascii=False)])
+    module = ModuleSolutionRenderer(model_client=model, config=_config(True, False))
+
+    result = module.run(
+        sample={"sample_id": "s1"},
+        grounding={"sample_id": "s1", "problem_ir": {}},
+        model_ir={"sample_id": "s1"},
+        controlled_sketch=None,
+        selected_candidate=_multi_target_candidate(),
+        proof_attempts=[{"sample_id": "s1", "attempt_index": 0, "proof_mode": "llm_guided_search"}],
+        proof_check={"sample_id": "s1", "proof_success": False},
+    )
+
+    assert model.calls == 1
+    assert result.render_audit.audit_pass is True
+    assert "T =" in result.natural_solution
+    assert "m₁ m₂ g" in result.natural_solution

@@ -150,14 +150,20 @@ def _target_from_candidate(candidate: dict[str, Any] | None, model_ir: dict[str,
     if candidate:
         target_spec = candidate.get("target_spec")
         if isinstance(target_spec, dict):
-            text = _first_text(
+            primary = _first_text(
                 target_spec.get("lean_formula"),
                 target_spec.get("formal_formula"),
                 target_spec.get("target_formula"),
                 target_spec.get("target"),
             )
-            if text:
-                return text
+            formulas = [primary] if primary else []
+            secondary_formulas = target_spec.get("secondary_formulas")
+            for item in secondary_formulas if isinstance(secondary_formulas, list) else []:
+                text = str(item or "").strip()
+                if text:
+                    formulas.append(text)
+            if formulas:
+                return " ∧ ".join(formulas)
         theorem_decl = str(candidate.get("theorem_decl") or "").strip()
         if theorem_decl:
             declaration = theorem_decl.split(":=", 1)[0].strip()
@@ -188,7 +194,30 @@ def _split_conjunctions(formula: str | None) -> list[str]:
     if not text:
         return []
     parts = re.split(r"\s+[∧&]\s+|\s+and\s+", text)
-    return [part.strip(" ()") for part in parts if part.strip(" ()")]
+    out: list[str] = []
+    for part in parts:
+        stripped = part.strip()
+        if _is_wrapped_by_outer_parens(stripped):
+            stripped = stripped[1:-1].strip()
+        if stripped:
+            out.append(stripped)
+    return out
+
+
+def _is_wrapped_by_outer_parens(text: str) -> bool:
+    if not (text.startswith("(") and text.endswith(")")):
+        return False
+    depth = 0
+    for idx, char in enumerate(text):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0 and idx != len(text) - 1:
+                return False
+            if depth < 0:
+                return False
+    return depth == 0
 
 
 def pretty_print_formula(formal: str) -> str:
@@ -760,6 +789,10 @@ def _formula_mentions(formula: SolutionFormula) -> list[str]:
     return [item for item in out if item]
 
 
+def _final_answer_mentions(formula: SolutionFormula) -> list[str]:
+    return [item for item in [formula.formal_formula, formula.display_formula or ""] if item]
+
+
 def _contains_token(text: str, token: str | None) -> bool:
     if not token:
         return False
@@ -822,8 +855,8 @@ def audit_rendered_solution(
     failure_tags: list[str] = []
     final_answers = list(solution_trace.final_answers)
     if final_answers:
-        final_coverage = any(
-            any(_contains_token(text, mention) for mention in _formula_mentions(formula))
+        final_coverage = all(
+            any(_contains_token(text, mention) for mention in _final_answer_mentions(formula))
             for formula in final_answers
         )
     else:
@@ -1047,6 +1080,28 @@ class ModuleSolutionRenderer:
             except Exception as exc:
                 if error is None:
                     error = f"llm_repair_failed:{type(exc).__name__}:{exc}"
+
+        if not audit.audit_pass:
+            fallback_solution = render_deterministic_solution(trace)
+            fallback_payload = {
+                "natural_solution": fallback_solution,
+                "used_step_ids": [step.step_id for step in trace.steps],
+                "mentioned_formulas": [
+                    formula.display_formula or formula.formal_formula
+                    for formula in trace.final_answers
+                ],
+                "verification_note": _status_disclosure(trace.proof_status),
+                "renderer": "deterministic_audit_fallback",
+            }
+            fallback_audit = audit_rendered_solution(
+                solution_trace=trace,
+                natural_solution=fallback_solution,
+                llm_payload=fallback_payload,
+            )
+            if fallback_audit.audit_pass or len(fallback_audit.failure_tags) < len(audit.failure_tags):
+                natural_solution = fallback_solution
+                llm_payload = fallback_payload
+                audit = fallback_audit
 
         return SolutionRenderResult(
             sample_id=trace.sample_id,

@@ -65,3 +65,19 @@ def test_proof_failed_final_answer_not_verified():
     trace = build_solution_trace(_base_evidence("proof_failed"))
     assert trace.final_answers
     assert trace.final_answers[0].verified is False
+
+
+def test_conjunction_target_splits_without_dropping_denominator_parentheses():
+    evidence = _base_evidence("proof_failed")
+    evidence["target"] = (
+        "a.val = (m2.val * g.val) / (m1.val + m2.val)"
+        " ∧ T.val = (m1.val * m2.val * g.val) / (m1.val + m2.val)"
+    )
+    evidence["final_answers"] = []
+
+    trace = build_solution_trace(evidence)
+
+    assert [formula.formal_formula for formula in trace.final_answers] == [
+        "a.val = (m2.val * g.val) / (m1.val + m2.val)",
+        "T.val = (m1.val * m2.val * g.val) / (m1.val + m2.val)",
+    ]

@@ -56,3 +56,21 @@ def test_proof_failed_cannot_claim_lean_verified():
     audit = audit_rendered_solution(solution_trace=_trace("proof_failed"), natural_solution=natural, llm_payload={})
     assert audit.audit_pass is False
     assert "failed_proof_overclaimed" in audit.failure_tags
+
+
+def test_multi_final_answer_requires_each_formula():
+    trace = _trace("proof_failed")
+    trace.final_answers.append(
+        SolutionFormula(
+            "ans2",
+            "T.val = (m1.val * m2.val * g.val) / (m1.val + m2.val)",
+            "T = m₁ m₂ g / (m₁ + m₂)",
+            verified=False,
+        )
+    )
+    natural = "最终答案 a = m₂ g / (m₁ + m₂)。当前形式化证明未通过，因此以下只展示已构造的建模和计划步骤，不作为最终 verified solution。"
+
+    audit = audit_rendered_solution(solution_trace=trace, natural_solution=natural, llm_payload={})
+
+    assert audit.audit_pass is False
+    assert "final_answer_missing" in audit.failure_tags
