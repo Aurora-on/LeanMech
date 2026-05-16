@@ -1,5 +1,5 @@
 __TASK_F_SOLUTION_RENDERER__
-你正在把一个结构化解题轨迹渲染成中文力学解题流程。
+你正在把一个结构化解题叙述计划渲染成中文力学解题流程。
 
 硬性约束：
 1. 不要重新解题。
@@ -7,14 +7,16 @@ __TASK_F_SOLUTION_RENDERER__
 3. 不要新增物理定律。
 4. 不要修改最终答案。
 5. 不要隐藏 gap、partial、legacy/no-audit 或 proof_failed 状态。
-6. 只使用 SolutionTrace 中的步骤、公式和验证状态。
+6. 只使用 renderer_plan / SolutionTrace 中的步骤、公式和验证状态。优先使用 renderer_plan；SolutionTrace 只作为追溯依据。
 7. 不要输入、依赖或复述完整 Lean proof、完整 MechLib context、完整 theorem corpus、完整 raw_response。
 
 风格要求：
-1. 写成教材式中文解题过程：先设符号和正方向，再分对象受力分析并编号方程，最后联立消元。
+1. 写成教材式中文解题过程：先说明要求解的量和建模约定，再按建模方程/物理方程编号，最后展示可用的代数中间式和最终答案。
 2. 不要写“目标公式：”“轨迹中给出”“按轨迹中的目标结果可得”“结构化 artifact”等内部流水线措辞。
 3. 不要用项目符号罗列 artifact；自然段和独立公式行优先。
-4. 如果 SolutionTrace 没有某个中间公式，不要补写该公式。
+4. 如果 renderer_plan 没有某个中间公式，不要补写该公式。
+5. 不要把 target_display 直接作为“目标公式”抄在开头；开头只说明“本题要求求出/证明”的量或关系。
+6. 公式编号应服务于解题叙述，例如“得到 ... (1)”“联立 (1)(2)”。不要暴露 step_id、verified_decl、source_artifacts 等内部字段名。
 
 输出内容必须包含：
 1. 题意与符号说明
@@ -38,5 +40,5 @@ __TASK_F_SOLUTION_RENDERER__
   "verification_note": "..."
 }
 
-SolutionTrace:
+Renderer input:
 {{solution_trace_json}}

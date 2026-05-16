@@ -97,6 +97,30 @@ def _mechanics73_candidate():
     }
 
 
+def _mechanics73_modeling_only_candidate():
+    return {
+        "sample_id": "s1",
+        "candidate_id": "c1",
+        "target_spec": {
+            "lean_formula": "a = (m2 * g) / (m1 + m2)",
+            "secondary_formulas": [
+                "T = (m1 * m2 * g) / (m1 + m2)",
+            ],
+        },
+        "controlled_sketch": {
+            "sample_id": "s1",
+            "proof_steps": [],
+            "algebra_obligation": None,
+            "model_interface_instantiations": [
+                {"instantiation_id": "mii1", "kind": "local_model_equation", "formal_claim": "T = m1 * a"},
+                {"instantiation_id": "mii2", "kind": "local_model_equation", "formal_claim": "m2 * g - T = m2 * a"},
+                {"instantiation_id": "mii3", "kind": "local_model_equation", "formal_claim": "Fnet_m1 = T"},
+                {"instantiation_id": "mii4", "kind": "local_model_equation", "formal_claim": "a1 = a"},
+            ],
+        },
+    }
+
+
 def _config(enabled=False, repair=True):
     return SimpleNamespace(
         natural_language_enabled=enabled,
@@ -124,12 +148,13 @@ def test_module_deterministic_fallback_when_llm_disabled():
 
 def test_module_llm_enabled_uses_mock_json():
     payload = {
-        "natural_solution": "应用物理定律得到 F_start = μ_s W。最终答案 μ_s = F_start / W。上述物理定律应用和代数推导均已由 Lean 验证。",
+        "natural_solution": "应用物理定律得到 F_start = μ_s W。最终答案 μ_s = \\frac{F_start}{W}。上述物理定律应用和代数推导均已由 Lean 验证。",
         "used_step_ids": ["problem_understanding_1"],
-        "mentioned_formulas": ["μ_s = F_start / W"],
+        "mentioned_formulas": ["μ_s = \\frac{F_start}{W}"],
         "verification_note": "ok",
     }
-    module = ModuleSolutionRenderer(model_client=_MockModel([json.dumps(payload, ensure_ascii=False)]), config=_config(True, False))
+    model = _MockModel([json.dumps(payload, ensure_ascii=False)])
+    module = ModuleSolutionRenderer(model_client=model, config=_config(True, False))
     result = module.run(
         sample={"sample_id": "s1"},
         grounding={"sample_id": "s1", "problem_ir": {}},
@@ -140,15 +165,20 @@ def test_module_llm_enabled_uses_mock_json():
         proof_check={"sample_id": "s1", "proof_success": True},
         dependency_audit={"classification": "fully_mechlib_verified", "covered_obligations": ["sk1"]},
     )
-    assert "最终答案" in result.natural_solution
+    assert model.calls == 1
+    assert result.natural_solution == payload["natural_solution"]
 
 
-def test_module_repairs_after_audit_fail():
+def test_module_repairs_after_audit_fail(monkeypatch):
+    monkeypatch.setattr(
+        "mech_pipeline.modules.solution_renderer.render_deterministic_solution",
+        lambda trace: "额外公式 x = y。",
+    )
     bad = {"natural_solution": "额外公式 x = y。最终答案 μ_s = F_start / W。", "used_step_ids": [], "mentioned_formulas": []}
     good = {
-        "natural_solution": "应用物理定律得到 F_start = μ_s W。最终答案 μ_s = F_start / W。上述物理定律应用和代数推导均已由 Lean 验证。",
+        "natural_solution": "应用物理定律得到 F_start = μ_s W。最终答案 μ_s = \\frac{F_start}{W}。上述物理定律应用和代数推导均已由 Lean 验证。",
         "used_step_ids": ["sk1"],
-        "mentioned_formulas": ["μ_s = F_start / W"],
+        "mentioned_formulas": ["μ_s = \\frac{F_start}{W}"],
     }
     model = _MockModel([json.dumps(bad, ensure_ascii=False), json.dumps(good, ensure_ascii=False)])
     module = ModuleSolutionRenderer(model_client=model, config=_config(True, True))
@@ -164,6 +194,7 @@ def test_module_repairs_after_audit_fail():
     )
     assert model.calls == 2
     assert result.render_audit.audit_pass is True
+    assert result.natural_solution == good["natural_solution"]
 
 
 def test_module_semantic_fail_outputs_partial_explanation():
@@ -224,9 +255,8 @@ def test_module_falls_back_when_llm_omits_secondary_final_answer():
     assert "m₁m₂g" in result.natural_solution
 
 
-def test_module_prefers_textbook_template_for_two_body_system():
-    model = _MockModel([])
-    module = ModuleSolutionRenderer(model_client=model, config=_config(True, True))
+def test_module_renders_generic_textbook_plan_for_two_body_system():
+    module = ModuleSolutionRenderer(config=_config(False, True))
 
     result = module.run(
         sample={"sample_id": "s1"},
@@ -256,12 +286,55 @@ def test_module_prefers_textbook_template_for_two_body_system():
         proof_check={"sample_id": "s1", "proof_success": False},
     )
 
-    assert model.calls == 0
     assert result.render_audit.audit_pass is True
-    assert "设小车质量为 m₁" in result.natural_solution
+    assert "本题要求求出 a, T" in result.natural_solution
     assert "T = m₁a。        (1)" in result.natural_solution
     assert "m₂g - m₁a = m₂a" in result.natural_solution
     assert "\\frac{m₂g}{m₁ + m₂}" in result.natural_solution
     assert "轨迹中给出" not in result.natural_solution
+    assert "目标公式：" not in result.natural_solution
     assert "当前形式化证明未通过" in result.natural_solution
     assert "均已由 Lean 验证" not in result.natural_solution
+
+
+def test_module_generic_textbook_plan_handles_modeling_only_two_body_equations():
+    module = ModuleSolutionRenderer(config=_config(False, True))
+
+    result = module.run(
+        sample={"sample_id": "s1"},
+        grounding={"sample_id": "s1", "problem_ir": {}},
+        model_ir={"sample_id": "s1"},
+        controlled_sketch=None,
+        selected_candidate=_mechanics73_modeling_only_candidate(),
+        proof_attempts=[
+            {
+                "sample_id": "s1",
+                "attempt_index": 0,
+                "proof_mode": "llm_guided_search",
+                "proof_search_trace": {
+                    "accepted_actions": [
+                        {
+                            "action_id": "augment_physical_positive_hypotheses_1",
+                            "added_physical_assumptions": [
+                                {"variable": "m1", "expression": "0 < m1.val"},
+                                {"variable": "m2", "expression": "0 < m2.val"},
+                            ],
+                        },
+                        {"action_id": "side_condition_1", "new_local_fact_claims": ["m1.val + m2.val ≠ 0"]},
+                    ]
+                },
+            }
+        ],
+        proof_check={"sample_id": "s1", "proof_success": True},
+        dependency_audit={"classification": "gap_assisted_success"},
+    )
+
+    assert result.render_audit.audit_pass is True
+    assert "本题要求求出 a, T" in result.natural_solution
+    assert "T = m₁a。        (1)" in result.natural_solution
+    assert "m₂g - m₁a = m₂a" in result.natural_solution
+    assert "Fnet_m1" not in result.natural_solution
+    assert "a1 = a" not in result.natural_solution
+    assert "本题 Lean replay 已通过" in result.natural_solution
+    assert "gap law" in result.natural_solution
+    assert "目标公式：" not in result.natural_solution

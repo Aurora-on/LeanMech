@@ -18,15 +18,17 @@ from mech_pipeline.utils import extract_json_object, truncate
 
 
 DEFAULT_RENDER_PROMPT = """__TASK_F_SOLUTION_RENDERER__
-你正在把一个结构化解题轨迹渲染成中文力学解题流程。
+你正在把一个结构化解题叙述计划渲染成中文力学解题流程。
 不要重新解题。不要新增公式。不要新增物理定律。不要修改最终答案。
 不要隐藏 gap、partial、legacy/no-audit、proof_failed 状态。
-只能使用 SolutionTrace 中的步骤、公式和验证状态。
+只能使用 renderer_plan / SolutionTrace 中的步骤、公式和验证状态。优先使用 renderer_plan；SolutionTrace 只作为追溯依据。
 不要输入或依赖完整 Lean proof、完整 MechLib context、完整 theorem corpus、完整 raw_response。
-写成教材式中文解题过程：先设符号和正方向，再分对象受力分析并编号方程，最后联立消元。
+写成教材式中文解题过程：先说明要求解的量和建模约定，再按建模方程/物理方程编号，最后展示可用的代数中间式和最终答案。
 不要写“目标公式：”“轨迹中给出”“按轨迹中的目标结果可得”“结构化 artifact”等内部流水线措辞。
 不要用项目符号罗列 artifact；自然段和独立公式行优先。
-如果 SolutionTrace 没有某个中间公式，不要补写该公式。
+如果 renderer_plan 没有某个中间公式，不要补写该公式。
+不要把 target_display 直接作为“目标公式”抄在开头；开头只说明“本题要求求出/证明”的量或关系。
+公式编号应服务于解题叙述，例如“得到 ... (1)”“联立 (1)(2)”。不要暴露 step_id、verified_decl、source_artifacts 等内部字段名。
 
 输出 JSON，格式必须是：
 {
@@ -36,7 +38,7 @@ DEFAULT_RENDER_PROMPT = """__TASK_F_SOLUTION_RENDERER__
   "verification_note": "..."
 }
 
-SolutionTrace:
+Renderer input:
 {{solution_trace_json}}
 """
 
@@ -590,6 +592,13 @@ def _canon_formula_for_pattern(text: str | None) -> str:
     return value
 
 
+def _formula_key_variants(text: str | None) -> set[str]:
+    key = _canon_formula_for_pattern(text)
+    if not key:
+        return set()
+    return {key, key.replace("(", "").replace(")", "")}
+
+
 def _trace_has_formula(formulas: list[str], expected: str) -> bool:
     expected_canon = _canon_formula_for_pattern(expected)
     return any(_canon_formula_for_pattern(formula) == expected_canon for formula in formulas)
@@ -629,6 +638,73 @@ def _has_denominator_nonzero_action(actions: list[dict[str, Any]]) -> bool:
     return False
 
 
+def _formula_strings_from_steps(steps: list[SolutionStep]) -> list[str]:
+    formulas: list[str] = []
+    for step in steps:
+        for value in (step.formal_formula, step.display_formula):
+            if value:
+                formulas.append(value)
+        for formula in list(step.input_formulas) + list(step.output_formulas):
+            formulas.append(formula.formal_formula)
+            if formula.display_formula:
+                formulas.append(formula.display_formula)
+    return [formula for formula in formulas if formula]
+
+
+def _looks_like_formula(text: str | None) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    if not any(token in value for token in ("=", "≠", "<", ">", "≤", "≥", "\\frac")):
+        return False
+    if any(marker in value for marker in (". ", ";", "；", "。")):
+        return False
+    if re.search(r"\b(The|Because|This|Model|Treat|Use|Apply|where|and this)\b", value):
+        return False
+    return len(value) <= 180
+
+
+def _accepted_action_formula_step(
+    accepted_actions: list[dict[str, Any]],
+    *,
+    proof_status: str,
+) -> SolutionStep | None:
+    formulas: list[SolutionFormula] = []
+    seen: set[str] = set()
+    for action in accepted_actions:
+        action_id = str(action.get("action_id") or "").strip()
+        claims = _str_list(action.get("new_local_fact_claims")) or _str_list(action.get("proposed_local_fact_claims"))
+        for idx, claim in enumerate(claims, start=1):
+            if not _looks_like_formula(claim):
+                continue
+            key = _canon_formula_for_pattern(claim)
+            if key in seen:
+                continue
+            seen.add(key)
+            formula = _formula(
+                f"accepted_action_{len(formulas) + 1}",
+                claim,
+                source="ProofSearchTrace.accepted_actions",
+                verified=proof_status in SUCCESS_STATUSES,
+            )
+            if formula:
+                formula.provenance.append(action_id or f"accepted_action_{idx}")
+                formulas.append(formula)
+    if not formulas:
+        return None
+    return SolutionStep(
+        step_id="accepted_proof_actions_1",
+        kind="algebra_elimination",
+        title="代数推导与目标闭合",
+        text_intent="E 阶段 accepted proof actions 产生的中间关系。",
+        output_formulas=formulas,
+        source_artifacts=["ProofSearchTrace.accepted_actions"],
+        verified=proof_status in SUCCESS_STATUSES,
+        gap_assisted=proof_status == "gap_assisted_success",
+        notes="accepted_action_formula_chain",
+    )
+
+
 def _two_body_linear_algebra_step(
     *,
     steps: list[SolutionStep],
@@ -636,16 +712,10 @@ def _two_body_linear_algebra_step(
     proof_status: str,
     accepted_actions: list[dict[str, Any]],
 ) -> SolutionStep | None:
-    law_formulas = [
-        formula
-        for step in steps
-        if step.kind == "law_application"
-        for formula in (step.formal_formula, step.display_formula)
-        if formula
-    ]
-    if not _trace_has_formula(law_formulas, "T = m1 * a"):
+    trace_formulas = _formula_strings_from_steps(steps)
+    if not _trace_has_formula(trace_formulas, "T = m1 * a"):
         return None
-    if not _trace_has_formula(law_formulas, "m2 * g - T = m2 * a"):
+    if not _trace_has_formula(trace_formulas, "m2 * g - T = m2 * a"):
         return None
     if not _final_answer_has_shape(final_answers, "a", ["m2g", "m1+m2"]):
         return None
@@ -709,7 +779,7 @@ def _two_body_linear_algebra_step(
         input_formulas=input_formulas,
         output_formulas=formulas,
         source_artifacts=[
-            "SolutionTrace.law_application",
+            "SolutionTrace.steps",
             "ProofSearchTrace.accepted_actions",
             "TheoremSkeletonCandidate.target_spec",
         ],
@@ -863,6 +933,10 @@ def build_solution_trace(evidence: dict[str, Any]) -> SolutionTrace:
             )
         )
 
+    accepted_action_step = _accepted_action_formula_step(accepted_actions, proof_status=proof_status)
+    if accepted_action_step is not None:
+        steps.append(accepted_action_step)
+
     final_answers: list[SolutionFormula] = []
     verified_final = proof_status in SUCCESS_STATUSES
     for row in _list_payload(evidence.get("final_answers")):
@@ -913,7 +987,10 @@ def _trace_prompt_payload(solution_trace: SolutionTrace, *, max_steps: int) -> d
         for key, value in dict(payload.get("source_status") or {}).items()
         if isinstance(value, bool)
     }
-    return payload
+    return {
+        "renderer_plan": _build_narrative_plan(solution_trace),
+        "solution_trace": payload,
+    }
 
 
 def build_solution_renderer_prompt(
@@ -937,7 +1014,7 @@ def _status_disclosure(proof_status: str) -> str:
     if proof_status == "legacy_verified_no_audit":
         return "本题 Lean proof 已通过，但当前缺少 dependency audit，不能确认所有物理步骤均由 MechLib verified declaration 覆盖。"
     if proof_status == "gap_assisted_success":
-        return "其中部分建模关系依赖 gap law，不能计为 fully MechLib verified。"
+        return "本题 Lean replay 已通过，但其中部分建模关系依赖 gap law，不能计为 fully MechLib verified。"
     if proof_status == "proof_failed":
         return "当前形式化证明未通过，因此以下只展示已构造的建模和计划步骤，不作为最终 verified solution。"
     if proof_status == "proof_skipped_due_to_semantic_fail":
@@ -949,130 +1026,300 @@ def _status_disclosure(proof_status: str) -> str:
     return f"当前 proof_status={proof_status}，不能视为 fully MechLib verified。"
 
 
-def _step_formula_displays(step: SolutionStep, formula_ids: set[str] | None = None) -> list[str]:
+def _formula_display(formula: SolutionFormula) -> str:
+    return str(formula.display_formula or formula.formal_formula or "").strip()
+
+
+def _append_formula_record(
+    records: list[dict[str, Any]],
+    seen: set[str],
+    *,
+    formula_id: str,
+    formal: str | None,
+    display: str | None = None,
+    role: str,
+    step_id: str | None,
+    step_title: str | None,
+    verified: bool,
+    source: str | None = None,
+) -> None:
+    text = str(formal or display or "").strip()
+    if not _looks_like_formula(text):
+        return
+    key = _canon_formula_for_pattern(text)
+    if not key or key in seen:
+        return
+    seen.add(key)
+    records.append(
+        {
+            "formula_id": formula_id,
+            "formal_formula": text,
+            "display_formula": display or pretty_print_formula(text),
+            "role": role,
+            "step_id": step_id,
+            "step_title": step_title,
+            "verified": verified,
+            "source": source,
+        }
+    )
+
+
+def _target_variables(solution_trace: SolutionTrace) -> list[str]:
     out: list[str] = []
-    for formula in step.output_formulas:
-        if formula_ids is not None and formula.formula_id not in formula_ids:
-            continue
+    for formula in solution_trace.final_answers:
         text = formula.display_formula or formula.formal_formula
-        if text:
-            out.append(text)
+        if "=" not in text:
+            continue
+        lhs = text.split("=", 1)[0].strip()
+        if lhs and len(lhs) <= 40 and lhs not in out:
+            out.append(lhs)
     return out
 
 
-def _find_two_body_algebra_step(solution_trace: SolutionTrace) -> SolutionStep | None:
-    for step in solution_trace.steps:
-        if step.kind != "algebra_elimination":
-            continue
-        if step.notes == "deterministic_two_body_linear_system":
-            return step
-    return None
-
-
-def _render_textbook_two_body_solution(solution_trace: SolutionTrace) -> str | None:
-    algebra_step = _find_two_body_algebra_step(solution_trace)
-    if algebra_step is None:
-        return None
-    final_displays = [formula.display_formula or formula.formal_formula for formula in solution_trace.final_answers]
-    if len(final_displays) < 2:
-        return None
-
-    substitution = _step_formula_displays(algebra_step, {"two_body_substitution"})
-    collected = _step_formula_displays(algebra_step, {"two_body_collect_terms"})
-    denominator = _step_formula_displays(algebra_step, {"two_body_denominator_nonzero"})
-    if not substitution or not collected:
-        return None
-
-    a_formula = next((text for text in final_displays if _canon_formula_for_pattern(text).startswith("a=")), final_displays[0])
-    t_formula = next((text for text in final_displays if _canon_formula_for_pattern(text).startswith("t=")), final_displays[-1])
-
-    lines = [
-        "设小车质量为 m₁，悬挂物质量为 m₂，系统共同加速度为 a，绳中张力为 T。取小车运动方向和悬挂物向下方向为正方向。",
-        "",
-        "对小车进行受力分析，水平方向合力为绳的张力 T。对小车应用牛顿第二定律，得到",
-        "",
-        "T = m₁a。        (1)",
-        "",
-        "对悬挂物进行受力分析，取向下为正方向，其合力为 m₂g - T。对悬挂物应用牛顿第二定律，得到",
-        "",
-        "m₂g - T = m₂a。  (2)",
-        "",
-        "由 (1) 和 (2) 联立，代入 T = m₁a，有",
-        "",
-        f"{substitution[0]},",
-        "",
-        "即",
-        "",
-        f"{collected[0]}。",
-        "",
+def _build_narrative_plan(solution_trace: SolutionTrace) -> dict[str, Any]:
+    final_answers = [
+        {
+            "formula_id": formula.formula_id,
+            "formal_formula": formula.formal_formula,
+            "display_formula": _formula_display(formula),
+            "verified": formula.verified,
+        }
+        for formula in solution_trace.final_answers
     ]
-    if denominator:
-        lines.extend([
-            f"由于 m₁ 和 m₂ 均为正，{denominator[0]}，因此",
-            "",
-        ])
-    lines.extend([
-        f"{a_formula}。",
-        "",
-        "再代回 T = m₁a，得到",
-        "",
-        f"{t_formula}。",
-        "",
-        "所以",
-        "",
-        f"{a_formula},",
-        f"{t_formula}。",
-        "",
-        _status_disclosure(solution_trace.proof_status),
-    ])
-    if solution_trace.warnings and solution_trace.proof_status != "fully_mechlib_verified":
-        lines.append("结构化警告：" + "; ".join(solution_trace.warnings))
-    return "\n".join(lines)
+    final_keys: set[str] = set()
+    for item in final_answers:
+        final_keys.update(_formula_key_variants(item["formal_formula"]))
+        final_keys.update(_formula_key_variants(item["display_formula"]))
+
+    modeling_equations: list[dict[str, Any]] = []
+    law_equations: list[dict[str, Any]] = []
+    algebra_steps: list[dict[str, Any]] = []
+    seen_model: set[str] = set()
+    seen_law: set[str] = set()
+    seen_algebra: set[str] = set()
+    modeling_notes: list[str] = []
+
+    for step in solution_trace.steps:
+        if step.kind == "modeling" and step.text_intent:
+            modeling_notes.append(step.text_intent)
+        if step.kind in {"modeling", "law_application"}:
+            target = law_equations if step.kind == "law_application" else modeling_equations
+            seen = seen_law if step.kind == "law_application" else seen_model
+            _append_formula_record(
+                target,
+                seen,
+                formula_id=f"{step.step_id}_formula",
+                formal=step.formal_formula,
+                display=step.display_formula,
+                role=step.kind,
+                step_id=step.step_id,
+                step_title=step.title,
+                verified=step.verified,
+                source=step.verified_decl,
+            )
+            for formula in step.output_formulas:
+                _append_formula_record(
+                    target,
+                    seen,
+                    formula_id=formula.formula_id,
+                    formal=formula.formal_formula,
+                    display=formula.display_formula,
+                    role=step.kind,
+                    step_id=step.step_id,
+                    step_title=step.title,
+                    verified=step.verified or formula.verified,
+                    source=formula.source or step.verified_decl,
+                )
+        if step.kind == "algebra_elimination":
+            _append_formula_record(
+                algebra_steps,
+                seen_algebra,
+                formula_id=f"{step.step_id}_formula",
+                formal=step.formal_formula,
+                display=step.display_formula,
+                role=step.notes or "algebra_elimination",
+                step_id=step.step_id,
+                step_title=step.title,
+                verified=step.verified,
+                source=";".join(step.source_artifacts),
+            )
+            for formula in step.output_formulas:
+                key_variants = _formula_key_variants(formula.formal_formula) | _formula_key_variants(formula.display_formula)
+                role = "final_answer_from_proof_action" if key_variants & final_keys else (step.notes or "algebra_elimination")
+                _append_formula_record(
+                    algebra_steps,
+                    seen_algebra,
+                    formula_id=formula.formula_id,
+                    formal=formula.formal_formula,
+                    display=formula.display_formula,
+                    role=role,
+                    step_id=step.step_id,
+                    step_title=step.title,
+                    verified=step.verified or formula.verified,
+                    source=formula.source,
+                )
+
+    return {
+        "sample_id": solution_trace.sample_id,
+        "candidate_id": solution_trace.candidate_id,
+        "proof_status": solution_trace.proof_status,
+        "target_variables": _target_variables(solution_trace),
+        "target_display": solution_trace.target_display,
+        "modeling_notes": modeling_notes[:4],
+        "modeling_equations": modeling_equations,
+        "law_equations": law_equations,
+        "algebra_steps": algebra_steps,
+        "final_answers": final_answers,
+        "verification_note": _status_disclosure(solution_trace.proof_status),
+        "warnings": solution_trace.warnings,
+        "style_constraints": {
+            "avoid_internal_phrases": [
+                "目标公式：",
+                "轨迹中给出",
+                "按轨迹中的目标结果可得",
+                "结构化 artifact",
+                "SolutionTrace",
+                "proof_status=",
+                "verified_decl=",
+            ],
+            "formula_policy": "只使用 renderer_plan 中出现的公式；缺失的代数中间式不能补写。",
+        },
+    }
+
+
+def _render_formula_line(formula: str, punctuation: str = "。") -> str:
+    return f"{formula}{punctuation}"
+
+
+def _render_equation_list(records: list[dict[str, Any]], *, start_index: int = 1) -> tuple[list[str], int]:
+    lines: list[str] = []
+    idx = start_index
+    for record in records:
+        formula = str(record.get("display_formula") or record.get("formal_formula") or "").strip()
+        if not formula:
+            continue
+        title = str(record.get("step_title") or "").strip()
+        if title and title not in {"建立力学模型", "联立方程求解", "代数推导与目标闭合", "合并建模关系"}:
+            lines.append(f"{title}给出")
+            lines.append("")
+        lines.append(f"{formula}。        ({idx})")
+        lines.append("")
+        idx += 1
+    return lines, idx
+
+
+def _record_lhs(record: dict[str, Any]) -> str:
+    formula = str(record.get("formal_formula") or record.get("display_formula") or "").strip()
+    if "=" not in formula:
+        return ""
+    return formula.split("=", 1)[0].strip()
+
+
+def _is_auxiliary_equation_record(record: dict[str, Any], target_variables: list[str]) -> bool:
+    lhs = _canon_formula_for_pattern(_record_lhs(record))
+    target_lhs = {_canon_formula_for_pattern(variable) for variable in target_variables}
+    if lhs and lhs in target_lhs:
+        return False
+    text = str(record.get("formal_formula") or record.get("display_formula") or "")
+    if re.search(r"\bFnet(?:_|[A-Za-z0-9]|\b)", text):
+        return True
+    if re.search(r"\b[A-Za-z][A-Za-z0-9]*(?:_left|_right)\b", text):
+        return True
+    if re.search(r"\ba\d+\b", text):
+        return True
+    return False
+
+
+def _select_numbered_equations(records: list[dict[str, Any]], *, target_variables: list[str]) -> list[dict[str, Any]]:
+    if not records:
+        return []
+    primary = [
+        record for record in records
+        if not _is_auxiliary_equation_record(record, target_variables)
+    ]
+    return primary or records
+
+
+def _sort_algebra_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def rank(item: tuple[int, dict[str, Any]]) -> tuple[int, int]:
+        idx, record = item
+        formula = str(record.get("display_formula") or record.get("formal_formula") or "")
+        if "=" in formula and "≠" not in formula and "<" not in formula and ">" not in formula:
+            return (0, idx)
+        if any(token in formula for token in ("≠", "<", ">", "≤", "≥")):
+            return (1, idx)
+        return (2, idx)
+
+    return [record for _, record in sorted(enumerate(records), key=rank)]
+
+
+def _render_final_answers(final_answers: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for idx, answer in enumerate(final_answers):
+        formula = str(answer.get("display_formula") or answer.get("formal_formula") or "").strip()
+        if not formula:
+            continue
+        punctuation = "," if idx < len(final_answers) - 1 else "。"
+        lines.append(_render_formula_line(formula, punctuation))
+    return lines
 
 
 def render_deterministic_solution(solution_trace: SolutionTrace) -> str:
-    textbook = _render_textbook_two_body_solution(solution_trace)
-    if textbook:
-        return textbook
-
+    plan = _build_narrative_plan(solution_trace)
     lines: list[str] = []
-    lines.append("1. 题意与符号说明")
-    if solution_trace.target_display:
-        lines.append(f"目标公式：{solution_trace.target_display}")
+
+    variables = plan["target_variables"]
+    if variables:
+        lines.append(f"本题要求求出 {', '.join(variables)}。")
+    elif plan.get("target_display"):
+        lines.append("本题要求证明给定的目标关系。")
     else:
-        lines.append("目标公式未能从结构化 artifact 中可靠提取。")
+        lines.append("本题的目标关系未能从结构化结果中可靠提取。")
+
+    if plan["modeling_notes"]:
+        lines.append("先建立力学模型，选定题目中的物理对象、变量、正方向和约束关系。")
     lines.append("")
-    lines.append("2. 建模与物理定律应用")
-    for step in solution_trace.steps:
-        if step.kind not in {"modeling", "law_application", "definition_merge"}:
-            continue
-        status = "已验证" if step.verified else "未验证"
-        detail = step.display_formula or step.text_intent or step.title
-        decl = f"；verified_decl={step.verified_decl}" if step.verified_decl else ""
-        lines.append(f"- [{status}] {step.title}: {detail}{decl}")
-    lines.append("")
-    lines.append("3. 联立方程/代数求解")
-    algebra_steps = [step for step in solution_trace.steps if step.kind == "algebra_elimination"]
+
+    equation_index = 1
+    modeling_equations = plan["modeling_equations"]
+    law_equations = plan["law_equations"]
+    if modeling_equations or law_equations:
+        lines.append("建模和物理定律应用给出以下关系：")
+        lines.append("")
+        numbered_equations = _select_numbered_equations(
+            modeling_equations + law_equations,
+            target_variables=variables,
+        )
+        equation_lines, equation_index = _render_equation_list(numbered_equations, start_index=equation_index)
+        lines.extend(equation_lines)
+    else:
+        lines.append("当前可审计记录没有给出可直接编号的建模方程或物理方程。")
+        lines.append("")
+
+    algebra_steps = _sort_algebra_records([
+        record for record in plan["algebra_steps"]
+        if record.get("role") != "final_answer_from_proof_action"
+    ])
     if algebra_steps:
-        for step in algebra_steps:
-            status = "已验证" if step.verified else "未验证"
-            detail = step.display_formula or step.text_intent or step.title
-            lines.append(f"- [{status}] {detail}")
+        lines.append("由上述关系进行代数整理，得到")
+        lines.append("")
+        for record in algebra_steps:
+            formula = str(record.get("display_formula") or record.get("formal_formula") or "").strip()
+            if formula:
+                lines.append(_render_formula_line(formula, "," if record is not algebra_steps[-1] else "。"))
+                lines.append("")
     else:
-        lines.append("- 未发现结构化 algebra_obligation；不补写额外代数步骤。")
-    lines.append("")
-    lines.append("4. 最终答案")
-    if solution_trace.final_answers:
-        for formula in solution_trace.final_answers:
-            status = "已验证" if formula.verified else "未验证"
-            lines.append(f"- [{status}] {formula.display_formula or formula.formal_formula}")
+        lines.append("当前可审计轨迹没有提供更多代数中间式，因此这里不补写额外公式。")
+        lines.append("")
+
+    if plan["final_answers"]:
+        lines.append("所以")
+        lines.append("")
+        lines.extend(_render_final_answers(plan["final_answers"]))
     else:
-        lines.append("- 未能从 theorem target 提取最终答案。")
+        lines.append("最终答案未能从 theorem target 中提取。")
     lines.append("")
-    lines.append("5. 形式化验证说明")
-    lines.append(_status_disclosure(solution_trace.proof_status))
-    if solution_trace.warnings:
-        lines.append("结构化警告：" + "; ".join(solution_trace.warnings))
+    lines.append(plan["verification_note"])
     return "\n".join(lines)
 
 
@@ -1189,6 +1436,20 @@ def audit_rendered_solution(
     if unsupported_count > 0:
         failure_tags.append("unsupported_formula")
 
+    internal_markers = [
+        "目标公式：",
+        "轨迹中给出",
+        "按轨迹中的目标结果可得",
+        "结构化 artifact",
+        "SolutionTrace",
+        "proof_status=",
+        "verified_decl=",
+        "source_artifacts",
+        "step_id",
+    ]
+    if any(marker in text for marker in internal_markers):
+        failure_tags.append("internal_artifact_language")
+
     status = solution_trace.proof_status
     lowered = text.lower()
     needs_gap_disclosure = any(token in status for token in ("gap", "partial", "algebra_only"))
@@ -1225,7 +1486,16 @@ def audit_rendered_solution(
     if not render_success:
         failure_tags.append("empty_natural_solution")
 
-    audit_pass = render_success and final_coverage and law_coverage and unsupported_count == 0 and gap_disclosure and proof_status_disclosure and target_match
+    audit_pass = (
+        render_success
+        and final_coverage
+        and law_coverage
+        and unsupported_count == 0
+        and "internal_artifact_language" not in failure_tags
+        and gap_disclosure
+        and proof_status_disclosure
+        and target_match
+    )
     return SolutionRenderAudit(
         sample_id=solution_trace.sample_id,
         candidate_id=solution_trace.candidate_id,
@@ -1319,48 +1589,41 @@ class ModuleSolutionRenderer:
         raw_llm: str | None = None
         llm_payload: dict[str, Any] = {}
         error: str | None = None
-        natural_solution = ""
-        preferred_deterministic = _render_textbook_two_body_solution(trace)
-        if preferred_deterministic:
-            natural_solution = preferred_deterministic
-            llm_payload = {
-                "natural_solution": natural_solution,
-                "used_step_ids": [step.step_id for step in trace.steps],
-                "mentioned_formulas": [
-                    formula.display_formula or formula.formal_formula
-                    for formula in trace.final_answers
-                ],
-                "verification_note": _status_disclosure(trace.proof_status),
-                "renderer": "deterministic_textbook_two_body",
-            }
-        elif self._config_bool("natural_language_enabled", False):
-            try:
-                raw_llm, llm_payload, error = self._call_llm(trace)
-                natural_solution = str(llm_payload.get("natural_solution") or "").strip() if not error else ""
-            except Exception as exc:
-                natural_solution = ""
-                error = f"llm_render_failed:{type(exc).__name__}:{exc}"
-
-        if not natural_solution:
-            natural_solution = render_deterministic_solution(trace)
-            if error:
-                trace.warnings.append(error)
-            llm_payload = {
-                "natural_solution": natural_solution,
-                "used_step_ids": [step.step_id for step in trace.steps],
-                "mentioned_formulas": [
-                    formula.display_formula or formula.formal_formula
-                    for formula in trace.final_answers
-                ],
-                "verification_note": _status_disclosure(trace.proof_status),
-                "renderer": "deterministic_fallback",
-            }
+        natural_solution = render_deterministic_solution(trace)
+        llm_payload = {
+            "natural_solution": natural_solution,
+            "used_step_ids": [step.step_id for step in trace.steps],
+            "mentioned_formulas": [
+                formula.display_formula or formula.formal_formula
+                for formula in trace.final_answers
+            ],
+            "verification_note": _status_disclosure(trace.proof_status),
+            "renderer": "deterministic_narrative_plan",
+        }
 
         audit = audit_rendered_solution(
             solution_trace=trace,
             natural_solution=natural_solution,
             llm_payload=llm_payload,
         )
+        if self._config_bool("natural_language_enabled", False) and self.model_client is not None:
+            try:
+                raw_llm, llm_payload, error = self._call_llm(trace)
+                llm_solution = str(llm_payload.get("natural_solution") or "").strip() if not error else ""
+                if llm_solution:
+                    llm_audit = audit_rendered_solution(
+                        solution_trace=trace,
+                        natural_solution=llm_solution,
+                        llm_payload=llm_payload,
+                    )
+                    if llm_audit.audit_pass or (
+                        not audit.audit_pass and len(llm_audit.failure_tags) < len(audit.failure_tags)
+                    ):
+                        natural_solution = llm_solution
+                        audit = llm_audit
+            except Exception as exc:
+                error = f"llm_render_failed:{type(exc).__name__}:{exc}"
+
         if (
             not audit.audit_pass
             and self._config_bool("natural_language_enabled", False)

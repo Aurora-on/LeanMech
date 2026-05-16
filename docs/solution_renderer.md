@@ -34,7 +34,14 @@ LLM 负责讲得通顺，不负责重新求解。
 
 如果 trace/audit 为空，模块会保守退回 `ProofAttemptResult` 和 `ProofCheckResult`。legacy proof 成功但没有 dependency audit 时，状态为 `legacy_verified_no_audit`，不能标记为 `fully_mechlib_verified`。
 
-## LLM 的角色
+## RendererPlan 与 LLM 的角色
+
+`SolutionRenderer` 会先从 `SolutionTrace` 构造 compact `renderer_plan`。这个 plan 会把正文需要的内容分成：
+
+- 建模/物理方程：优先展示可读解题所需的主方程；`Fnet_*`、`a1 = a`、`T_left = T_right` 这类辅助定义保留在 `SolutionTrace` 中，不默认塞进自然语言正文。
+- 代数步骤：优先展示已在 trace 或 accepted proof actions 中出现的中间式；最终答案不重复伪装成中间推导。
+- 最终答案：只来自 theorem target / selected candidate target。
+- 验证说明：只来自 proof check / dependency audit。
 
 LLM 只用于中文表达：
 
@@ -43,9 +50,9 @@ LLM 只用于中文表达：
 - 不新增物理定律。
 - 不修改最终答案。
 - 不隐藏 gap、partial、legacy/no-audit 或 proof_failed 状态。
-- 输入只包含 compact `SolutionTrace`，不包含完整 Lean proof、完整 MechLib context、完整 theorem corpus 或完整 raw response。
+- 输入只包含 `renderer_plan` 和 compact `SolutionTrace`，不包含完整 Lean proof、完整 MechLib context、完整 theorem corpus 或完整 raw response。
 
-默认配置 `solution_renderer.natural_language_enabled=false`，因此无 LLM 时也会生成 deterministic fallback。
+默认配置 `solution_renderer.natural_language_enabled=false`，因此无 LLM 时也会生成 deterministic fallback。若启用 LLM，模块会先生成 deterministic baseline，再让 LLM 基于同一个 `renderer_plan` 润色；LLM 输出必须通过 `RenderAudit`，否则回退到 deterministic baseline 或进入一次受约束修订。
 
 ## SolutionTrace
 
@@ -82,6 +89,7 @@ LLM 只用于中文表达：
 - final answer coverage
 - verified law step coverage
 - unsupported formula detection
+- internal artifact language detection，例如“目标公式：”“轨迹中给出”“SolutionTrace”“verified_decl=”等不能出现在可读解题正文中
 - gap / partial disclosure
 - legacy no-audit disclosure
 - proof failed disclosure
