@@ -13,7 +13,14 @@ from mech_pipeline.modules.e_proof_context import build_proof_context
 from mech_pipeline.modules.e_search_controller import run_llm_guided_search
 from mech_pipeline.prompting import load_template, render_template
 from mech_pipeline.response_parser import ResponseParseError, parse_json_model
-from mech_pipeline.types import GroundingResult, ProofAttemptResult, ProofCheckResult, ProofSearchTrace, StatementCandidate
+from mech_pipeline.types import (
+    GroundingResult,
+    ProofAttemptResult,
+    ProofCheckResult,
+    ProofObligationReplayItem,
+    ProofSearchTrace,
+    StatementCandidate,
+)
 from mech_pipeline.utils import (
     normalize_lean_text,
     sanitize_problem_ir_for_llm,
@@ -220,6 +227,47 @@ def _action_rows_from_trace(trace: ProofSearchTrace) -> list[dict[str, object]]:
     return [*trace.accepted_actions, *trace.rejected_actions]
 
 
+def _audit_context_with_blocked_obligations(
+    context,
+    trace: ProofSearchTrace,
+):
+    blocked_rows = [row for row in trace.blocked_obligations if isinstance(row, dict) and row.get("obligation_id")]
+    if not blocked_rows:
+        return context
+    by_id = {item.obligation_id: item for item in context.obligation_replay_items if item.obligation_id}
+    existing_blocked = {
+        item.obligation_id: item for item in context.obligation_replay_blocked if item.obligation_id
+    }
+    blocked_ids = {str(row.get("obligation_id")) for row in blocked_rows}
+    blocked_items: dict[str, ProofObligationReplayItem] = dict(existing_blocked)
+    for row in blocked_rows:
+        obligation_id = str(row.get("obligation_id") or "").strip()
+        if not obligation_id:
+            continue
+        source = by_id.get(obligation_id)
+        reason = str(row.get("reason") or row.get("error") or "obligation_blocked")
+        if source is not None:
+            blocked_items[obligation_id] = replace(source, replay_status="blocked", error=reason)
+            continue
+        blocked_items[obligation_id] = ProofObligationReplayItem(
+            obligation_id=obligation_id,
+            kind=str(row.get("kind") or "unknown"),
+            from_hypothesis=row.get("from_hypothesis"),
+            must_use=row.get("must_use"),
+            formal_claim=str(row.get("formal_claim") or ""),
+            produced_fact_name=str(row.get("produced_fact_name") or ""),
+            replay_status="blocked",
+            error=reason,
+        )
+    return replace(
+        context,
+        obligation_replay_items=[
+            item for item in context.obligation_replay_items if item.obligation_id not in blocked_ids
+        ],
+        obligation_replay_blocked=list(blocked_items.values()),
+    )
+
+
 class ModuleE:
     def __init__(
         self,
@@ -337,12 +385,12 @@ class ModuleE:
         trace_dict = trace.to_dict()
         action_rows = _action_rows_from_trace(trace)
         strategy_prompt_rows = list(trace.strategy_prompt_summaries)
-        audit_context = context
+        audit_context = _audit_context_with_blocked_obligations(context, trace)
         if trace.physical_assumption_augmented:
             audit_context = replace(
-                context,
-                theorem_decl=trace.augmented_theorem_decl or context.theorem_decl,
-                base_theorem_decl=trace.base_theorem_decl or context.base_theorem_decl,
+                audit_context,
+                theorem_decl=trace.augmented_theorem_decl or audit_context.theorem_decl,
+                base_theorem_decl=trace.base_theorem_decl or audit_context.base_theorem_decl,
                 added_physical_assumptions=list(trace.added_physical_assumptions),
                 augmentation_status="applied",
                 augmentation_reason="e_physical_assumption_augmentation",

@@ -230,8 +230,51 @@ def test_model_ir_builder_preserves_function_formula_ir(tmp_path: Path) -> None:
     assert model_ir.canonical_target.function_formula_ir
     row = model_ir.canonical_target.function_formula_ir[0]
     assert row.formula_kind == "pointwise_relation"
-    assert row.bound_variables == [{"name": "t", "lean_type": "Time"}]
+    assert row.bound_variables == [{"name": "t", "lean_type": "Real"}]
     assert row.lean_formula == "x t = v * t"
+
+
+def test_model_ir_builder_does_not_poison_scalar_target_with_bad_function_ir(tmp_path: Path) -> None:
+    payload = json.loads(_valid_payload())
+    payload["canonical_target"] = {
+        "target_id": "target_1",
+        "target_kind": "relation",
+        "target_variables": ["L1", "L2"],
+        "lean_formula": "L1 = g * Real.sin alpha.val",
+        "secondary_formulas": ["L2 = g * Real.cos alpha.val"],
+        "function_formula_ir": [
+            {
+                "formula_id": "bad_symbolic_row",
+                "formula_kind": "scalar_relation",
+                "bound_variables": [],
+                "lhs": "L1",
+                "relation": "=",
+                "rhs": "symbolic vector target not lean-checkable",
+                "lean_formula": "L1 = symbolic vector target not lean-checkable",
+                "source_text": "non-Lean symbolic target detail",
+                "parse_ok": False,
+                "error": "symbolic target formula only",
+            }
+        ],
+        "requires_closed_form": True,
+        "source_text": "Find L1 and L2.",
+        "confidence": 0.8,
+        "parse_ok": True,
+        "error": None,
+    }
+    module = ModuleA2ModelIR(StaticModelIRClient(json.dumps(payload)), _prompt(tmp_path))
+
+    model_ir = module.run(
+        sample_id="scalar-target-with-bad-function-row",
+        problem_text="Find L1 and L2.",
+        problem_ir={"unknown_target": {"symbol": "L1", "description": "stable positions"}},
+        structured_mechlib_context=None,
+    )
+
+    assert model_ir.parse_ok is True
+    assert model_ir.canonical_target is not None
+    assert model_ir.canonical_target.parse_ok is True
+    assert model_ir.canonical_target.function_formula_ir[0].parse_ok is False
 
 
 def test_model_ir_builder_lifts_target_spec_secondary_goal(tmp_path: Path) -> None:
@@ -542,6 +585,20 @@ def test_model_ir_builder_accepts_function_quantity_and_canonical_relation(tmp_p
         "target_kind": "relation",
         "target_variables": ["x"],
         "lean_formula": "forall t : Time, x t = t",
+        "function_formula_ir": [
+            {
+                "formula_id": "target_formula_1",
+                "formula_kind": "pointwise_relation",
+                "bound_variables": [{"symbol": "t", "lean_type": "Time"}],
+                "domain_conditions": [],
+                "lhs": "x t",
+                "relation": "=",
+                "rhs": "t",
+                "lean_formula": "forall t : Time, x t = t",
+                "source_text": "position-time relation",
+                "parse_ok": True,
+            }
+        ],
         "requires_closed_form": False,
         "source_text": "target is a position-time relation",
         "confidence": 0.82,
@@ -559,7 +616,318 @@ def test_model_ir_builder_accepts_function_quantity_and_canonical_relation(tmp_p
     )
 
     assert model_ir.parse_ok is True
-    assert model_ir.quantity_annotations[0].lean_type == "Time -> Length"
+    assert model_ir.quantity_annotations[0].lean_type == "MechLib.Mechanics.Kinematics.ScalarTrajectory"
     assert model_ir.quantity_annotations[0].supported is True
     assert model_ir.canonical_target is not None
-    assert model_ir.canonical_target.lean_formula == "forall t : Time, x t = t"
+    assert model_ir.canonical_target.lean_formula == "forall t : Real, x t = t"
+
+
+def test_model_ir_builder_normalizes_time_function_quantity_types(tmp_path: Path) -> None:
+    payload = json.loads(_valid_payload())
+    payload["variables"] = {"x": "position function", "omega": "angular velocity function"}
+    payload["quantity_annotations"] = [
+        {"symbol": "x", "semantic_role": "position", "lean_type": "Time -> Length", "confidence": 0.95},
+        {"symbol": "omega", "semantic_role": "angular velocity", "lean_type": "Time -> AngularVelocity", "confidence": 0.95},
+    ]
+    module = ModuleA2ModelIR(StaticModelIRClient(json.dumps(payload)), _prompt(tmp_path))
+
+    model_ir = module.run(
+        sample_id="function-type-normalization",
+        problem_text="x(t) and omega(t) are time-dependent quantities.",
+        problem_ir={"unknown_target": {"symbol": "s", "description": "displacement"}},
+        structured_mechlib_context=None,
+    )
+
+    assert model_ir.quantity_annotations[0].lean_type == "MechLib.Mechanics.Kinematics.ScalarTrajectory"
+    assert model_ir.quantity_annotations[1].lean_type == "Real -> AngularVelocity"
+
+
+def test_model_ir_builder_rejects_informal_derivative_placeholders(tmp_path: Path) -> None:
+    payload = json.loads(_valid_payload())
+    payload["variables"] = {"x_ddot": "acceleration", "mdot": "mass flow rate"}
+    payload["quantity_annotations"] = [
+        {"symbol": "x_ddot", "semantic_role": "informal acceleration placeholder", "lean_type": "Acceleration", "confidence": 0.95},
+        {"symbol": "mdot", "semantic_role": "mass flow rate", "lean_type": "Real", "confidence": 0.95},
+    ]
+
+    model_ir = ModuleA2ModelIR(StaticModelIRClient(json.dumps(payload)), _prompt(tmp_path)).run(
+        sample_id="bad-derivative-placeholder",
+        problem_text="problem",
+        problem_ir={"unknown_target": {"symbol": "s", "description": "displacement"}},
+        structured_mechlib_context=None,
+    )
+
+    assert model_ir.parse_ok is False
+    assert model_ir.error == "model_ir_informal_derivative_placeholder:variables.x_ddot"
+
+    payload["variables"] = {"mdot": "mass flow rate"}
+    payload["quantity_annotations"] = [
+        {"symbol": "mdot", "semantic_role": "mass flow rate", "lean_type": "Real", "confidence": 0.95},
+    ]
+    model_ir = ModuleA2ModelIR(StaticModelIRClient(json.dumps(payload)), _prompt(tmp_path)).run(
+        sample_id="mass-flow-symbol",
+        problem_text="problem",
+        problem_ir={"unknown_target": {"symbol": "s", "description": "displacement"}},
+        structured_mechlib_context=None,
+    )
+
+    assert model_ir.parse_ok is True
+
+
+def test_model_ir_builder_allows_function_target_without_function_formula_ir_for_b_repair(tmp_path: Path) -> None:
+    payload = json.loads(_valid_payload())
+    payload["variables"] = {"x": "position function", "t": "time"}
+    payload["quantity_annotations"] = [
+        {
+            "symbol": "x",
+            "semantic_role": "position as a function of time",
+            "unit_or_dimension": "m",
+            "lean_type": "Time -> Length",
+            "confidence": 0.92,
+        },
+        {"symbol": "t", "semantic_role": "time", "lean_type": "Time", "confidence": 0.95},
+    ]
+    payload["canonical_target"] = {
+        "target_id": "target_1",
+        "target_kind": "relation",
+        "target_variables": ["x"],
+        "lean_formula": "forall t : Time, x t = t",
+        "function_formula_ir": [],
+        "requires_closed_form": False,
+        "source_text": "target is a position-time relation",
+        "confidence": 0.82,
+        "parse_ok": True,
+    }
+    payload["target"] = {"symbol": "x", "description": "position function"}
+    payload["forbidden_as_assumption"] = ["target position function x"]
+    model_ir = ModuleA2ModelIR(StaticModelIRClient(json.dumps(payload)), _prompt(tmp_path)).run(
+        sample_id="function-target-missing-ir",
+        problem_text="A particle has position x(t). State the position-time relation.",
+        problem_ir={"unknown_target": {"symbol": "x", "description": "position function"}},
+        structured_mechlib_context=None,
+    )
+
+    assert model_ir.parse_ok is True
+    assert model_ir.error is None
+    assert model_ir.canonical_target is not None
+    assert model_ir.canonical_target.function_formula_ir == []
+
+
+def test_model_ir_builder_drops_bad_local_definition_without_poisoning_target(tmp_path: Path) -> None:
+    payload = json.loads(_valid_payload())
+    payload["quantity_annotations"] = [
+        {"symbol": "x", "semantic_role": "position function", "lean_type": "Time -> Length", "confidence": 0.95},
+        {"symbol": "v", "semantic_role": "speed", "lean_type": "Speed", "confidence": 0.95},
+    ]
+    payload["local_definitions"] = [
+        {
+            "name": "bad_function_definition",
+            "lean": "x = v * t",
+            "role": "local_definition",
+            "source_type": "problem_ir",
+            "allowed_in_hypotheses": True,
+        }
+    ]
+    payload["canonical_target"] = {
+        "target_id": "target_1",
+        "target_kind": "relation",
+        "target_variables": ["v"],
+        "lean_formula": "v = 10",
+        "requires_closed_form": False,
+        "source_text": "target speed",
+        "confidence": 0.9,
+        "parse_ok": True,
+    }
+
+    model_ir = ModuleA2ModelIR(StaticModelIRClient(json.dumps(payload)), _prompt(tmp_path)).run(
+        sample_id="drop-bad-local-definition",
+        problem_text="problem",
+        problem_ir={"unknown_target": {"symbol": "v", "description": "speed"}},
+        structured_mechlib_context=None,
+    )
+
+    assert model_ir.parse_ok is True
+    assert model_ir.local_definitions == []
+    assert model_ir.error is not None
+    assert model_ir.error.startswith("dropped_invalid_local_definitions:")
+
+
+def test_model_ir_builder_normalizes_packed_comma_formulas(tmp_path: Path) -> None:
+    payload = json.loads(_valid_payload())
+    payload["model_instances"][0]["expected_claim"] = "omega_i = 0, v_i = u, v_G = u"
+    model_ir = ModuleA2ModelIR(StaticModelIRClient(json.dumps(payload)), _prompt(tmp_path)).run(
+        sample_id="packed-claim",
+        problem_text="problem",
+        problem_ir={"unknown_target": {"symbol": "s", "description": "displacement"}},
+        structured_mechlib_context=None,
+    )
+
+    assert model_ir.parse_ok is True
+    assert model_ir.error is None
+    assert model_ir.model_instances[0].expected_claim == "omega_i = 0 ∧ v_i = u ∧ v_G = u"
+
+
+def test_model_ir_builder_allows_natural_language_expected_claim_with_comma(tmp_path: Path) -> None:
+    payload = json.loads(_valid_payload())
+    payload["model_instances"][0]["expected_claim"] = (
+        "The velocity function satisfies (v t).val = d/dt of x(t), "
+        "hence v(t) = 6 t - 2 on the requested interval."
+    )
+    model_ir = ModuleA2ModelIR(StaticModelIRClient(json.dumps(payload)), _prompt(tmp_path)).run(
+        sample_id="nl-expected-claim",
+        problem_text="problem",
+        problem_ir={"unknown_target": {"symbol": "s", "description": "displacement"}},
+        structured_mechlib_context=None,
+    )
+
+    assert model_ir.parse_ok is True
+    assert model_ir.error is None
+    assert "hence v(t)" in (model_ir.model_instances[0].expected_claim or "")
+
+
+def test_model_ir_builder_allows_integral_comma_in_interface_claim(tmp_path: Path) -> None:
+    payload = json.loads(_valid_payload())
+    payload["quantity_annotations"].append(
+        {
+            "symbol": "M",
+            "semantic_role": "torque as a function of angle",
+            "lean_type": "PhysAngle -> Torque",
+            "confidence": 0.95,
+        }
+    )
+    payload["model_instances"][0]["interface_instantiations"] = [
+        {
+            "instantiation_id": "couple_work",
+            "kind": "work_integral",
+            "formal_claim": "W_M = ∫ phi in [phi_i, phi_f], M phi",
+            "binding_status": "explicit_model_gap",
+            "proof_fact_allowed": False,
+        }
+    ]
+    model_ir = ModuleA2ModelIR(StaticModelIRClient(json.dumps(payload)), _prompt(tmp_path)).run(
+        sample_id="integral-comma",
+        problem_text="problem",
+        problem_ir={"unknown_target": {"symbol": "s", "description": "displacement"}},
+        structured_mechlib_context=None,
+    )
+
+    assert model_ir.parse_ok is True
+    assert model_ir.error is None
+    assert model_ir.model_instances[0].interface_instantiations[0].formal_claim == "W_M = ∫ phi in [phi_i, phi_f], M phi"
+
+
+def test_model_ir_builder_rejects_bare_function_quantity_equations(tmp_path: Path) -> None:
+    payload = json.loads(_valid_payload())
+    payload["quantity_annotations"] = [
+        {"symbol": "vx", "semantic_role": "velocity function", "lean_type": "Time -> Speed", "confidence": 0.95},
+        {"symbol": "omega", "semantic_role": "angular velocity function", "lean_type": "Time -> AngularVelocity", "confidence": 0.95},
+        {"symbol": "R", "semantic_role": "radius", "lean_type": "Length", "confidence": 0.95},
+    ]
+    payload["givens"] = [
+        {
+            "name": "bad_vx",
+            "lean": "vx = ((1 : Real) / 2) * t.val",
+            "role": "given_fact",
+            "source_type": "problem_ir",
+            "allowed_in_hypotheses": True,
+        }
+    ]
+    model_ir = ModuleA2ModelIR(StaticModelIRClient(json.dumps(payload)), _prompt(tmp_path)).run(
+        sample_id="bare-function-eq",
+        problem_text="problem",
+        problem_ir={"unknown_target": {"symbol": "s", "description": "displacement"}},
+        structured_mechlib_context=None,
+    )
+
+    assert model_ir.parse_ok is False
+    assert model_ir.error == "model_ir_function_quantity_not_pointwise:givens.bad_vx"
+
+    payload["givens"][0]["lean"] = "forall t0 : Time, (vx t0).val = ((1 : Real) / 2) * t0.val"
+    payload["model_instances"][0]["interface_instantiations"] = [
+        {
+            "instantiation_id": "bad_no_slip",
+            "kind": "constraint",
+            "formal_claim": "v_rope = R.val * omega",
+            "binding_status": "explicit_model_gap",
+            "proof_fact_allowed": False,
+        }
+    ]
+    model_ir = ModuleA2ModelIR(StaticModelIRClient(json.dumps(payload)), _prompt(tmp_path)).run(
+        sample_id="bare-function-interface",
+        problem_text="problem",
+        problem_ir={"unknown_target": {"symbol": "s", "description": "displacement"}},
+        structured_mechlib_context=None,
+    )
+
+    assert model_ir.parse_ok is True
+    assert model_ir.model_instances[0].interface_instantiations == []
+    assert model_ir.error is not None
+    assert (
+        "dropped_invalid_modeling_formulas:"
+        "model_ir_function_quantity_not_pointwise:model_instances.mi1.interface_instantiations.bad_no_slip"
+    ) in model_ir.error
+
+
+def test_model_ir_builder_drops_bad_model_instance_expected_claim(tmp_path: Path) -> None:
+    payload = json.loads(_valid_payload())
+    payload["model_instances"][0]["expected_claim"] = "omega_i = 0, use rolling condition"
+    # The comma-packed field above mixes formal clauses and target prose, so it
+    # should be removed as auxiliary planning metadata rather than poisoning a
+    # valid canonical target.
+    model_ir = ModuleA2ModelIR(StaticModelIRClient(json.dumps(payload)), _prompt(tmp_path)).run(
+        sample_id="bad-model-expected-claim",
+        problem_text="problem",
+        problem_ir={"unknown_target": {"symbol": "s", "description": "displacement"}},
+        structured_mechlib_context=None,
+    )
+
+    assert model_ir.parse_ok is True
+    assert model_ir.model_instances[0].expected_claim is None
+    assert model_ir.error is not None
+    assert "dropped_invalid_modeling_formulas:model_ir_multi_formula_field:model_instances.mi1.expected_claim" in model_ir.error
+
+
+def test_model_ir_builder_accepts_numeric_function_application_but_rejects_illegal_si_cast(tmp_path: Path) -> None:
+    payload = json.loads(_valid_payload())
+    payload["quantity_annotations"] = [
+        {
+            "symbol": "v",
+            "semantic_role": "velocity as a function of time",
+            "lean_type": "Time -> Speed",
+            "confidence": 0.95,
+        },
+        {"symbol": "v0", "semantic_role": "initial speed", "lean_type": "Speed", "confidence": 0.95},
+    ]
+    payload["givens"] = [
+        {
+            "name": "initial_velocity",
+            "lean": "v 0 = v0.val",
+            "role": "given_fact",
+            "source_type": "problem_ir",
+            "allowed_in_hypotheses": True,
+        }
+    ]
+    payload["target"] = {"symbol": "v0", "description": "initial speed"}
+    payload["forbidden_as_assumption"] = ["target initial speed v0"]
+    payload["model_instances"][0]["expected_claim"] = "v 0 = v0.val"
+    model_ir = ModuleA2ModelIR(StaticModelIRClient(json.dumps(payload)), _prompt(tmp_path)).run(
+        sample_id="numeric-function-given",
+        problem_text="problem",
+        problem_ir={"unknown_target": {"symbol": "s", "description": "displacement"}},
+        structured_mechlib_context=None,
+    )
+
+    assert model_ir.parse_ok is True
+    assert model_ir.error is None
+
+    payload["givens"][0]["lean"] = "v0.val = ((1 : Real) / 5)"
+    payload["model_instances"][0]["expected_claim"] = "v0.val = (((1 : Real) / 5) : Speed)"
+    model_ir = ModuleA2ModelIR(StaticModelIRClient(json.dumps(payload)), _prompt(tmp_path)).run(
+        sample_id="bad-si-cast",
+        problem_text="problem",
+        problem_ir={"unknown_target": {"symbol": "s", "description": "displacement"}},
+        structured_mechlib_context=None,
+    )
+
+    assert model_ir.parse_ok is False
+    assert model_ir.error == "model_ir_illegal_si_cast:model_instances.mi1.expected_claim"

@@ -137,6 +137,9 @@ class QuantityTypeAnnotation:
 class FunctionFormulaIR:
     formula_id: str = "target_formula_1"
     formula_kind: str = "scalar_relation"
+    function_symbol: str = ""
+    function_type: str = ""
+    allow_time_domain_coercion: bool = False
     bound_variables: list[dict[str, Any]] = field(default_factory=list)
     domain_conditions: list[str] = field(default_factory=list)
     lhs: str = ""
@@ -232,6 +235,7 @@ class FailureRoute:
     rerun_from_stage: str | None = None
     artifacts_reused: list[str] = field(default_factory=list)
     artifacts_invalidated: list[str] = field(default_factory=list)
+    revision_failed_kept_previous: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -252,6 +256,7 @@ class EvidenceBinding:
     proof_fact_allowed: bool = False
     binding_status: str = "decl_not_found"
     expected_claim: str | None = None
+    slot_order: list[str] = field(default_factory=list)
     notes: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -436,6 +441,7 @@ class StatementCandidate:
 @dataclass
 class TheoremSkeletonCandidate(StatementCandidate):
     generation_mode: str = "minimal_skeleton"
+    grounding_level: str | None = None
     variant_id: str | None = None
     variant_policy: str | None = None
     target_form_policy: str | None = None
@@ -463,6 +469,7 @@ class TheoremSkeletonCandidate(StatementCandidate):
     excluded_hypotheses: list[dict[str, Any]] = field(default_factory=list)
     generation_blocked_reason: str | None = None
     ignored_llm_theorem_decl: str | None = None
+    formula_normalization_trace: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

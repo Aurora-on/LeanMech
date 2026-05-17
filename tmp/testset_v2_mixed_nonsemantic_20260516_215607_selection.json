@@ -1,0 +1,32 @@
+{
+  "excluded_preproof_eligible_count": 21,
+  "removed_after_nonsemantic17_run_count": 5,
+  "removed_after_nonsemantic17_run_ids": [
+    "lean4phys-university_mechanics_Mechanics_16_University",
+    "lean4phys-competition_mechanics_Ch3_Q1",
+    "archive_part1-archive_part1_11_9",
+    "archive_part1-archive_part1_13_3",
+    "archive_part2-archive_part2_1_9"
+  ],
+  "sample_count": 4,
+  "sample_ids": [
+    "archive_part1-archive_part1_7_1",
+    "archive_part1-archive_part1_10_8",
+    "archive_part1-archive_part1_12_7",
+    "archive_part2-archive_part2_1_16"
+  ],
+  "removed_after_nonsemantic12_run_count": 3,
+  "removed_after_nonsemantic12_run_ids": [
+    "archive_part1-archive_part1_2_3",
+    "archive_part2-archive_part2_4_5",
+    "archive_part2-archive_part2_6_6"
+  ],
+  "removed_after_remaining9_run_count": 3,
+  "removed_after_remaining9_run_ids": [
+    "lean4phys-competition_mechanics_Ch2_Q2",
+    "lean4phys-competition_mechanics_Ch2_Q1",
+    "archive_part1-archive_part1_5_10"
+  ],
+  "deleted_by_user_request_ids": [],
+  "deleted_by_user_request_count": 0
+}

@@ -5,8 +5,17 @@ from pathlib import Path
 
 from mech_pipeline.config import ProofConfig
 from mech_pipeline.model.base import ModelClient
-from mech_pipeline.modules.E_prover import ModuleE
-from mech_pipeline.types import GroundingResult, ModelResponse, ProofActionCheckResult, StatementCandidate, TheoremSkeletonCandidate
+from mech_pipeline.modules.E_prover import ModuleE, _audit_context_with_blocked_obligations
+from mech_pipeline.types import (
+    GroundingResult,
+    ModelResponse,
+    ProofActionCheckResult,
+    ProofContext,
+    ProofObligationReplayItem,
+    ProofSearchTrace,
+    StatementCandidate,
+    TheoremSkeletonCandidate,
+)
 
 
 class SequenceClient(ModelClient):
@@ -221,3 +230,38 @@ def test_llm_guided_search_failure_marks_explicit_legacy_fallback(tmp_path: Path
     assert check.fallback_to_legacy_full_proof is True
     assert check.proof_mode == "legacy_full_proof"
     assert check.fully_mechlib_verified is False
+
+
+def test_audit_context_moves_trace_blocked_obligations_out_of_required_items() -> None:
+    context = ProofContext(
+        sample_id="s1",
+        candidate_id="c1",
+        theorem_decl="theorem t : True",
+        lean_header="import Mathlib",
+        obligation_replay_items=[
+            ProofObligationReplayItem(
+                obligation_id="obl_bad",
+                kind="law_to_equation",
+                from_hypothesis=None,
+                must_use="MechLib.Bad.Extractor",
+                formal_claim="x = y",
+                produced_fact_name="h_bad",
+            )
+        ],
+    )
+    trace = ProofSearchTrace(
+        sample_id="s1",
+        candidate_id="c1",
+        blocked_obligations=[
+            {
+                "obligation_id": "obl_bad",
+                "reason": "missing_proof_friendly_extractor",
+            }
+        ],
+    )
+
+    audit_context = _audit_context_with_blocked_obligations(context, trace)
+
+    assert audit_context.obligation_replay_items == []
+    assert [item.obligation_id for item in audit_context.obligation_replay_blocked] == ["obl_bad"]
+    assert audit_context.obligation_replay_blocked[0].error == "missing_proof_friendly_extractor"

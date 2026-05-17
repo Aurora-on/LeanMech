@@ -20,6 +20,9 @@ Hard rules:
 12. model_interface_instantiations may record local modeling equations such as net force or torque composition. They are explicit model gaps, not proof steps.
 13. On revision rounds, use Revision feedback and previous artifacts only to revise the minimal sketch. Do not rewrite ModelIR.
 14. Never add a verified_decl unless it appears in EvidenceBindings with binding_status=ok and proof_fact_allowed=true.
+15. Do not pack multiple propositions into one formal_claim with commas. Use separate proof_steps or a single intentional ∧ proposition.
+16. Do not cast numeric Real values into SI quantity types, e.g. never output ((1 : Real) : Speed). Use value-level Real formulas for algebraic obligations.
+17. Prefer pointwise formulas with a bound Real chart variable for function-valued quantities. Numeric applications such as v 0 are allowed only when they refer to explicit evaluation givens already present in ModelIR; do not invent them as derived proof steps.
 
 Return this JSON shape:
 {

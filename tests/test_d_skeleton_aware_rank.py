@@ -202,6 +202,90 @@ def test_minimal_skeleton_marks_gap_obligation_without_target_mismatch(tmp_path:
     assert row["gap_penalty"] > 0.0
 
 
+def test_pragmatic_target_skeleton_needs_strong_target_match(tmp_path: Path) -> None:
+    payload = """
+    {"results":[{"candidate_id":"c1","semantic_score":0.95,"semantic_pass":true,"target_relation":"exact","reason":"aligned"}]}
+    """
+    mod = ModuleD(model_client=FixedSemanticLLM(payload), prompt_path=_prompt(tmp_path), pass_threshold=0.7)
+    candidate = _minimal_candidate(
+        theorem_decl="theorem c1 (v : Speed) : v.val = 1",
+        proof_obligations=[],
+        evidence_bindings=[],
+    )
+    candidate.grounding_status = "pragmatic_target_skeleton"
+    candidate.target_spec = {
+        "target_kind": "closed_form",
+        "target_variables": ["v"],
+        "lean_formula": "v.val = 1",
+        "parse_ok": True,
+    }
+
+    rank = mod.run(_grounding(), [candidate], [_compile()], problem_text="Find acceleration.")
+    row = rank.ranking[0]
+
+    assert row["semantic_pass"] is False
+    assert "pragmatic_target_symbol_mismatch" in row["hard_gate_reasons"]
+
+
+def test_coordinate_orientation_sign_equivalence_is_warning_not_blocker(tmp_path: Path) -> None:
+    payload = """
+    {
+      "results": [
+        {
+          "candidate_id": "c1",
+          "semantic_score": 0.9,
+          "semantic_pass": false,
+          "target_relation": "equivalent",
+          "reason": "The target is equivalent: the leftward paper motion is absorbed into a coordinate orientation choice.",
+          "failure_summary": "Only a sign convention choice is implicit.",
+          "failure_tags": ["sign_convention_choice"],
+          "mismatch_fields": ["sign"]
+        }
+      ]
+    }
+    """
+    mod = ModuleD(model_client=FixedSemanticLLM(payload), prompt_path=_prompt(tmp_path), pass_threshold=0.7)
+    grounding = GroundingResult(
+        sample_id="s-skeleton",
+        model_id="m",
+        problem_ir={
+            "unknown_target": {"symbol": "y_p", "description": "trajectory on a left-moving paper"},
+            "known_quantities": [{"symbol": "a"}, {"symbol": "k"}, {"symbol": "beta"}, {"symbol": "v_c"}],
+            "physical_laws": ["Kinematics"],
+        },
+        parse_ok=True,
+        raw_response="",
+        error=None,
+    )
+    candidate = TheoremSkeletonCandidate(
+        sample_id="s-skeleton",
+        candidate_id="c1",
+        lean_header="import MechLib",
+        theorem_decl=(
+            "theorem c1 (a k beta v_c : Real) (x_p y_p : Real -> Real) : "
+            "forall t : Real, y_p t = a * Real.cos ((k / v_c) * x_p t + beta)"
+        ),
+        parse_ok=True,
+        generation_mode="minimal_skeleton",
+        grounding_status="partial_mechlib_with_model_gaps",
+        target_spec={
+            "target_kind": "pointwise_function_relation",
+            "target_variables": ["x_p", "y_p", "a", "k", "beta", "v_c"],
+            "lean_formula": "forall t : Real, y_p t = a * Real.cos ((k / v_c) * x_p t + beta)",
+            "parse_ok": True,
+        },
+        skeleton_audit=SketchAuditResult(sample_id="s-skeleton", audit_pass=True),
+    )
+
+    rank = mod.run(grounding, [candidate], [_compile()], problem_text="Find the trace on a left-moving paper.")
+    row = rank.ranking[0]
+
+    assert row["semantic_pass"] is True
+    assert row["target_relation"] == "equivalent"
+    assert "pragmatic_target_low_match" not in row["hard_gate_reasons"]
+    assert row["sub_error_type"] is None
+
+
 def test_legacy_candidate_keeps_old_semantic_payload(tmp_path: Path) -> None:
     mod = ModuleD(model_client=None, prompt_path=_prompt(tmp_path), pass_threshold=0.2)
     candidate = StatementCandidate(

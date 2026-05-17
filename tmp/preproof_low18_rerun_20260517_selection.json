@@ -1,0 +1,146 @@
+[
+  {
+    "requested_sample_id": "archive_part1-archive_part1_10_2",
+    "resolved_sample_id": "archive_part1-archive_part1_10_2",
+    "Name": "archive_part1_10_2",
+    "Level": "archive_part1",
+    "V2SourceKind": "archive_part1",
+    "V2SourceRef": "10-2"
+  },
+  {
+    "requested_sample_id": "archive_part1-archive_part1_11_1",
+    "resolved_sample_id": "archive_part1-archive_part1_11_1",
+    "Name": "archive_part1_11_1",
+    "Level": "archive_part1",
+    "V2SourceKind": "archive_part1",
+    "V2SourceRef": "11-1"
+  },
+  {
+    "requested_sample_id": "archive_part1-archive_part1_11_4",
+    "resolved_sample_id": "archive_part1-archive_part1_11_4",
+    "Name": "archive_part1_11_4",
+    "Level": "archive_part1",
+    "V2SourceKind": "archive_part1",
+    "V2SourceRef": "11-4"
+  },
+  {
+    "requested_sample_id": "archive_part1-archive_part1_12_1",
+    "resolved_sample_id": "archive_part1-archive_part1_12_1",
+    "Name": "archive_part1_12_1",
+    "Level": "archive_part1",
+    "V2SourceKind": "archive_part1",
+    "V2SourceRef": "12-1"
+  },
+  {
+    "requested_sample_id": "archive_part1-archive_part1_6_6",
+    "resolved_sample_id": "archive_part1-archive_part1_6_6",
+    "Name": "archive_part1_6_6",
+    "Level": "archive_part1",
+    "V2SourceKind": "archive_part1",
+    "V2SourceRef": "6-6"
+  },
+  {
+    "requested_sample_id": "archive_part1-archive_part1_9_11",
+    "resolved_sample_id": "archive_part1-archive_part1_9_11",
+    "Name": "archive_part1_9_11",
+    "Level": "archive_part1",
+    "V2SourceKind": "archive_part1",
+    "V2SourceRef": "9-11"
+  },
+  {
+    "requested_sample_id": "lean4phys-university_mechanics_Mechanics_31_University",
+    "resolved_sample_id": "college_level-university_mechanics_Mechanics_31_University",
+    "Name": "university_mechanics_Mechanics_31_University",
+    "Level": "college_level",
+    "V2SourceKind": "lean4phys",
+    "V2SourceRef": "university_mechanics_Mechanics_31_University"
+  },
+  {
+    "requested_sample_id": "lean4phys-university_mechanics_Mechanics_3_University",
+    "resolved_sample_id": "college_level-university_mechanics_Mechanics_3_University",
+    "Name": "university_mechanics_Mechanics_3_University",
+    "Level": "college_level",
+    "V2SourceKind": "lean4phys",
+    "V2SourceRef": "university_mechanics_Mechanics_3_University"
+  },
+  {
+    "requested_sample_id": "lean4phys-university_mechanics_Mechanics_71_University",
+    "resolved_sample_id": "college_level-university_mechanics_Mechanics_71_University",
+    "Name": "university_mechanics_Mechanics_71_University",
+    "Level": "college_level",
+    "V2SourceKind": "lean4phys",
+    "V2SourceRef": "university_mechanics_Mechanics_71_University"
+  },
+  {
+    "requested_sample_id": "lean4phys-university_mechanics_Mechanics_16_University",
+    "resolved_sample_id": "college_level-university_mechanics_Mechanics_16_University",
+    "Name": "university_mechanics_Mechanics_16_University",
+    "Level": "college_level",
+    "V2SourceKind": "lean4phys",
+    "V2SourceRef": "university_mechanics_Mechanics_16_University"
+  },
+  {
+    "requested_sample_id": "lean4phys-competition_mechanics_Ch3_Q1",
+    "resolved_sample_id": "competition_hard-competition_mechanics_Ch3_Q1",
+    "Name": "competition_mechanics_Ch3_Q1",
+    "Level": "competition_hard",
+    "V2SourceKind": "lean4phys",
+    "V2SourceRef": "competition_mechanics_Ch3_Q1"
+  },
+  {
+    "requested_sample_id": "archive_part1-archive_part1_11_9",
+    "resolved_sample_id": "archive_part1-archive_part1_11_9",
+    "Name": "archive_part1_11_9",
+    "Level": "archive_part1",
+    "V2SourceKind": "archive_part1",
+    "V2SourceRef": "11-9"
+  },
+  {
+    "requested_sample_id": "archive_part1-archive_part1_13_3",
+    "resolved_sample_id": "archive_part1-archive_part1_13_3",
+    "Name": "archive_part1_13_3",
+    "Level": "archive_part1",
+    "V2SourceKind": "archive_part1",
+    "V2SourceRef": "13-3"
+  },
+  {
+    "requested_sample_id": "archive_part2-archive_part2_1_9",
+    "resolved_sample_id": "archive_part2-archive_part2_1_9",
+    "Name": "archive_part2_1_9",
+    "Level": "archive_part2",
+    "V2SourceKind": "archive_part2",
+    "V2SourceRef": "1-9"
+  },
+  {
+    "requested_sample_id": "archive_part2-archive_part2_4_5",
+    "resolved_sample_id": "archive_part2-archive_part2_4_5",
+    "Name": "archive_part2_4_5",
+    "Level": "archive_part2",
+    "V2SourceKind": "archive_part2",
+    "V2SourceRef": "4-5"
+  },
+  {
+    "requested_sample_id": "archive_part2-archive_part2_6_6",
+    "resolved_sample_id": "archive_part2-archive_part2_6_6",
+    "Name": "archive_part2_6_6",
+    "Level": "archive_part2",
+    "V2SourceKind": "archive_part2",
+    "V2SourceRef": "6-6"
+  },
+  {
+    "requested_sample_id": "lean4phys-competition_mechanics_Ch2_Q1",
+    "resolved_sample_id": "competition_hard-competition_mechanics_Ch2_Q1",
+    "Name": "competition_mechanics_Ch2_Q1",
+    "Level": "competition_hard",
+    "V2SourceKind": "lean4phys",
+    "V2SourceRef": "competition_mechanics_Ch2_Q1"
+  },
+  {
+    "requested_sample_id": "archive_part1-archive_part1_12_7",
+    "resolved_sample_id": "archive_part1-archive_part1_12_7",
+    "Name": "archive_part1_12_7",
+    "Level": "archive_part1",
+    "V2SourceKind": "archive_part1",
+    "V2SourceRef": "12-7"
+  }
+]

@@ -609,6 +609,9 @@ def process_sample(
     current_start_stage = "Sketch"
     previous_candidates: list[StatementCandidate] | None = None
     previous_sketch: ControlledSketch | None = None
+    previous_compile_results: list[CompileCheckResult] | None = None
+    previous_semantic: SemanticRankResult | None = None
+    previous_compile_pass_round: int | None = None
 
     while True:
         candidates, compile_results, semantic = _run_statement_round(
@@ -668,13 +671,75 @@ def process_sample(
             semantic.retry_reason = None
             semantic.retry_feedback_summary = None
 
+        revision_failed_kept_previous = False
+        if (
+            cfg.statement.generation_mode == "minimal_skeleton"
+            and current_round_index > 0
+            and not any(r.compile_pass for r in compile_results)
+            and previous_candidates is not None
+            and previous_compile_results is not None
+            and any(r.compile_pass for r in previous_compile_results)
+        ):
+            revision_failed_kept_previous = True
+            details = dict(semantic.failure_details or {})
+            details["revision_failed_kept_previous"] = True
+            details["kept_round_index"] = previous_compile_pass_round
+            details["failed_revision_round_index"] = current_round_index
+            semantic.failure_details = details
+            semantic.failure_tags = sorted(set([*semantic.failure_tags, "revision_failed_kept_previous", "no_compile_pass"]))
+            semantic.failure_summary = (
+                (semantic.failure_summary or "Revision produced no compile-passed candidates.")
+                + " Kept previous compile-passed candidate for final selection."
+            )
+            stage_rows.setdefault("failure_routes.jsonl", []).append(
+                to_row(
+                    FailureRoute(
+                        sample_id=sample.sample_id,
+                        round_index=current_round_index,
+                        retry_reason="revision_failed_kept_previous",
+                        start_stage="none",
+                        route_tags=["revision_failed_kept_previous", "no_compile_pass"],
+                        affected_candidates=[c.candidate_id for c in candidates],
+                        feedback_payload={
+                            "retry_reason": "revision_failed_kept_previous",
+                            "revision_failed_kept_previous": True,
+                            "failed_revision_round_index": current_round_index,
+                            "kept_round_index": previous_compile_pass_round,
+                            "failure_summary": semantic.failure_summary,
+                        },
+                        rerun_downstream_from="none",
+                        generation_mode="minimal_skeleton",
+                        failed_stage="C",
+                        responsible_stage="none",
+                        failure_tags=["revision_failed_kept_previous", "no_compile_pass"],
+                        failure_summary=semantic.failure_summary,
+                        rerun_from_stage="none",
+                        artifacts_reused=["ProblemIR", "StructuredMechLibContext", "ModelIR", "EvidenceBindings", "ControlledSketch", "SketchAudit", "B", "C", "D"],
+                        artifacts_invalidated=[],
+                        revision_failed_kept_previous=True,
+                    )
+                )
+            )
+
         semantic_rows.append(semantic)
         stage_rows["semantic_rank.jsonl"].append(to_row(semantic))
+
+        if revision_failed_kept_previous:
+            candidates = previous_candidates
+            compile_results = previous_compile_results
+            if previous_semantic is not None:
+                semantic = previous_semantic
+            final_round_index = previous_compile_pass_round if previous_compile_pass_round is not None else current_round_index - 1
+            break
 
         if not retry_reason:
             final_round_index = current_round_index
             break
 
+        if any(r.compile_pass for r in compile_results):
+            previous_compile_results = compile_results
+            previous_semantic = semantic
+            previous_compile_pass_round = current_round_index
         previous_candidates = candidates
         previous_sketch = controlled_sketch_for_b
         revision_feedback = semantic.retry_feedback_summary or "(none)"

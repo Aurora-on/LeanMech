@@ -68,6 +68,13 @@ def _has_relation(text: object) -> bool:
     return any(token in raw for token in ("=", "≤", "≥", "<", ">", "\\le", "\\ge"))
 
 
+def _relation_fragments(text: object) -> set[str]:
+    raw = str(text or "")
+    pieces = [raw]
+    pieces.extend(re.split(r"\s*(?:∧|\\land)\s*", raw))
+    return {_compact(piece) for piece in pieces if _has_relation(piece) and len(_compact(piece)) >= 4}
+
+
 def _is_lean_like_formula(text: object) -> bool:
     raw = str(text or "").strip()
     if not raw:
@@ -99,8 +106,138 @@ def _looks_like_modeling_equation(item: dict[str, Any]) -> bool:
         "torque_balance",
         "constraint",
         "explicit gap",
+        "relative",
+        "relative_displacement",
+        "displacement_relation",
+        "center_of_mass",
+        "centre_of_mass",
+        "com",
+        "mass_center",
+        "momentum_conservation",
+        "mass_from_weight",
+        "weight_to_mass",
+        "problem_relation",
+        "explicit_problem_relation",
     )
     return any(marker in text for marker in markers) or str(item.get("source_type") or "") == "model_ir"
+
+
+def _looks_like_explicit_problem_function_definition(item: dict[str, Any]) -> bool:
+    source_type = str(item.get("source_type") or "").strip()
+    if source_type not in {"problem_ir", "problem_text", "model_ir"}:
+        return False
+    lean = str(item.get("lean") or "").strip()
+    if not _is_lean_like_formula(lean) or _is_tautological_equality(lean):
+        return False
+    blob = _norm(
+        "\n".join(
+            str(item.get(key) or "")
+            for key in ("name", "role", "source_type", "source_id", "notes")
+        )
+    )
+    if _has_target_marker(blob):
+        return False
+    if not any(
+        marker in blob
+        for marker in (
+            "known_quantit",
+            "given",
+            "givens",
+            "initial",
+            "definition",
+            "problem_fact",
+            "local_definition",
+        )
+    ):
+        return False
+    has_pointwise_function = bool(
+        re.search(r"\(\s*[A-Za-z_][A-Za-z0-9_']*\s+[^()=<>]+\)\.val", lean)
+        or re.search(r"(?<![A-Za-z0-9_.])[A-Za-z_][A-Za-z0-9_']*\s+[-+]?\d", lean)
+        or re.search(r"=\s*fun\b", lean)
+    )
+    has_quantifier = bool(re.search(r"\bforall\b|∀", lean))
+    return has_pointwise_function or (has_quantifier and "=" in lean)
+
+
+PROBLEM_GIVEN_MARKERS = (
+    "given",
+    "givens",
+    "known",
+    "known_quantit",
+    "initial",
+    "start",
+    "constant",
+    "provided",
+    "specified",
+    "value",
+    "magnitude",
+)
+
+NON_GIVEN_LEAKAGE_MARKERS = (
+    "target",
+    "goal",
+    "answer",
+    "final",
+    "candidate",
+    "derived",
+    "algebra",
+    "solved",
+    "result",
+)
+
+
+def _split_conjunctive_formula(text: str) -> list[str]:
+    return [part.strip() for part in re.split(r"\s*(?:∧|\\land)\s*", text) if part.strip()]
+
+
+def _looks_like_numeric_literal_fact(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value or not _has_relation(value):
+        return False
+    parts = _split_conjunctive_formula(value)
+    if not parts:
+        return False
+    numeric_atom = r"(?:[-+]?\d+(?:\.\d+)?|\(\s*[-+]?\d+(?:\.\d+)?\s*:\s*Real\s*\)|Real\.pi)"
+    simple_term = r"[A-Za-z_][A-Za-z0-9_']*(?:\.val)?"
+    numeric_expr = rf"[-+*/^().\sA-Za-z0-9_]*{numeric_atom}[-+*/^().\sA-Za-z0-9_]*"
+    relation = r"(?:=|≠|<|>|≤|≥|\\le|\\ge)"
+    for part in parts:
+        if not re.search(numeric_atom, part):
+            return False
+        if re.fullmatch(rf"{simple_term}\s*{relation}\s*{numeric_expr}", part):
+            continue
+        if re.fullmatch(rf"{numeric_expr}\s*{relation}\s*{simple_term}", part):
+            continue
+        return False
+    return True
+
+
+def _looks_like_explicit_problem_given(item: dict[str, Any]) -> bool:
+    source_type = str(item.get("source_type") or "").strip()
+    role = str(item.get("role") or "").strip()
+    if source_type not in {"problem_ir", "problem_text"}:
+        return False
+    if role not in {"problem_fact", "coordinate_convention", "local_definition"}:
+        return False
+    lean = str(item.get("lean") or "").strip()
+    if not _is_lean_like_formula(lean) or _is_tautological_equality(lean):
+        return False
+    blob = _norm(
+        "\n".join(
+            str(item.get(key) or "")
+            for key in ("name", "role", "source_type", "source_id", "notes")
+        )
+    )
+    if any(marker in blob for marker in NON_GIVEN_LEAKAGE_MARKERS):
+        return False
+    has_given_marker = any(marker in blob for marker in PROBLEM_GIVEN_MARKERS)
+    has_known_quantity_source = bool(
+        str(item.get("source_id") or "").startswith(("known_quantity", "given", "problem_given"))
+        or str(item.get("name") or "").startswith(("given_", "known_"))
+    )
+    if not has_given_marker and not has_known_quantity_source:
+        return False
+    return _looks_like_numeric_literal_fact(lean)
 
 
 def _looks_like_modeling_interface(item: dict[str, Any]) -> bool:
@@ -194,13 +331,8 @@ def _target_leakage_match(reference: object, candidate: object) -> bool:
         return True
     ref_compact = _compact(reference)
     cand_compact = _compact(candidate)
-    if _has_relation(reference) and _has_relation(candidate):
-        if len(ref_compact) >= 8 and ref_compact == cand_compact:
-            return True
-        if len(cand_compact) >= 16 and cand_compact in ref_compact:
-            return True
-        if len(ref_compact) >= 16 and ref_compact in cand_compact:
-            return True
+    if _has_relation(reference) and _has_relation(candidate) and ref_compact == cand_compact:
+        return True
     if len(ref_compact) >= 16 and ref_compact == cand_compact:
         return True
     return False
@@ -220,6 +352,20 @@ def _is_target_forbidden_text(text: object) -> bool:
     if not low:
         return False
     return low.startswith(("target", "goal", "candidate_answer", "final", "final_numeric")) or _has_target_marker(low)
+
+
+def _target_forbidden_formula_tail(text: object) -> str:
+    value = str(text or "").strip()
+    if not value or not _has_relation(value):
+        return ""
+    match = re.search(
+        r"(?:candidate answer|final answer|final_numeric|target|goal)\s*(?:is|:|=)?\s*(?P<formula>.+)",
+        value,
+        flags=re.IGNORECASE,
+    )
+    if match and _has_relation(match.group("formula")):
+        return match.group("formula").strip()
+    return ""
 
 
 def _step_result_refs(step: ControlledSketchStep) -> list[str]:
@@ -257,10 +403,13 @@ def _target_texts(model_ir: ModelIR) -> list[str]:
     canonical = getattr(model_ir, "canonical_target", None)
     if canonical is not None:
         payload = canonical.to_dict() if hasattr(canonical, "to_dict") else dict(canonical or {})
-        keys = ("lean_formula", "source_text") if payload.get("parse_ok") is True else ("source_text",)
-        for key in keys:
-            value = str(payload.get(key) or "").strip()
+        if payload.get("parse_ok") is True:
+            value = str(payload.get("lean_formula") or "").strip()
             if value:
+                out.append(value)
+        else:
+            value = str(payload.get("source_text") or "").strip()
+            if value and _has_target_marker(value):
                 out.append(value)
         secondary = payload.get("secondary_formulas")
         if payload.get("parse_ok") is True and isinstance(secondary, list):
@@ -274,14 +423,17 @@ def _target_texts(model_ir: ModelIR) -> list[str]:
                     row = dict(item)
                 else:
                     continue
-                for key in ("lean_formula", "lhs", "rhs", "source_text"):
-                    value = str(row.get(key) or "").strip()
-                    if value:
-                        out.append(value)
+                value = str(row.get("lean_formula") or "").strip()
+                if value:
+                    out.append(value)
     else:
         target = model_ir.target or {}
         if isinstance(target, dict):
-            pieces = [str(value).strip() for value in target.values() if str(value).strip()]
+            pieces = [
+                str(value).strip()
+                for value in target.values()
+                if str(value).strip() and (_has_relation(value) or _has_target_marker(value))
+            ]
             if len(pieces) > 1:
                 out.append(" ".join(pieces))
             for value in pieces:
@@ -289,8 +441,15 @@ def _target_texts(model_ir: ModelIR) -> list[str]:
                     out.append(value)
     for item in model_ir.forbidden_as_assumption:
         text = str(item or "").strip()
+        # `forbidden_as_assumption` also carries derived model relations and
+        # local definitions. Treat only explicit target/final-answer entries as
+        # leakage references; otherwise valid definitions such as center-of-mass
+        # or half-width constraints are falsely blocked.
         if text and _is_target_forbidden_text(text):
             out.append(text)
+            tail = _target_forbidden_formula_tail(text)
+            if tail:
+                out.append(tail)
     seen: set[str] = set()
     unique: list[str] = []
     for item in out:
@@ -499,7 +658,7 @@ class SketchAuditor:
                     unbound_verified_decl = True
                     if "unbound_verified_decl" not in tags:
                         tags.append("unbound_verified_decl")
-            if _decl_looks_like_metadata(step.verified_decl, metadata_ids):
+            if step.verified_decl not in whitelist and _decl_looks_like_metadata(step.verified_decl, metadata_ids):
                 step_issues.append("metadata_used_as_verified_decl")
                 schema_used_as_proof_fact = True
                 if "schema_used_as_proof_fact" not in tags:
@@ -589,7 +748,12 @@ class SketchAuditor:
             text = _hyp_text(item)
             lean_text = str(item.get("lean") or "")
 
-            if role == "target" or (allowed and any(_target_leakage_match(ref, lean_text) for ref in target_refs)):
+            if role == "target" or (
+                allowed
+                and any(_target_leakage_match(ref, lean_text) for ref in target_refs)
+                and not _looks_like_modeling_equation(item)
+                and not _looks_like_explicit_problem_function_definition(item)
+            ):
                 target_leakage = True
                 hyp_issues.append("target_leakage")
                 if "target_leakage" not in tags:
@@ -608,7 +772,11 @@ class SketchAuditor:
             if role == "problem_fact":
                 for ref in law_step_refs:
                     if _texts_match(ref, text):
-                        if _looks_like_modeling_equation(item):
+                        if (
+                            _looks_like_modeling_equation(item)
+                            or _looks_like_explicit_problem_function_definition(item)
+                            or _looks_like_explicit_problem_given(item)
+                        ):
                             break
                         raw_law_equation_in_hypotheses = True
                         hyp_issues.append("law_application_claim_as_problem_fact")

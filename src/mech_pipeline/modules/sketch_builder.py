@@ -17,6 +17,7 @@ from mech_pipeline.prompt_views import (
     compact_problem_ir,
     compact_structured_context,
 )
+from mech_pipeline.quantity_types import SUPPORTED_SI_QUANTITY_TYPES, is_function_quantity_lean_type
 from mech_pipeline.response_parser import ResponseParseError, parse_json_model
 from mech_pipeline.types import (
     AlgebraObligation,
@@ -74,6 +75,9 @@ Hard rules:
 12. model_interface_instantiations may record local modeling equations such as net force or torque composition. They are explicit model gaps, not proof steps.
 13. On revision rounds, use Revision feedback and previous artifacts only to revise the minimal sketch. Do not rewrite ModelIR.
 14. Never add a verified_decl unless it appears in EvidenceBindings with binding_status=ok and proof_fact_allowed=true.
+15. Do not pack multiple propositions into one formal_claim with commas. Use separate proof_steps or a single intentional ∧ proposition.
+16. Do not cast numeric Real values into SI quantity types, e.g. never output ((1 : Real) : Speed). Use value-level Real formulas for algebraic obligations.
+17. Prefer pointwise formulas with a bound Real chart variable for function-valued quantities. Numeric applications such as v 0 are allowed only when they refer to explicit evaluation givens already present in ModelIR; do not invent them as derived proof steps.
 
 Return this JSON shape:
 {
@@ -419,6 +423,57 @@ def _mentions_target(formal_claim: str, target_symbols: set[str]) -> bool:
     return bool(tokens.intersection(target_symbols))
 
 
+def _has_top_level_comma(text: object) -> bool:
+    value = str(text or "")
+    depth = 0
+    for idx, char in enumerate(value):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth = max(0, depth - 1)
+        elif char == "," and depth == 0:
+            prefix = value[:idx].strip()
+            if prefix.startswith(("forall ", "∀")) and not any(
+                marker in prefix for marker in ("=", "≠", "<", ">", "≤", "≥", "\\le", "\\ge", "∧", "∨")
+            ):
+                continue
+            return True
+    return False
+
+
+def _contains_illegal_si_cast(text: object) -> bool:
+    value = _clean(text)
+    if not value:
+        return False
+    quantity_type_pattern = "|".join(re.escape(name) for name in sorted(SUPPORTED_SI_QUANTITY_TYPES, key=len, reverse=True))
+    if not quantity_type_pattern:
+        return False
+    return bool(
+        re.search(
+            rf":\s*Real[^\n,;]*\)\s*:\s*(?:MechLib\.SI\.)?(?:{quantity_type_pattern})\s*\)",
+            value,
+        )
+    )
+
+
+def _function_symbols(model_ir: ModelIR) -> set[str]:
+    return {
+        item.symbol
+        for item in getattr(model_ir, "quantity_annotations", []) or []
+        if item.symbol and is_function_quantity_lean_type(item.lean_type)
+    }
+
+
+def _contains_numeric_function_application(text: object, function_symbols: set[str]) -> bool:
+    if not function_symbols:
+        return False
+    value = _clean(text)
+    for symbol in function_symbols:
+        if re.search(rf"\b{re.escape(symbol)}\s+[-+]?(?:\d+(?:\.\d+)?|\(\s*\d+(?:\.\d+)?\s*:\s*Real\s*\))\b", value):
+            return True
+    return False
+
+
 def _is_lean_like_formula(text: object) -> bool:
     value = _clean(text)
     if not value:
@@ -427,6 +482,10 @@ def _is_lean_like_formula(text: object) -> bool:
     if any(marker in lower for marker in (" from ", " using ", " obtain ", " gives ", " derive ", " because ")):
         return False
     if len(value.split()) > 18:
+        return False
+    if _has_top_level_comma(value):
+        return False
+    if _contains_illegal_si_cast(value):
         return False
     return any(token in value for token in ("=", "≠", "<", ">", "≤", "≥", "\\le", "\\ge", "∧", "∨"))
 
@@ -511,8 +570,12 @@ class SketchCanonicalizer:
         self.expected_claims = _instance_expected_claims(model_ir)
         self.planning_schemas = _instance_planning_schemas(model_ir)
         self.target_symbols = _target_symbols(model_ir, problem_ir)
+        self.function_symbols = _function_symbols(model_ir)
         self._blocked_by_instance: dict[str, BlockedLawStep] = {}
         self._blocked_produces: set[str] = set()
+
+    def _is_valid_proof_formula(self, text: object) -> bool:
+        return _is_lean_like_formula(text)
 
     def canonicalize(self, payload: _SketchPayload, raw_response: str | None = None) -> ControlledSketch:
         proof_steps: list[ControlledSketchStep] = []
@@ -587,7 +650,13 @@ class SketchCanonicalizer:
             if instance_id in produced_instances:
                 continue
             formal_claim = _clean(binding.expected_claim) or self.expected_claims.get(instance_id, "")
-            if not _is_lean_like_formula(formal_claim):
+            if not self._is_valid_proof_formula(formal_claim):
+                self._record_blocked_instance(
+                    instance_id=instance_id,
+                    step_id=f"blocked_{len(self._blocked_by_instance) + 1}",
+                    expected_claim=formal_claim,
+                    reason="Proof-eligible binding does not provide a single valid Lean-like expected_claim.",
+                )
                 continue
             planning_schema = binding.planning_schema or self.planning_schemas.get(instance_id)
             lower = " ".join([instance_id, str(planning_schema or ""), str(binding.expected_claim or "")]).lower()
@@ -635,7 +704,16 @@ class SketchCanonicalizer:
             )
             return None
         formal_claim = _candidate_formal_claim(payload)
-        if not formal_claim:
+        if not formal_claim or not self._is_valid_proof_formula(formal_claim):
+            binding_claim = _clean(binding.expected_claim) or self.expected_claims.get(source_model_instance, "")
+            if not self._is_valid_proof_formula(binding_claim):
+                self._record_blocked_instance(
+                    instance_id=source_model_instance,
+                    step_id=payload.step_id or f"blocked_{index}",
+                    expected_claim=payload.expected_claim or self.expected_claims.get(source_model_instance),
+                    reason="Proof step formal_claim is not a single valid Lean-like formula.",
+                    produces=payload.produces,
+                )
             return None
         produces = _clean(payload.produces) or f"h_{payload.step_id or index}"
         if produces in SOLVER_INTERNAL_NAMES:
@@ -671,13 +749,16 @@ class SketchCanonicalizer:
         if instance_id in self._blocked_by_instance:
             return
         binding = self.first_bindings.get(instance_id)
+        binding_status = (binding.binding_status if binding else "gap_schema_only") or "gap_schema_only"
+        if binding is not None and binding.binding_status == "ok" and binding.proof_fact_allowed and binding.verified_decl:
+            binding_status = "verified_decl_uninstantiated"
         self._blocked_by_instance[instance_id] = BlockedLawStep(
             step_id=step_id,
             source_model_instance=instance_id,
             planning_schema=(binding.planning_schema if binding else None) or self.planning_schemas.get(instance_id),
             expected_claim=expected_claim or (binding.expected_claim if binding else None),
             verified_decl=binding.verified_decl if binding else None,
-            binding_status=(binding.binding_status if binding else "gap_schema_only") or "gap_schema_only",
+            binding_status=binding_status,
             proof_fact_allowed=False,
             required_imports=list(binding.required_imports) if binding else [],
             reason=reason,
@@ -761,7 +842,7 @@ class SketchCanonicalizer:
         if payload.algebra_obligation is not None:
             algebra = payload.algebra_obligation
             formal_claim = _clean(algebra.formal_claim)
-            if not _is_lean_like_formula(formal_claim) or not _mentions_target(formal_claim, self.target_symbols):
+            if not self._is_valid_proof_formula(formal_claim) or not _mentions_target(formal_claim, self.target_symbols):
                 return None
             required = self._normalize_required_equations(
                 [str(x) for x in algebra.required_equations],
@@ -781,7 +862,7 @@ class SketchCanonicalizer:
             )
         for step in reversed(self._legacy_algebra_payloads(payload)):
             formal_claim = _candidate_formal_claim(step)
-            if not formal_claim or not _mentions_target(formal_claim, self.target_symbols):
+            if not formal_claim or not self._is_valid_proof_formula(formal_claim) or not _mentions_target(formal_claim, self.target_symbols):
                 continue
             required = [str(x) for x in step.required_hypotheses]
             normalized_required = self._normalize_required_equations(required, proof_steps)

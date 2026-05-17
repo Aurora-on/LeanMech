@@ -1,0 +1,103 @@
+dataset:
+  source: mixed_v2
+  limit: 4
+  category: Mechanics
+  sample_policy: index_head
+  seed: 42
+  local_archive:
+    root: "../archive"
+    mode: text_only
+  lean4phys:
+    bench_path: "tmp/testset_v2_mixed_nonsemantic_20260516_215607.json"
+    category: "mechanics"
+    level: null
+  single_image_only_for_mvp: true
+
+model:
+  provider: openai_compatible
+  model_id: gpt-5.4
+  base_url: "https://api.openai-proxy.org"
+  api_key: null
+  api_key_env: OPENAI_PROXY_KEY
+  supports_vision: true
+  timeout_s: 120
+  max_retries: 2
+  extra: {}
+
+lean:
+  enabled: true
+  physlean_dir: "../physlib"
+  mechlib_dir: "../MechLib"
+  timeout_s: 60
+  strict_blocklist: ["sorry", "admit", "axiom"]
+  lean_header: "import MechLib"
+  preflight_enabled: true
+  route_policy: auto_by_import
+  default_backend: "mechlib"
+  route_fallback: true
+
+knowledge:
+  enabled: true
+  mechlib_dir: "../MechLib"
+  scope: "mechanics_si"
+  top_k: 6
+  evidence_top_k: 3
+  cache_path: "tmp/mechlib_index.jsonl"
+  inject_modules: ["B"]
+  context_source: "hybrid"
+  structured_context_enabled: true
+  summary_corpus_path: "../MechLib/theorem_corpus.jsonl"
+  decl_corpus_path: "../MechLib/corpus/decl_corpus_enriched.jsonl"
+  law_schema_corpus_path: "../MechLib/corpus/law_schema_corpus.jsonl"
+  problem_schema_corpus_path: "../MechLib/corpus/problem_schema_corpus.jsonl"
+  concept_corpus_path: "../MechLib/corpus/concept_corpus.jsonl"
+  alias_map_path: "../MechLib/corpus/alias_map.jsonl"
+  alignment_index_path: "../MechLib/corpus/decl_to_spec_index.json"
+  lean_check_decls: true
+  summary_injection_mode: "domain_full"
+  always_include_core_tags: ["SI", "Units"]
+
+statement:
+  library_target: "mechlib"
+  with_mechlib_context: true
+  feedback_loop_enabled: true
+  max_revision_rounds: 1
+  minimal_feedback_scope: routed_stage
+  generation_mode: minimal_skeleton
+  allow_explicit_gap_laws: true
+  forbid_derived_equation_hypotheses: true
+  require_hypothesis_provenance: true
+  require_evidence_binding: true
+  max_model_ir_candidates: 2
+  max_sketch_steps: 12
+  b_minimal_llm_enabled: false
+  b_minimal_llm_on_retry: true
+  compact_minimal_prompts: true
+
+semantic:
+  pass_threshold: 0.7
+
+proof:
+  mode: legacy_full_proof
+  max_attempts: 1
+
+prompts:
+  dir: prompts
+  a_extract_ir: A_extract_ir.txt
+  a2_model_ir: A2_model_ir.txt
+  controlled_sketch: controlled_sketch.txt
+  b_generate_statements: B_generate_statements.txt
+  b_generate_minimal_skeleton: B_generate_minimal_skeleton.txt
+  b_revise_statements: B_revise_statements.txt
+  d_semantic_rank: D_semantic_rank.txt
+  e_plan_proof: E_plan_proof.txt
+  e_generate_proof: E_generate_proof.txt
+  e_repair_proof: E_repair_proof.txt
+
+output:
+  output_dir: outputs/latest
+  runs_dir: runs
+  tag: minimal-testset-v2-mixed-nonsemantic12-20260516-215607
+
+runtime:
+  sample_concurrency: 5

@@ -77,6 +77,30 @@ def test_mass_denominator_adds_positive_hypothesis_and_compiles_augmented_theore
     assert runner.compile_calls == [result.context.theorem_decl]
 
 
+def test_augmented_theorem_split_ignores_type_ascription_in_target() -> None:
+    context = ProofContext(
+        sample_id="s1",
+        candidate_id="c1",
+        theorem_decl="theorem c1 (g : Acceleration) : theta.val = (1 : Real) * g.val / g.val",
+        lean_header="import MechLib",
+        target_formula="theta.val = (1 : Real) * g.val / g.val",
+        local_binders=["g : Acceleration"],
+    )
+
+    result = augment_context_for_missing_side_condition(
+        context=context,
+        proposal=_proposal("g.val"),
+        positive_types=POSITIVE_TYPES,
+        max_added=8,
+        lean_runner=None,
+        require_compile=False,
+    )
+
+    assert result.check.status == "progress"
+    assert "(h_g_pos : 0 < g.val) : theta.val = (1 : Real) * g.val / g.val" in result.context.theorem_decl
+    assert "Real) * g.val" not in result.context.theorem_decl.split(" : ", 1)[0]
+
+
 def test_sum_denominator_adds_two_positive_hypotheses() -> None:
     context = ProofContext(
         sample_id="s1",

@@ -38,8 +38,9 @@ LLM 负责讲得通顺，不负责重新求解。
 
 `SolutionRenderer` 会先从 `SolutionTrace` 构造 compact `renderer_plan`。这个 plan 会把正文需要的内容分成：
 
-- 建模/物理方程：优先展示可读解题所需的主方程；`Fnet_*`、`a1 = a`、`T_left = T_right` 这类辅助定义保留在 `SolutionTrace` 中，不默认塞进自然语言正文。
-- 代数步骤：优先展示已在 trace 或 accepted proof actions 中出现的中间式；最终答案不重复伪装成中间推导。
+- 符号与建模说明：从 `ModelIR.model_instances` 的变量、对象描述和正方向约定生成 `symbol_intro`，供自然语言说明使用。
+- 建模/物理方程：优先展示可读解题所需的主方程，并为每条编号方程提供 `narrative_intro`；`Fnet_*`、`a1 = a`、`T_left = T_right` 这类辅助定义保留在 `SolutionTrace` 中，不默认塞进自然语言正文。
+- 代数步骤：优先展示已在 trace 或 accepted proof actions 中出现的中间式，并用 `algebra_exposition` 给出“联立、代入、整理、回代”等衔接文本；最终答案不重复伪装成中间推导。
 - 最终答案：只来自 theorem target / selected candidate target。
 - 验证说明：只来自 proof check / dependency audit。
 
@@ -50,9 +51,11 @@ LLM 只用于中文表达：
 - 不新增物理定律。
 - 不修改最终答案。
 - 不隐藏 gap、partial、legacy/no-audit 或 proof_failed 状态。
-- 输入只包含 `renderer_plan` 和 compact `SolutionTrace`，不包含完整 Lean proof、完整 MechLib context、完整 theorem corpus 或完整 raw response。
+- 输入只包含 `renderer_plan` 和轻量 `solution_trace_summary`，不包含完整 Lean proof、完整 MechLib context、完整 theorem corpus 或完整 raw response。prompt 空间优先留给 `symbol_intro`、`numbered_equations[].narrative_intro` 和 `algebra_exposition`。
 
 默认配置 `solution_renderer.natural_language_enabled=false`，因此无 LLM 时也会生成 deterministic fallback。若启用 LLM，模块会先生成 deterministic baseline，再让 LLM 基于同一个 `renderer_plan` 润色；LLM 输出必须通过 `RenderAudit`，否则回退到 deterministic baseline 或进入一次受约束修订。
+
+默认 `solution_renderer.max_prompt_chars=12000`。这是为了给 `symbol_intro`、编号方程说明和代数衔接文本留出足够空间；单个运行配置仍可显式调低或调高。
 
 ## SolutionTrace
 

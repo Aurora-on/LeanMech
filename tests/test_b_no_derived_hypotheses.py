@@ -374,6 +374,7 @@ def test_llm_theorem_decl_is_ignored_and_qualitative_binders_are_excluded(tmp_pa
     assert "a.val = (m2.val * g.val) / (m1.val + m2.val)" in candidate.theorem_decl
     assert "MechLib.Test.Newton1D T m1 a" in candidate.theorem_decl
     assert candidate.parse_ok is True
+    assert candidate.generation_blocked_reason is None
 
 
 def test_explicit_model_interface_gaps_preserve_typed_force_modeling(tmp_path: Path) -> None:
@@ -469,6 +470,129 @@ def test_common_acceleration_constraint_is_allowed_as_modeling_fact(tmp_path: Pa
     assert "same_acceleration_magnitude" in candidate.theorem_decl
     assert "common_acceleration_definition" in candidate.theorem_decl
     assert "raw_law_equation_in_hypotheses" not in candidate.skeleton_audit.failure_tags
+
+
+def test_problem_given_numeric_force_is_not_flagged_as_law_equation(tmp_path: Path) -> None:
+    model_ir = _model_ir(include_qualitative=False)
+    model_ir.variables.update({"F_start": {"type": "force"}, "F_const": {"type": "force"}})
+    model_ir.quantity_annotations.extend(
+        [
+            QuantityTypeAnnotation("F_start", semantic_role="starting force given in problem", lean_type="Force", confidence=0.95),
+            QuantityTypeAnnotation("F_const", semantic_role="constant force given in problem", lean_type="Force", confidence=0.95),
+        ]
+    )
+    model_ir.givens.extend(
+        [
+            HypothesisProvenance(
+                name="given_start_force",
+                lean="F_start = 230",
+                role="problem_fact",
+                source_type="problem_ir",
+                source_id="known_quantities.start_force",
+                allowed_in_hypotheses=True,
+            ),
+            HypothesisProvenance(
+                name="given_constant_force",
+                lean="F_const = 200",
+                role="problem_fact",
+                source_type="problem_ir",
+                source_id="known_quantities.constant_force",
+                allowed_in_hypotheses=True,
+            ),
+        ]
+    )
+    model_ir.model_instances.extend(
+        [
+            ModelInstance(
+                instance_id="start_force_value",
+                kind="problem_given_value",
+                natural_language="The starting force is given in the problem.",
+                variables={"force": "F_start"},
+                expected_claim="F_start = 230",
+            ),
+            ModelInstance(
+                instance_id="constant_force_value",
+                kind="problem_given_value",
+                natural_language="The constant force is given in the problem.",
+                variables={"force": "F_const"},
+                expected_claim="F_const = 200",
+            ),
+        ]
+    )
+
+    candidate = _run(
+        tmp_path,
+        {
+            "candidates": [
+                {
+                    "candidate_id": "c1",
+                    "theorem_name_hint": "problem_given_forces",
+                    "selected_model_instances": ["glider", "hanger"],
+                    "controlled_sketch_steps_used": ["sk_glider", "sk_hanger", "alg_target"],
+                }
+            ]
+        },
+        model_ir=model_ir,
+    )
+
+    assert candidate.parse_ok is True
+    assert "(given_start_force : F_start.val = 230)" in candidate.theorem_decl
+    assert "(given_constant_force : F_const.val = 200)" in candidate.theorem_decl
+    assert "raw_law_equation_in_hypotheses" not in candidate.skeleton_audit.failure_tags
+    assert not any(
+        "law_application_claim_in_binder" in row.get("issues", [])
+        for row in candidate.skeleton_audit.details.get("bad_binders", [])
+    )
+
+
+def test_forbidden_local_definition_does_not_poison_target_leakage(tmp_path: Path) -> None:
+    model_ir = _model_ir(include_qualitative=False)
+    model_ir.variables.update(
+        {
+            "h_cm": {"type": "length"},
+            "block_height": {"type": "length"},
+            "m3_max": {"type": "mass"},
+        }
+    )
+    model_ir.quantity_annotations.extend(
+        [
+            QuantityTypeAnnotation("h_cm", semantic_role="center of mass height", lean_type="Length", confidence=0.95),
+            QuantityTypeAnnotation("block_height", semantic_role="block height", lean_type="Length", confidence=0.95),
+            QuantityTypeAnnotation("m3_max", semantic_role="maximum hanging mass", lean_type="Mass", confidence=0.95),
+        ]
+    )
+    model_ir.canonical_target = CanonicalTarget(
+        target_kind="closed_form",
+        target_variables=["m3_max"],
+        lean_formula="m3_max.val = m1.val + m2.val",
+        requires_closed_form=True,
+        source_text="maximum hanging mass",
+        confidence=0.9,
+        parse_ok=True,
+    )
+    model_ir.local_definitions.append(
+        HypothesisProvenance(
+            name="def_h_cm",
+            lean="h_cm.val = block_height.val / 2",
+            role="local_definition",
+            source_type="problem_ir",
+            source_id="relations.h_cm",
+            allowed_in_hypotheses=True,
+            notes="Center-of-mass height definition.",
+        )
+    )
+    model_ir.forbidden_as_assumption.append("h_cm.val = block_height.val / 2")
+
+    candidate = _run(
+        tmp_path,
+        {"candidates": [{"candidate_id": "c1", "theorem_name_hint": "com_definition"}]},
+        model_ir=model_ir,
+    )
+
+    assert candidate.parse_ok is True
+    assert "(def_h_cm : h_cm.val = block_height.val / 2)" in candidate.theorem_decl
+    assert candidate.skeleton_audit.target_leakage is False
+    assert "target_leakage" not in candidate.skeleton_audit.failure_tags
 
 
 def test_tuple_valued_problem_fact_is_excluded_from_theorem(tmp_path: Path) -> None:
@@ -568,6 +692,7 @@ def test_non_prop_verified_decl_blocks_instead_of_faking_model_predicate(tmp_pat
 
     assert candidate.parse_ok is True
     assert candidate.generation_blocked_reason is None
+    assert candidate.grounding_status == "partial_mechlib_with_evidence_gap"
     assert candidate.model_predicate_bindings == []
     assert candidate.gap_laws
     assert all(row["proof_fact_allowed"] is False for row in candidate.gap_laws)
@@ -576,7 +701,7 @@ def test_non_prop_verified_decl_blocks_instead_of_faking_model_predicate(tmp_pat
     assert "weight" not in candidate.theorem_decl
 
 
-def test_course_form_with_higher_order_args_is_not_truncated_to_predicate(tmp_path: Path) -> None:
+def test_theorem_conclusion_heads_are_not_synthesized_as_model_predicates(tmp_path: Path) -> None:
     bindings = [
         EvidenceBinding(
             binding_id="b_glider",
@@ -626,12 +751,128 @@ def test_course_form_with_higher_order_args_is_not_truncated_to_predicate(tmp_pa
         bindings=bindings,
     )
 
-    assert "MechLib.Dynamics.NewtonLaw.NewtonSecondLaw m1 a T" in candidate.theorem_decl
+    assert candidate.model_predicate_bindings == []
+    assert "MechLib.Dynamics.NewtonLaw.NewtonSecondLaw m1 a T" not in candidate.theorem_decl
     assert "CenterOfMassBalance m2" not in candidate.theorem_decl
     assert candidate.parse_ok is True
     assert candidate.generation_blocked_reason is None
-    assert candidate.grounding_status == "partial_mechlib_with_model_gaps"
+    assert candidate.grounding_status == "partial_mechlib_with_evidence_gap"
+    assert any(row["source_model_instance"] == "glider" for row in candidate.gap_laws)
     assert any(row["source_model_instance"] == "hanger" for row in candidate.gap_laws)
+
+
+def test_has_derivat_conclusion_head_is_not_namespace_qualified(tmp_path: Path) -> None:
+    candidate = _run(
+        tmp_path,
+        {
+            "candidates": [
+                {
+                    "candidate_id": "c1",
+                    "theorem_name_hint": "point_motion_blocked",
+                    "selected_model_instances": ["glider"],
+                    "controlled_sketch_steps_used": ["sk_glider"],
+                }
+            ]
+        },
+        bindings=[
+            EvidenceBinding(
+                binding_id="b_glider",
+                model_instance_id="glider",
+                verified_decl="MechLib.Kinematics.PointMotion.velocityDerivativeRelation_apply",
+                decl_statement=(
+                    "theorem velocityDerivativeRelation_apply "
+                    "(x : ScalarTrajectory) (v : ScalarVelocityField) "
+                    "(h : VelocityDerivativeRelation x v) (t : Real) : "
+                    "HasDerivAt (fun τ => (x τ).val) (v t).val t"
+                ),
+                callable_by_llm=True,
+                lean_check_pass=True,
+                proof_fact_allowed=True,
+                binding_status="ok",
+                expected_claim="velocity is the derivative of position",
+            )
+        ],
+    )
+
+    assert candidate.model_predicate_bindings == []
+    assert "MechLib.Kinematics.PointMotion.HasDerivAt" not in candidate.theorem_decl
+    assert "HasDerivAt" not in candidate.theorem_decl
+    assert any(row["source_model_instance"] == "glider" for row in candidate.gap_laws)
+
+
+def test_extractor_theorem_premise_can_supply_model_predicate(tmp_path: Path) -> None:
+    model_ir = ModelIR(
+        sample_id="point-motion",
+        variables={"x": {}, "v": {}},
+        quantity_annotations=[
+            QuantityTypeAnnotation(
+                "x",
+                semantic_role="position over time",
+                lean_type="Time -> Length",
+                confidence=0.95,
+            ),
+            QuantityTypeAnnotation(
+                "v",
+                semantic_role="velocity over time",
+                lean_type="Time -> Speed",
+                confidence=0.95,
+            ),
+        ],
+        canonical_target=CanonicalTarget(
+            target_kind="pointwise_function_relation",
+            target_variables=["v"],
+            lean_formula="forall t : Real, (v t).val = (x t).val",
+            parse_ok=True,
+        ),
+        model_instances=[
+            ModelInstance(
+                instance_id="glider",
+                kind="velocity_derivative_relation",
+                natural_language="Velocity is the derivative relation for position.",
+                variables={"position": "x", "velocity": "v"},
+                planning_schema_id="law.kinematics.velocity_derivative",
+                expected_claim="velocity is the derivative of position",
+            )
+        ],
+        parse_ok=True,
+    )
+    candidate = _run(
+        tmp_path,
+        {
+            "candidates": [
+                {
+                    "candidate_id": "c1",
+                    "theorem_name_hint": "point_motion_premise",
+                    "selected_model_instances": ["motion"],
+                    "controlled_sketch_steps_used": [],
+                }
+            ]
+        },
+        bindings=[
+                EvidenceBinding(
+                    binding_id="b_motion",
+                    model_instance_id="glider",
+                verified_decl="MechLib.Kinematics.PointMotion.velocityDerivativeRelation_apply",
+                decl_statement=(
+                    "theorem velocityDerivativeRelation_apply "
+                    "(x : ScalarTrajectory) (v : ScalarVelocityField) "
+                    "(h : VelocityDerivativeRelation x v) (t : Real) : "
+                    "HasDerivAt (fun τ => (x τ).val) (v t).val t"
+                ),
+                callable_by_llm=True,
+                lean_check_pass=True,
+                proof_fact_allowed=True,
+                binding_status="ok",
+                expected_claim="velocity is the derivative of position",
+            )
+        ],
+        model_ir=model_ir,
+    )
+
+    assert candidate.model_predicate_bindings
+    assert "MechLib.Kinematics.PointMotion.VelocityDerivativeRelation x v" in candidate.theorem_decl
+    assert "MechLib.Kinematics.PointMotion.HasDerivAt" not in candidate.theorem_decl
+    assert "HasDerivAt" not in candidate.theorem_decl
 
 
 def test_legacy_sketch_steps_are_not_directly_consumed_by_minimal_b(tmp_path: Path) -> None:

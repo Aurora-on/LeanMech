@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from mech_pipeline.model.base import ModelClient
-from mech_pipeline.modules.B_statement_gen import ModuleB
+from mech_pipeline.modules.B_statement_gen import ModuleB, _typed_formula_from_text
 from mech_pipeline.types import (
     AlgebraObligation,
     BlockedLawStep,
@@ -248,6 +248,104 @@ def _bindings() -> list[EvidenceBinding]:
 
 def _pass_audit() -> SketchAuditResult:
     return SketchAuditResult(sample_id="atwood-1", audit_pass=True)
+
+
+def test_b_typed_formula_normalizes_function_value_arguments_and_numeric_apps() -> None:
+    quantity_infos = [
+        {
+            "source_name": "ax",
+            "name": "ax",
+            "lean_type": "MechLib.Mechanics.Kinematics.ScalarAccelerationField",
+        },
+        {"source_name": "t_eval", "name": "t_eval", "lean_type": "Time"},
+        {
+            "source_name": "v",
+            "name": "v",
+            "lean_type": "MechLib.Mechanics.Kinematics.ScalarVelocityField",
+        },
+        {"source_name": "v0", "name": "v0", "lean_type": "Speed"},
+    ]
+
+    assert _typed_formula_from_text("(ax t_eval).val = 0.5", quantity_infos) == (
+        "(ax t_eval.val).val = ((1 : Real) / 2)"
+    )
+    assert _typed_formula_from_text("v 0 = v0", quantity_infos) == "(v (0 : Real)).val = v0.val"
+
+
+def test_b_typed_formula_collapses_existing_function_value_projection() -> None:
+    quantity_infos = [
+        {
+            "source_name": "v",
+            "name": "v",
+            "lean_type": "MechLib.Mechanics.Kinematics.ScalarVelocityField",
+        },
+        {"source_name": "omega", "name": "omega", "lean_type": "Real -> AngularVelocity"},
+        {"source_name": "theta", "name": "theta", "lean_type": "Real -> PhysAngle"},
+        {"source_name": "t_half", "name": "t_half", "lean_type": "Time"},
+        {"source_name": "omega_0", "name": "omega_0", "lean_type": "AngularVelocity"},
+    ]
+
+    assert _typed_formula_from_text("(v 0).val = 0", quantity_infos) == (
+        "(v (0 : Real)).val = 0"
+    )
+    assert _typed_formula_from_text("(omega 0).val = omega_0", quantity_infos) == (
+        "(omega (0 : Real)).val = omega_0.val"
+    )
+    assert _typed_formula_from_text("(omega t_half.val).val = omega_0.val / 2", quantity_infos) == (
+        "(omega t_half.val).val = omega_0.val / 2"
+    )
+    assert _typed_formula_from_text("((theta (0 : Real)).val).val = 0", quantity_infos) == (
+        "(theta (0 : Real)).val = 0"
+    )
+
+
+def test_b_typed_formula_does_not_qualify_prefixed_math_variable_names() -> None:
+    quantity_infos = [
+        {"source_name": "tan_theta", "name": "tan_theta", "lean_type": "Real"},
+        {"source_name": "theta", "name": "theta", "lean_type": "PhysAngle"},
+    ]
+
+    normalized = _typed_formula_from_text("tan_theta = tan theta", quantity_infos)
+
+    assert "Real.tan_theta" not in normalized
+    assert normalized == "tan_theta = Real.tan theta.val"
+
+
+def test_b_typed_formula_strips_trailing_period_and_normalizes_compound_quantity_val() -> None:
+    quantity_infos = [
+        {"source_name": "r", "name": "r", "lean_type": "Length"},
+        {"source_name": "beta", "name": "beta", "lean_type": "PhysAngle"},
+        {"source_name": "theta", "name": "theta", "lean_type": "PhysAngle"},
+    ]
+
+    assert _typed_formula_from_text("r.val ^ 2.", quantity_infos) == "r.val ^ 2"
+    assert _typed_formula_from_text("(beta + theta).val = 0", quantity_infos) == (
+        "(beta.val + theta.val) = 0"
+    )
+
+
+def test_b_typed_formula_normalizes_degree_angle_givens_and_common_connectives() -> None:
+    quantity_infos = [
+        {
+            "source_name": "beta",
+            "name": "beta",
+            "lean_type": "PhysAngle",
+            "source": {
+                "quantity_annotation": {
+                    "unit_or_dimension": "degrees",
+                    "evidence_text": "beta = 30 degrees",
+                }
+            },
+        },
+        {"source_name": "t", "name": "t", "lean_type": "Real"},
+    ]
+
+    assert _typed_formula_from_text("beta = 30", quantity_infos) == (
+        "beta.val = (30 * Real.pi / 180)"
+    )
+    assert _typed_formula_from_text("foral t : Real, 0 <= t /\\ t <= 4 -> t = t", quantity_infos) == (
+        "forall t : Real, 0 <= t ∧ t <= 4 -> t = t"
+    )
 
 
 def _sketch_without_gap() -> ControlledSketch:
@@ -514,9 +612,13 @@ def test_b_minimal_skeleton_handles_function_quantity_target(tmp_path: Path) -> 
         sketch_audit_result=SketchAuditResult(sample_id="function-target", audit_pass=True),
     )[0]
 
-    assert "(x : Time -> Length)" in candidate.theorem_decl
+    assert candidate.parse_ok is True
+    assert candidate.generation_blocked_reason is None
+    assert "(x : MechLib.Mechanics.Kinematics.ScalarTrajectory)" in candidate.theorem_decl
     assert "forall t.val" not in candidate.theorem_decl
-    assert "(x t).val = t.val" in candidate.theorem_decl
+    assert "x.val t" not in candidate.theorem_decl
+    assert "forall t : Time" in candidate.theorem_decl
+    assert "(x t.val).val = t.val" in candidate.theorem_decl
 
 
 def test_b_minimal_skeleton_normalizes_untyped_function_quantifier(tmp_path: Path) -> None:
@@ -542,7 +644,21 @@ def test_b_minimal_skeleton_normalizes_untyped_function_quantifier(tmp_path: Pat
         canonical_target=CanonicalTarget(
             target_kind="relation",
             target_variables=["v_x", "t"],
-            lean_formula="forall t, 0 <= t ∧ t <= t_interval -> v_x t = (2 : Real) * (k * t)",
+            lean_formula="unused fallback formula",
+            function_formula_ir=[
+                FunctionFormulaIR(
+                    formula_id="velocity_relation",
+                    formula_kind="pointwise_relation",
+                    function_symbol="v_x",
+                    function_type="Real -> Speed",
+                    bound_variables=[{"name": "t", "lean_type": "Real"}],
+                    domain_conditions=["0 <= t", "t <= t_interval"],
+                    lhs="v_x t",
+                    relation="=",
+                    rhs="(2 : Real) * (k * t)",
+                    parse_ok=True,
+                )
+            ],
             source_text="velocity-time relation",
             confidence=0.9,
             parse_ok=True,
@@ -560,12 +676,12 @@ def test_b_minimal_skeleton_normalizes_untyped_function_quantifier(tmp_path: Pat
     )[0]
 
     assert candidate.parse_ok is True
-    assert "(v_x : Time -> Speed)" in candidate.theorem_decl
+    assert "(v_x : MechLib.Mechanics.Kinematics.ScalarVelocityField)" in candidate.theorem_decl
     assert "(k : Acceleration)" in candidate.theorem_decl
     assert "forall t.val" not in candidate.theorem_decl
     assert "(v_x t.val).val" not in candidate.theorem_decl
-    assert "forall t : Time" in candidate.theorem_decl
-    assert "(v_x t).val = (2 : Real) * (k.val * t.val)" in candidate.theorem_decl
+    assert "forall t : Real" in candidate.theorem_decl
+    assert "(v_x t).val = (2 : Real) * (k.val * t)" in candidate.theorem_decl
 
 
 def test_b_minimal_skeleton_normalizes_function_evaluation_argument(tmp_path: Path) -> None:
@@ -590,7 +706,19 @@ def test_b_minimal_skeleton_normalizes_function_evaluation_argument(tmp_path: Pa
         canonical_target=CanonicalTarget(
             target_kind="relation",
             target_variables=["v_x"],
-            lean_formula="v_x t_1 = k * t_1",
+            lean_formula="unused fallback formula",
+            function_formula_ir=[
+                FunctionFormulaIR(
+                    formula_id="velocity_eval",
+                    formula_kind="evaluation_relation",
+                    function_symbol="v_x",
+                    function_type="Real -> Speed",
+                    lhs="v_x t_1",
+                    relation="=",
+                    rhs="k * t_1",
+                    parse_ok=True,
+                )
+            ],
             source_text="velocity evaluation",
             confidence=0.9,
             parse_ok=True,
@@ -608,11 +736,69 @@ def test_b_minimal_skeleton_normalizes_function_evaluation_argument(tmp_path: Pa
     )[0]
 
     assert candidate.parse_ok is True
-    assert "(v_x t_1).val = k.val * t_1.val" in candidate.theorem_decl
-    assert "(v_x t_1.val).val" not in candidate.theorem_decl
+    assert "(v_x t_1.val).val = k.val * t_1.val" in candidate.theorem_decl
 
 
-def test_b_minimal_skeleton_rewrites_function_lambda_equalities_to_pointwise_relations(tmp_path: Path) -> None:
+def test_b_minimal_skeleton_qualifies_real_trig_functions(tmp_path: Path) -> None:
+    payload = json.dumps({"candidates": [{"candidate_id": "c1", "theorem_name_hint": "force_components"}]})
+    module = ModuleB(StaticClient(payload), _prompt(tmp_path), minimal_prompt_path=_minimal_prompt(tmp_path))
+    grounding = GroundingResult(
+        sample_id="force-components",
+        model_id="m",
+        problem_ir={"unknown_target": {"symbol": "Fx", "description": "force component"}},
+        parse_ok=True,
+        raw_response="",
+        error=None,
+    )
+    model_ir = ModelIR(
+        sample_id="force-components",
+        variables={"F": {}, "Fx": {}, "Fy": {}, "theta": {}},
+        quantity_annotations=[
+            QuantityTypeAnnotation("F", semantic_role="force magnitude", lean_type="Force", confidence=0.95),
+            QuantityTypeAnnotation("Fx", semantic_role="horizontal force component", lean_type="Force", confidence=0.95),
+            QuantityTypeAnnotation("Fy", semantic_role="vertical force component", lean_type="Force", confidence=0.95),
+            QuantityTypeAnnotation("theta", semantic_role="angle", lean_type="PhysAngle", confidence=0.95),
+        ],
+        givens=[
+            HypothesisProvenance(
+                name="component_definition",
+                lean="Fx = F * cos theta ∧ Fy = F * sin theta",
+                role="problem_fact",
+                source_type="model_ir",
+                allowed_in_hypotheses=True,
+                notes="component model equation",
+            )
+        ],
+        canonical_target=CanonicalTarget(
+            target_kind="component_relation",
+            target_variables=["Fx", "Fy"],
+            lean_formula="Fx = F * cos theta ∧ Fy = F * sin theta",
+            source_text="force component relation",
+            confidence=0.9,
+            parse_ok=True,
+        ),
+        target={"symbol": "Fx", "description": "force component"},
+        forbidden_as_assumption=["target force component"],
+        parse_ok=True,
+    )
+
+    candidate = module.run(
+        grounding,
+        generation_mode="minimal_skeleton",
+        model_ir=model_ir,
+        controlled_sketch=ControlledSketch(sample_id="force-components", status="ok", parse_ok=True),
+        evidence_bindings=[],
+        sketch_audit_result=SketchAuditResult(sample_id="force-components", audit_pass=True),
+    )[0]
+
+    assert candidate.parse_ok is True
+    assert "Real.cos theta.val" in candidate.theorem_decl
+    assert "Real.sin theta.val" in candidate.theorem_decl
+    assert " cos theta.val" not in candidate.theorem_decl
+    assert " sin theta.val" not in candidate.theorem_decl
+
+
+def test_b_minimal_skeleton_does_not_rewrite_function_lambda_equalities(tmp_path: Path) -> None:
     payload = json.dumps({"candidates": [{"candidate_id": "c1", "theorem_name_hint": "pointwise_function"}]})
     module = ModuleB(StaticClient(payload), _prompt(tmp_path), minimal_prompt_path=_minimal_prompt(tmp_path))
     grounding = GroundingResult(
@@ -644,7 +830,20 @@ def test_b_minimal_skeleton_rewrites_function_lambda_equalities_to_pointwise_rel
         canonical_target=CanonicalTarget(
             target_kind="relation",
             target_variables=["yA"],
-            lean_formula="forall t, yA t = v_f * t",
+            lean_formula="unused fallback formula",
+            function_formula_ir=[
+                FunctionFormulaIR(
+                    formula_id="y_motion",
+                    formula_kind="pointwise_relation",
+                    function_symbol="yA",
+                    function_type="Real -> Length",
+                    bound_variables=[{"name": "t", "lean_type": "Real"}],
+                    lhs="yA t",
+                    relation="=",
+                    rhs="v_f * t",
+                    parse_ok=True,
+                )
+            ],
             source_text="position-time relation",
             confidence=0.9,
             parse_ok=True,
@@ -663,8 +862,13 @@ def test_b_minimal_skeleton_rewrites_function_lambda_equalities_to_pointwise_rel
 
     assert candidate.parse_ok is True
     assert "= fun" not in candidate.theorem_decl
-    assert "(forall t : Time, (xA t).val = 0)" in candidate.theorem_decl
-    assert "(forall t : Time, (yA t).val = v_f.val * t.val)" in candidate.theorem_decl
+    assert "(forall t : Real, (xA t).val = 0)" not in candidate.theorem_decl
+    assert "forall t : Real, (yA t).val = v_f.val * t" in candidate.theorem_decl
+    assert any(
+        row.get("name") == "aircraft_position"
+        and row.get("reason") == "function_equality_requires_function_formula_ir"
+        for row in candidate.excluded_hypotheses
+    )
 
 
 def test_b_minimal_skeleton_conjoins_secondary_canonical_targets(tmp_path: Path) -> None:
@@ -690,7 +894,20 @@ def test_b_minimal_skeleton_conjoins_secondary_canonical_targets(tmp_path: Path)
         canonical_target=CanonicalTarget(
             target_kind="component_relation",
             target_variables=["x", "t_star"],
-            lean_formula="forall t, x t = v * t",
+            lean_formula="unused fallback formula",
+            function_formula_ir=[
+                FunctionFormulaIR(
+                    formula_id="motion_relation",
+                    formula_kind="pointwise_relation",
+                    function_symbol="x",
+                    function_type="Real -> Length",
+                    bound_variables=[{"name": "t", "lean_type": "Real"}],
+                    lhs="x t",
+                    relation="=",
+                    rhs="v * t",
+                    parse_ok=True,
+                )
+            ],
             secondary_formulas=["t_star = L / v"],
             source_text="find motion and arrival time",
             confidence=0.9,
@@ -709,7 +926,8 @@ def test_b_minimal_skeleton_conjoins_secondary_canonical_targets(tmp_path: Path)
     )[0]
 
     assert candidate.parse_ok is True
-    assert "forall t : Time, (x t).val = v.val * t.val" in candidate.theorem_decl
+    assert "(x : MechLib.Mechanics.Kinematics.ScalarTrajectory)" in candidate.theorem_decl
+    assert "forall t : Real, (x t).val = v.val * t" in candidate.theorem_decl
     assert "t_star.val = L.val / v.val" in candidate.theorem_decl
     assert " ∧" in candidate.theorem_decl
 
@@ -729,7 +947,7 @@ def test_b_minimal_skeleton_uses_function_formula_ir_for_pointwise_target(tmp_pa
         sample_id="function-ir",
         variables={"x": {}, "v": {}},
         quantity_annotations=[
-            QuantityTypeAnnotation("x", semantic_role="position over time", lean_type="Time -> Length", confidence=0.95),
+            QuantityTypeAnnotation("x", semantic_role="position over time", lean_type="Real -> Length", confidence=0.95),
             QuantityTypeAnnotation("v", semantic_role="speed", lean_type="Speed", confidence=0.95),
         ],
         canonical_target=CanonicalTarget(
@@ -740,7 +958,9 @@ def test_b_minimal_skeleton_uses_function_formula_ir_for_pointwise_target(tmp_pa
                 FunctionFormulaIR(
                     formula_id="motion_relation",
                     formula_kind="pointwise_relation",
-                    bound_variables=[{"name": "t", "lean_type": "Time"}],
+                    function_symbol="x",
+                    function_type="Real -> Length",
+                    bound_variables=[{"name": "t", "lean_type": "Real"}],
                     lhs="x t",
                     relation="=",
                     rhs="v * t",
@@ -764,7 +984,8 @@ def test_b_minimal_skeleton_uses_function_formula_ir_for_pointwise_target(tmp_pa
     )[0]
 
     assert candidate.parse_ok is True
-    assert "forall t : Time, (x t).val = v.val * t.val" in candidate.theorem_decl
+    assert "(x : MechLib.Mechanics.Kinematics.ScalarTrajectory)" in candidate.theorem_decl
+    assert "forall t : Real, (x t).val = v.val * t" in candidate.theorem_decl
     assert "unused fallback formula" not in candidate.theorem_decl
 
 
@@ -842,7 +1063,20 @@ def test_b_minimal_skeleton_blocks_tautological_function_target(tmp_path: Path) 
         canonical_target=CanonicalTarget(
             target_kind="relation",
             target_variables=["v_x"],
-            lean_formula="forall t, v_x t = v_x t",
+            lean_formula="unused fallback formula",
+            function_formula_ir=[
+                FunctionFormulaIR(
+                    formula_id="bad_velocity_relation",
+                    formula_kind="pointwise_relation",
+                    function_symbol="v_x",
+                    function_type="Real -> Speed",
+                    bound_variables=[{"name": "t", "lean_type": "Real"}],
+                    lhs="v_x t",
+                    relation="=",
+                    rhs="v_x t",
+                    parse_ok=True,
+                )
+            ],
             source_text="velocity relation",
             confidence=0.9,
             parse_ok=True,
@@ -912,6 +1146,51 @@ def test_b_minimal_skeleton_cleans_numeric_quantity_casts_and_trailing_periods(t
 
     assert "((1 : Real) : Length)" not in candidate.theorem_decl
     assert "d.val = 1" in candidate.theorem_decl
+
+
+def test_b_minimal_skeleton_archive_part1_10_2_does_not_project_real_compound(tmp_path: Path) -> None:
+    payload = json.dumps({"candidates": [{"candidate_id": "c1", "theorem_name_hint": "drag_force"}]})
+    module = ModuleB(StaticClient(payload), _prompt(tmp_path), minimal_prompt_path=_minimal_prompt(tmp_path))
+    grounding = GroundingResult(
+        sample_id="archive_part1_10_2",
+        model_id="m",
+        problem_ir={"unknown_target": {"symbol": "F_drag", "description": "drag force"}},
+        parse_ok=True,
+        raw_response="",
+        error=None,
+    )
+    model_ir = ModelIR(
+        sample_id="archive_part1_10_2",
+        variables={"F_drag": {}, "g": {}, "h1": {}, "t": {}},
+        quantity_annotations=[
+            QuantityTypeAnnotation("F_drag", semantic_role="drag force", lean_type="Force", confidence=0.95),
+            QuantityTypeAnnotation("g", semantic_role="gravity", lean_type="Acceleration", confidence=0.95),
+            QuantityTypeAnnotation("h1", semantic_role="fall distance", lean_type="Length", confidence=0.95),
+            QuantityTypeAnnotation("t", semantic_role="time", lean_type="Time", confidence=0.95),
+        ],
+        canonical_target=CanonicalTarget(
+            target_kind="relation",
+            target_variables=["F_drag"],
+            lean_formula="t != 0 ∧ 0 <= (2 * g * h1).val -> F_drag = g",
+            source_text="drag force relation",
+            confidence=0.9,
+            parse_ok=True,
+        ),
+        parse_ok=True,
+    )
+
+    candidate = module.run(
+        grounding,
+        generation_mode="minimal_skeleton",
+        model_ir=model_ir,
+        controlled_sketch=ControlledSketch(sample_id="archive_part1_10_2", status="ok", parse_ok=True),
+        evidence_bindings=[],
+        sketch_audit_result=SketchAuditResult(sample_id="archive_part1_10_2", audit_pass=True),
+    )[0]
+
+    assert candidate.parse_ok is True
+    assert "(2 * g.val * h1.val).val" not in candidate.theorem_decl
+    assert "0 <= 2 * g.val * h1.val" in candidate.theorem_decl
 
 
 def test_b_minimal_skeleton_cleans_simple_numeric_quantity_casts(tmp_path: Path) -> None:
@@ -1154,5 +1433,84 @@ def test_b_minimal_skeleton_selects_explicit_gap_variant_when_available(tmp_path
     candidate = out[0]
     assert candidate.variant_id == "v2_explicit_gap_allowed"
     assert candidate.gap_policy == "explicit_gap_law"
-    assert candidate.explicit_model_gaps
+    assert candidate.gap_laws
+    assert candidate.explicit_model_gaps == []
     assert candidate.target_form_policy == "algebra_obligation"
+
+
+def test_b_minimal_skeleton_records_formula_normalization_trace(tmp_path: Path) -> None:
+    payload = json.dumps({"candidates": [{"candidate_id": "c1", "theorem_name_hint": "trace"}]})
+    module = ModuleB(StaticClient(payload), _prompt(tmp_path), minimal_prompt_path=_minimal_prompt(tmp_path))
+
+    candidate = module.run(
+        _grounding(),
+        generation_mode="minimal_skeleton",
+        model_ir=_model_ir(),
+        controlled_sketch=_sketch(),
+        evidence_bindings=_bindings(),
+        sketch_audit_result=_pass_audit(),
+    )[0]
+
+    assert candidate.formula_normalization_trace
+    assert any(row.get("source_id") == "canonical_target" for row in candidate.formula_normalization_trace)
+    assert all("source" in row and "normalized" in row and "edits" in row for row in candidate.formula_normalization_trace)
+
+
+def test_b_minimal_skeleton_evidence_gap_keeps_parse_ok_with_valid_target(tmp_path: Path) -> None:
+    payload = json.dumps({"candidates": [{"candidate_id": "c1", "theorem_name_hint": "gap_target"}]})
+    module = ModuleB(StaticClient(payload), _prompt(tmp_path), minimal_prompt_path=_minimal_prompt(tmp_path))
+    model_ir = _model_ir()
+    model_ir.model_instances = [
+        ModelInstance(
+            instance_id="mi_gap",
+            kind="newton_second_law_1d",
+            natural_language="gap law",
+            variables={"force": "T1", "mass": "m1", "acceleration": "a"},
+            expected_claim="T1 = m1 * a",
+        )
+    ]
+
+    candidate = module.run(
+        _grounding(),
+        generation_mode="minimal_skeleton",
+        model_ir=model_ir,
+        controlled_sketch=ControlledSketch(sample_id="atwood-1", status="blocked_by_evidence_gap", parse_ok=True),
+        evidence_bindings=[
+            EvidenceBinding(
+                binding_id="gap",
+                model_instance_id="mi_gap",
+                proof_fact_allowed=False,
+                binding_status="gap_schema_only",
+            )
+        ],
+        sketch_audit_result=_pass_audit(),
+    )[0]
+
+    assert candidate.parse_ok is True
+    assert candidate.generation_blocked_reason is None
+    assert candidate.grounding_status == "partial_mechlib_with_evidence_gap"
+    assert candidate.fully_mechlib_verified is False
+
+
+def test_b_minimal_skeleton_pragmatic_target_when_upstream_sketch_audit_failed(tmp_path: Path) -> None:
+    payload = json.dumps({"candidates": [{"candidate_id": "c1", "theorem_name_hint": "strict"}]})
+    module = ModuleB(StaticClient(payload), _prompt(tmp_path), minimal_prompt_path=_minimal_prompt(tmp_path))
+
+    candidate = module.run(
+        _grounding(),
+        generation_mode="minimal_skeleton",
+        model_ir=_model_ir(),
+        controlled_sketch=_sketch(),
+        evidence_bindings=_bindings(),
+        sketch_audit_result=SketchAuditResult(
+            sample_id="atwood-1",
+            audit_pass=False,
+            failure_tags=["raw_law_equation_in_hypotheses"],
+        ),
+    )[0]
+
+    assert candidate.parse_ok is True
+    assert candidate.variant_policy == "pragmatic_target_skeleton"
+    assert candidate.grounding_status == "pragmatic_target_skeleton"
+    assert candidate.proof_obligations == []
+    assert candidate.model_predicate_bindings == []

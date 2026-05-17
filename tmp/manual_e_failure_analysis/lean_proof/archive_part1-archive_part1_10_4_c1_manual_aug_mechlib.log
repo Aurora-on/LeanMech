@@ -1,0 +1,9 @@
+backend=mechlib
+returncode=1
+
+STDOUT:
+/Users/weizhixin/AI4Mechanics/LeanMech/tmp/manual_e_failure_analysis/.pipeline1_tmp/proof/mechlib/archive_part1-archive_part1_10_4_c1_manual_aug.lean:43:4: error: No goals to be solved
+
+
+STDERR:
+

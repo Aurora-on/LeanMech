@@ -28,14 +28,18 @@ Return exactly 4 candidates:
 Revision rules:
 1. Do not repeat the same theorem declarations from the previous round.
 2. If compile feedback reports syntax, import, namespace, or unknown-library-symbol issues, fix those first.
-3. If semantic feedback reports target mismatch, law drift, trivial goals, poor known-quantity coverage, or missing library grounding, fix those before stylistic variation.
-4. Remove unsupported claims and unresolved library references called out in the feedback.
-5. Keep unknown_target, known_quantities, constraints, and physical_laws aligned with ProblemIR.
-6. Every nontrivial physical claim must have a source in `supporting_facts` / `fact_sources`.
-7. Prefer direct algebraic equalities over undocumented helper APIs.
-8. If typed MechLib modeling is causing failures, switch to `Real`.
-9. Never output proof bodies.
-10. Keep output fully valid JSON.
+3. Compile repair must preserve the mechanics target and modeling semantics. Do not replace a failed mechanics statement with a theorem whose conclusion is only a numeric simplification, tuple equality, reflexive equality, or expression identity detached from the physical target.
+4. If an unsupported library symbol caused failure, replace that API with explicit Real-level problem/model hypotheses or definitions that keep the same physical relation. Do not delete the relation.
+5. For function/derivative targets, keep the target-facing functions in the theorem statement, e.g. use `v_x a_x : Real -> Real`, velocity definitions, and acceleration-value hypotheses/conclusions over `a_x 2` / `a_y 2`; do not collapse the theorem to `((1/2),(3/10)) = ...`.
+6. The theorem conclusion must still mention the requested target object or target function/value from ProblemIR whenever possible.
+7. If semantic feedback reports target mismatch, law drift, trivial goals, poor known-quantity coverage, or missing library grounding, fix those before stylistic variation.
+8. Remove unsupported claims and unresolved library references called out in the feedback.
+9. Keep unknown_target, known_quantities, constraints, and physical_laws aligned with ProblemIR.
+10. Every nontrivial physical claim must have a source in `supporting_facts` / `fact_sources`.
+11. Prefer direct algebraic equalities over undocumented helper APIs, but keep them attached to physical variables/functions and problem/model hypotheses.
+12. If typed MechLib modeling is causing failures, switch to `Real` while preserving units, laws, and target semantics in assumptions or the conclusion.
+13. Never output proof bodies.
+14. Keep output fully valid JSON.
 
 ProblemIR:
 {{problem_ir_json}}

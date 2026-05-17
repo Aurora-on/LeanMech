@@ -15,12 +15,18 @@ Rules:
 10. forbidden_as_assumption must include the target/goal and any derived or algebraic result that should not be assumed.
 11. For every variable, output quantity_annotations using the problem statement, units, and definitions. Do not infer from symbol spelling alone.
 12. Use only existing MechLib.SI quantity types. For angles use PhysAngle, not Angle. If no existing SI type fits, use Real with low confidence and explain why.
-13. If a quantity is a function of time or another variable, write its Lean type as a function type, e.g. Time -> Length, Time -> Speed, Time -> Acceleration. Do not put .val in bound-variable names.
-14. Output exactly one canonical_target. It is the only target B may use. It may be a closed-form equation, a relation, a component relation, or a property; do not force a closed form unless the problem asks for one.
+13. If a quantity is a scalar function of time, prefer MechLib's native Real-time fields: MechLib.Mechanics.Kinematics.ScalarTrajectory for position/length, MechLib.Mechanics.Kinematics.ScalarVelocityField for speed, and MechLib.Mechanics.Kinematics.ScalarAccelerationField for acceleration. For other time-dependent quantities, use Real -> <QuantityType>, not Time -> <QuantityType>. Do not put .val in bound-variable names.
+14. Output exactly one canonical_target. It is the only target B may use. It may be a closed-form equation, a pointwise function relation, a derivative/ODE relation, a component relation, or a property; do not force a closed form unless the problem asks for one.
 15. If the problem asks for multiple required outputs, put the primary requested formula in canonical_target.lean_formula and the other required formulas in canonical_target.secondary_formulas. Do not drop requested outputs.
 16. Never use no-information tautologies such as x = x, v t = v t, a.val = a.val, or forall t, f t = f t as target or modeling equations.
 17. For function-valued targets, also fill canonical_target.function_formula_ir. B will trust this structure rather than infer function semantics from strings.
-18. Use function formula_kind values: scalar_relation, pointwise_relation, evaluation_relation, ode_relation, component_relation, property. If the function target cannot be expressed in Lean-like first-order syntax, set parse_ok=false and explain error.
+18. Use target_kind values: closed_form, closed_form_value, relation, component_relation, pointwise_function_relation, derivative_relation, ode_relation, existence_or_property, unknown_or_ambiguous. Use function formula_kind values: scalar_relation, pointwise_relation, evaluation_relation, derivative_relation, ode_relation, component_relation, property. If the function target cannot be expressed in Lean-like first-order syntax, set parse_ok=false and explain error.
+19. Do not pack multiple propositions into one field with commas. Use separate givens/local_definitions/model_instances, or use ∧ only when it is intentionally one proposition. If expected_claim is explanatory natural language, keep formal equations in interface_instantiations instead of mixing prose and final derived formulas.
+20. Do not cast numeric Real values into SI quantity types, e.g. never output ((1 : Real) : Speed) or ((1 : Real) : Acceleration). Ordinary algebraic formulas should stay value-level.
+21. For function-valued targets, prefer a Real chart time variable in function_formula_ir, e.g. t0 : Real. Numeric evaluation facts such as v 0 = v0 are allowed only when they are explicit givens/local definitions from the problem; B will normalize them to value-level pointwise form.
+22. Every formula involving a function-valued quantity must be pointwise. For x : MechLib.Mechanics.Kinematics.ScalarTrajectory, write forall t0 : Real, (x t0).val = ...; for M : PhysAngle -> Torque, write forall phi0 : PhysAngle, (M phi0).val = .... Never write x = ..., M = 4 * phi, v_rope = R * omega, or omega * R unless both function quantities are applied to the same bound variable.
+23. Mathlib/MechLib does not provide Real.atan2 in the current pipeline. If a direction angle would require atan2, either express it through component relations such as cos/sin constraints or set canonical_target.parse_ok=false with a clear error. Do not output Real.atan2.
+24. If the problem gives an angle in degrees, make that explicit in quantity_annotations.unit_or_dimension/evidence_text and use radians at value level, e.g. beta.val = 30 * Real.pi / 180, not beta.val = 30.
 
 Return this JSON shape:
 {
@@ -39,7 +45,7 @@ Return this JSON shape:
   ],
   "canonical_target": {
     "target_id": "target_1",
-    "target_kind": "closed_form | relation | component_relation | existence_or_property | unknown_or_ambiguous",
+    "target_kind": "closed_form | closed_form_value | relation | component_relation | pointwise_function_relation | derivative_relation | ode_relation | existence_or_property | unknown_or_ambiguous",
     "target_variables": ["a"],
     "lean_formula": "a = (m2 * g) / (m1 + m2)",
     "secondary_formulas": [],
@@ -47,6 +53,9 @@ Return this JSON shape:
       {
         "formula_id": "target_formula_1",
         "formula_kind": "scalar_relation",
+        "function_symbol": "",
+        "function_type": "",
+        "allow_time_domain_coercion": false,
         "bound_variables": [],
         "domain_conditions": [],
         "lhs": "a",

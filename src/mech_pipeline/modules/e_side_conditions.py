@@ -52,6 +52,18 @@ def extract_denominators(target: str | None) -> list[str]:
     return denoms
 
 
+def _extract_denominators_from_sources(sources: Iterable[str | None]) -> list[str]:
+    seen: set[str] = set()
+    denoms: list[str] = []
+    for source in sources:
+        for denom in extract_denominators(source):
+            normalized = normalize_side_condition_expression(denom)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                denoms.append(denom)
+    return denoms
+
+
 def _sum_terms(expr: str) -> list[str]:
     parts = [_normalize_term(part) for part in expr.split("+")]
     return [part for part in parts if part]
@@ -155,7 +167,14 @@ def propose_side_condition_actions(
     it returns a structured `missing_side_condition` proposal instead of asking the LLM to
     invent a proof.
     """
-    denoms = extract_denominators(proof_context.target_formula)
+    denoms = _extract_denominators_from_sources(
+        [
+            proof_context.target_formula,
+            *current_facts,
+            *proof_context.allowed_local_facts,
+            *proof_context.local_binders,
+        ]
+    )
     if not denoms:
         return []
 

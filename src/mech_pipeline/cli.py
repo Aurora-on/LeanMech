@@ -10,6 +10,7 @@ from mech_pipeline.adapters import (
     Lean4PhysDatasetAdapter,
     LeanRunner,
     LocalArchiveDatasetAdapter,
+    MixedV2DatasetAdapter,
     PhyxDatasetAdapter,
 )
 from mech_pipeline.archive import create_run_dir, write_outputs
@@ -31,6 +32,7 @@ from mech_pipeline.orchestrator import (
     execute_samples,
     new_stage_rows as _new_stage_rows,
 )
+from mech_pipeline.preproof_eval import run_preproof_eval
 from mech_pipeline.rendering import (
     build_lean_export_files as _build_lean_export_files,
     build_revision_feedback as _build_revision_feedback,
@@ -100,6 +102,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run.add_argument("--tag", type=str, default=None)
     run.add_argument("--sample-concurrency", type=int, default=None)
     run.add_argument("--dry-run", action="store_true")
+    preproof = sub.add_parser("run-preproof-e", help="run E stage and downstream rendering from a preproof snapshot")
+    preproof.add_argument("--preproof-dir", required=True, type=str)
+    preproof.add_argument("--config", type=str, default=None, help="optional config override for E/F runtime")
+    preproof.add_argument("--tag", type=str, default=None)
+    preproof.add_argument("--sample-concurrency", type=int, default=None)
+    preproof.add_argument("--limit", type=int, default=None)
+    preproof.add_argument("--sample-id", action="append", default=None, help="repeatable sample id filter")
+    preproof.add_argument("--api-key-env", type=str, default=None, help="override redacted snapshot api_key_env")
+    preproof.add_argument("--output-dir", type=str, default=None)
+    preproof.add_argument("--runs-dir", type=str, default=None)
+    preproof.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -118,6 +131,17 @@ def _build_dataset(cfg: PipelineConfig):
             sample_policy=cfg.dataset.sample_policy,
             limit=cfg.dataset.limit,
             seed=cfg.dataset.seed,
+        )
+    if cfg.dataset.source == "mixed_v2":
+        return MixedV2DatasetAdapter(
+            bench_path=cfg.dataset.lean4phys.bench_path,
+            archive_root=cfg.dataset.local_archive.root,
+            category=cfg.dataset.lean4phys.category,
+            level=cfg.dataset.lean4phys.level,
+            sample_policy=cfg.dataset.sample_policy,
+            limit=cfg.dataset.limit,
+            seed=cfg.dataset.seed,
+            single_image_only=cfg.dataset.single_image_only_for_mvp,
         )
     return Lean4PhysDatasetAdapter(
         bench_path=cfg.dataset.lean4phys.bench_path,
@@ -431,6 +455,20 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.command == "run":
         return run_pipeline(args)
+    if args.command == "run-preproof-e":
+        return run_preproof_eval(
+            preproof_dir=Path(args.preproof_dir),
+            config_path=Path(args.config) if args.config else None,
+            tag=args.tag,
+            sample_concurrency=args.sample_concurrency,
+            limit=args.limit,
+            sample_ids=args.sample_id,
+            api_key_env=args.api_key_env,
+            output_dir=Path(args.output_dir) if args.output_dir else None,
+            runs_dir=Path(args.runs_dir) if args.runs_dir else None,
+            dry_run=args.dry_run,
+            emit_console_line=_emit_console_line,
+        )
     raise ValueError(f"unsupported command: {args.command}")
 
 

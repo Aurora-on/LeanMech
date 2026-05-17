@@ -1,6 +1,6 @@
 # LeanMech
 
-LeanMech 是一个面向力学题自动形式化的分阶段流水线。它从自然语言题面和可选图像出发，构造结构化中间表示，生成 Lean theorem candidate 或 typed minimal skeleton，在真实 Lean 环境中做 statement elaboration check，再进入语义排序、证明尝试和运行归档。
+LeanMech 是一个面向力学题自动形式化的分阶段流水线。它从自然语言题面和可选图像出发，构造结构化中间表示，生成 Lean theorem candidate 或 typed minimal skeleton，在真实 Lean 环境中做 statement elaboration check，再进入语义排序、Lean-certified 证明搜索、依赖审计、可读解题渲染和运行归档。
 
 当前仓库的目标不是训练框架，也不是通用 agent 平台，而是一个可运行、可回放、可诊断的研究型基线。
 
@@ -11,6 +11,8 @@ LeanMech 是一个面向力学题自动形式化的分阶段流水线。它从�
 - 明确区分 schema metadata 与 verified declaration。
 - 生成 legacy theorem candidate 或 minimal theorem skeleton。
 - 在真实 Lean 中检查 theorem statement 是否可 elaboration。
+- 在 E 阶段用 MechLib-grounded proof obligations、局部 proof action 和最终 replay 审计证明。
+- 基于结构化 trace/audit 生成可读、可复查的中文解题流程。
 - 将每次运行完整写入 `runs/<run>/`，并同步轻量镜像到 `outputs/latest/`。
 - 保持旧 CLI 和旧配置兼容。
 
@@ -58,7 +60,7 @@ sample
   -> B theorem candidates
   -> C Lean statement elaboration check
   -> D semantic rank
-  -> E proof generation/check
+  -> E legacy proof generation/check
   -> SolutionRenderer readable solution trace
   -> F report and metrics
 ```
@@ -81,11 +83,11 @@ sample
   -> B typed deterministic theorem skeleton assembler
   -> C Lean statement elaboration check
   -> D semantic rank
-  -> E existing proof stage
+  -> E llm_guided_search / legacy proof fallback
   -> SolutionRenderer readable solution trace
 ```
 
-minimal skeleton 的结构化前半段只在 minimal skeleton 模式启用。E 阶段目前不重构。E 之后新增 `SolutionRenderer`，它不改变 proof 流程，只把 proof/check/trace/audit 结果保守渲染为可读解题流程。
+minimal skeleton 的结构化前半段只在 minimal skeleton 模式启用。当前 `proof.mode=auto` 且 selected candidate 为 minimal skeleton 时，E 阶段默认进入 `llm_guided_search`：LLM 只提出局部 proof action、策略和中间 `have`，每个 action 由 Lean probe 检查，最终 proof success 仍以 Lean replay 成功为准。旧 E 保留为 `legacy_full_proof` 显式模式或 fallback 对照，不应被静默当作新 E 的替代。E 之后的 `SolutionRenderer` 不重新解题，只把 proof/check/trace/audit 结果保守渲染为可读解题流程。
 
 当前交接状态见 [docs/handoff_minimal_pipeline_token_optimization_20260513.md](/Users/weizhixin/AI4Mechanics/LeanMech/docs/handoff_minimal_pipeline_token_optimization_20260513.md)。该文档记录了最近一次 token 优化、12 题真实评测中止原因、新 E proof search 长尾问题，以及后续建议。
 
@@ -255,6 +257,51 @@ Minimal B 输出 `TheoremSkeletonCandidate`，它兼容并扩展 `StatementCandi
 - `excluded_hypotheses`
 - `generation_blocked_reason`
 
+### E Proof Search Trace 与 DependencyAudit
+
+minimal skeleton 下，E 阶段的核心输入不是自然语言解答，而是：
+
+- `theorem_skeleton_candidates[*].theorem_decl`
+- `proof_obligations`
+- `EvidenceBinding` 中的 verified declarations
+- `ControlledSketch` / `SketchAudit`
+- theorem hypothesis provenance
+- C/D 阶段通过后的 Lean statement
+
+`proof.mode=auto` 会把 minimal skeleton candidate 路由到 `llm_guided_search`。当前搜索流程是：
+
+```text
+ProofContext
+  -> deterministic obligation replay / extractor preflight
+  -> deterministic side-condition actions
+  -> compact proof state
+  -> LLM local action proposals
+  -> ActionGuard
+  -> Lean probe_proof_prefix
+  -> accepted/rejected action trace
+  -> final verify_proof replay
+  -> ProofDependencyAudit
+```
+
+LLM 可以选择策略、提出局部 `have`、rewrite 或 algebra tactic block，也可以根据 Lean error excerpt 做失败诊断；但它不能一次性提交完整 proof，也不能使用 whitelist 外的 MechLib declaration。`proof_obligations[*].produced_fact_name` 只是期望产物名，不是已存在事实；只有 deterministic replay 或 LLM action 经 Lean probe 接受后，才会进入后续 `local_facts`。
+
+当前 E 阶段已经落盘以下审计产物：
+
+- `proof_strategy_prompts.jsonl`：发给 LLM 的 compact proof state、active goals、remaining/blocked obligations 和 prompt 摘要。
+- `proof_action_checks.jsonl`：每个 deterministic/LLM action 的 tactic block、uses_facts、uses_decls、Lean probe 状态和错误分类。
+- `proof_search_trace.jsonl`：搜索级 accepted/rejected actions、LLM 调用数、probe 次数、最终 proof body、search status/failure reason。
+- `proof_dependency_audit.jsonl`：required/used verified declarations、covered/missing obligations、`fully_mechlib_verified`、`gap_assisted`、`algebra_only` 和 classification。
+
+成功分类必须保守：如果最终 Lean replay 成功但没有使用 required verified declaration，或没有覆盖 required proof obligations，只能标记为 `gap_assisted_success` / `algebra_only_success`，不能标记为 `fully_mechlib_verified`。
+
+近期窄修复包括：
+
+- deterministic extractor preflight 对 type/API/symbol 错误标记为 invalid，不再让错误 action 产生 local fact 或覆盖 obligation。
+- LLM fallback 只做局部 action synthesis，每个 action 仍经过 ActionGuard、Lean probe 和 final replay。
+- `tactic_no_goals` 只在 `have ... := by ...` 形态上做局部截短 repair，保留已接受 prefix、local facts 和 fact-plan remainder。
+
+详细设计见 [docs/e_llm_guided_certified_prover.md](/Users/weizhixin/AI4Mechanics/LeanMech/docs/e_llm_guided_certified_prover.md)。
+
 ### SolutionRenderer
 
 E 阶段之后新增单模块 `SolutionRenderer`，负责把结构化形式化求解结果转成中文可读解题流程。它可以使用 LLM，但 LLM 只能负责自然语言表达，不能重新解题、不能新增公式、不能新增物理定律、不能修改最终答案。
@@ -338,6 +385,10 @@ minimal 模式使用 deterministic failure routing，不再把所有失败统一
 - `semantic_rank.jsonl`
 - `proof_attempts.jsonl`
 - `proof_checks.jsonl`
+- `proof_strategy_prompts.jsonl`
+- `proof_action_checks.jsonl`
+- `proof_search_trace.jsonl`
+- `proof_dependency_audit.jsonl`
 - `solution_trace.jsonl`
 - `natural_solution.jsonl`
 - `solution_render_audit.jsonl`
@@ -357,7 +408,7 @@ minimal skeleton 运行额外写入：
 - `theorem_skeleton_candidates.jsonl`
 - `failure_routes.jsonl`
 
-`solution_trace.jsonl` 保留结构化可读解题轨迹，`natural_solution.jsonl` 保留完整自然语言解题流程，`solution_render_audit.jsonl` 记录 final answer coverage、law step coverage、unsupported formula 和 proof status disclosure 等审计结果。
+`proof_*` 文件共同记录 E 阶段的 proof attempt、局部 action 检查、搜索轨迹、最终 replay 结果和依赖分类。`solution_trace.jsonl` 保留结构化可读解题轨迹，`natural_solution.jsonl` 保留完整自然语言解题流程，`solution_render_audit.jsonl` 记录 final answer coverage、law step coverage、unsupported formula 和 proof status disclosure 等审计结果。
 
 完整档案位于：
 
@@ -389,6 +440,25 @@ minimal skeleton 额外指标：
 - `derived_equation_hypothesis_violation_rate`
 - `schema_as_proof_fact_violation_rate`
 - `explicit_gap_law_rate`
+
+E proof search / dependency audit 额外指标：
+
+- `llm_guided_search_enabled_rate`
+- `obligation_replay_success_rate`
+- `proof_obligation_coverage_rate`
+- `verified_decl_use_rate`
+- `fully_mechlib_verified_proof_rate`
+- `partial_mechlib_verified_proof_rate`
+- `gap_assisted_success_rate`
+- `algebra_only_success_rate`
+- `llm_strategy_success_rate`
+- `average_llm_calls_per_proof`
+- `valid_llm_action_rate`
+- `invalid_llm_action_rate`
+- `missing_side_condition_rate`
+- `physical_assumption_augmentation_rate`
+- `augmented_theorem_compile_success_rate`
+- `average_lean_action_checks_per_proof`
 
 SolutionRenderer 额外指标：
 
@@ -433,6 +503,18 @@ knowledge:
   evidence_top_k: 8
   lean_check_decls: true
 
+proof:
+  mode: auto
+  legacy_fallback_enabled: false
+  max_attempts: 1
+  llm_guided_search:
+    enabled: true
+    deterministic_obligation_replay_first: true
+    deterministic_side_conditions_first: true
+    final_replay_required: true
+    require_verified_decl_use: true
+    require_all_proof_obligations_covered: true
+
 solution_renderer:
   enabled: true
   natural_language_enabled: false
@@ -458,6 +540,25 @@ solution_renderer:
 - `configs/minimal_testset_v1_selected12.yaml`
 
 该配置使用 `gpt-5.4` 和 minimal skeleton。注意：在 `proof.mode=auto` 且 selected candidate 为 minimal skeleton 时，E 会进入 `llm_guided_search`。默认搜索预算较大，真实并发评测可能长时间停留在 `pipeline_proof_probe_*.lean`。不要为了绕开该问题静默改成 legacy proof；如果只想评估 D 前流程或限预算测试新 E，应显式创建单独配置并在报告中说明。
+
+近期 v2 mixed 评测集：
+
+- `fixtures/bench_testset_v2_mixed.json`
+- `fixtures/bench_testset_v2_mixed_selection.json`
+- `configs/minimal_testset_v2_mixed.yaml`
+- `tmp/minimal_testset_v2_mixed_legacy_proof.yaml`
+
+`dataset.source: mixed_v2` 由 `src/mech_pipeline/adapters/mixed_v2.py` 加载，当前用于组合 Lean4Phys mechanics 样本与 archive text-only 样本。`configs/minimal_testset_v2_mixed.yaml` 使用 minimal skeleton + `proof.mode=auto`，即默认进入新 E；`tmp/minimal_testset_v2_mixed_legacy_proof.yaml` 显式设置 `proof.mode: legacy_full_proof`，只用于旧证明阶段对照或诊断，不能代表新 E 搜索能力。
+
+近期 E 阶段与后续渲染报告：
+
+- `reports/E_STAGE_MECHANICS73_PREFLIGHT_GUARD_REPORT_20260514.md`
+- `reports/E_STAGE_MECHANICS73_LLM_OBLIGATION_FALLBACK_REPORT_20260514.md`
+- `reports/E_STAGE_MECHANICS73_INTERACTION_TRACE_20260514.md`
+- `reports/E_STAGE_MECHANICS73_TACTIC_NO_GOALS_REPAIR_20260514.md`
+- `reports/E_STAGE_MECHANICS73_SOLUTION_RENDERER_REALAPI_REPORT_20260515.md`
+- `reports/minimal_v2_mechlib_update_error_by_sample_20260515.md`
+- `reports/mechlib_missing_decls_from_v2_runs_20260515.md`
 
 ## Lean / MechLib / Mathlib
 
@@ -493,6 +594,8 @@ python -m pytest -q tests/test_b_minimal_skeleton.py tests/test_b_no_derived_hyp
 python -m pytest -q tests/test_d_skeleton_aware_rank.py tests/test_failure_routing_minimal_routed_stage.py
 python -m pytest -q tests/test_orchestrator_minimal_routed_retry.py tests/test_failure_routing.py
 python -m pytest -q tests/test_metrics_minimal_skeleton.py
+python -m pytest -q tests/test_mixed_v2_dataset.py
+python -m pytest -q tests/test_e_dependency_audit.py tests/test_e_search_controller_basic.py tests/test_e_obligation_replayer.py tests/test_e_certified_replay.py
 python -m pytest -q tests/test_solution_renderer_types.py tests/test_solution_renderer_module.py tests/test_orchestrator_solution_renderer_integration.py
 ```
 
@@ -518,7 +621,7 @@ LeanMech/
 ├─ reports/                  实验报告与审计报告
 ├─ runs/                     完整运行档案
 ├─ src/mech_pipeline/
-│  ├─ adapters/              Lean 与数据源适配器
+│  ├─ adapters/              Lean、Lean4Phys 与 mixed_v2 数据源适配器
 │  ├─ eval/                  metrics 与 summary
 │  ├─ knowledge/             MechLib retrieval 与 evidence binding
 │  ├─ model/                 模型客户端
@@ -547,13 +650,17 @@ LeanMech/
 4. `src/mech_pipeline/types.py`
 5. `src/mech_pipeline/config.py`
 6. `src/mech_pipeline/orchestrator.py`
-7. `src/mech_pipeline/modules/A2_model_ir.py`
-8. `src/mech_pipeline/modules/sketch_builder.py`
-9. `src/mech_pipeline/modules/sketch_audit.py`
-10. `src/mech_pipeline/modules/B_statement_gen.py`
-11. `src/mech_pipeline/modules/solution_renderer.py`
-12. `src/mech_pipeline/knowledge/evidence_binder.py`
-13. `outputs/latest/` 或最近的 `runs/<run>/`
+7. `docs/e_llm_guided_certified_prover.md`
+8. `src/mech_pipeline/modules/A2_model_ir.py`
+9. `src/mech_pipeline/modules/sketch_builder.py`
+10. `src/mech_pipeline/modules/sketch_audit.py`
+11. `src/mech_pipeline/modules/B_statement_gen.py`
+12. `src/mech_pipeline/modules/e_proof_context.py`
+13. `src/mech_pipeline/modules/e_search_controller.py`
+14. `src/mech_pipeline/modules/e_obligation_replayer.py`
+15. `src/mech_pipeline/modules/solution_renderer.py`
+16. `src/mech_pipeline/knowledge/evidence_binder.py`
+17. `outputs/latest/` 或最近的 `runs/<run>/`
 
 ## 当前边界
 
@@ -566,4 +673,6 @@ LeanMech/
 - 复杂 ODE / function target 总能被稳定表达成 Lean 一阶公式。
 - 自然语言解题流程可以弥补 E 阶段缺失的 proof trace 或 dependency audit。
 
-当前重构方向是让 D 之前的前半段更短、更 typed、更可审计，并诚实暴露 gap。E 阶段应消费 `proof_obligations`、`verified_decls`、`controlled_sketch` 和 `hypothesis_provenance`，而不是从不透明自然语言 hypothesis 中寻找证明依据。E 之后的 `SolutionRenderer` 使用结构化 trace/audit 输出可读解题流程；若 trace/audit 暂时为空，它会保守披露 proof status，而不是伪造成 fully verified solution。
+当前 E 阶段已开始消费 `proof_obligations`、`verified_decls`、`controlled_sketch` 和 `hypothesis_provenance`，但常见失败仍包括 `missing_proof_friendly_extractor`、`from_hypothesis_missing`、`type_mismatch`、`unsolved_goals`、`No goals to be solved` 以及代数侧条件无法关闭。最终 Lean replay 成功也不等于 fully verified：若 required verified declaration 未使用或 required obligation 未覆盖，dependency audit 必须保守标记为 `gap_assisted_success` / `algebra_only_success`。
+
+当前重构方向是让 D 之前的前半段更短、更 typed、更可审计，并诚实暴露 gap；让 E 阶段从结构化 proof context 出发做可回放的局部 action 搜索，而不是回到不透明 full-proof generation。E 之后的 `SolutionRenderer` 使用结构化 trace/audit 输出可读解题流程；若 trace/audit 暂时为空，它会保守披露 proof status，而不是伪造成 fully verified solution。

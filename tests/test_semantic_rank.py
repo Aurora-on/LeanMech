@@ -352,6 +352,76 @@ def test_semantic_rank_accepts_surface_different_but_equivalent_target(tmp_path:
     assert row["hard_gate_reasons"] == []
 
 
+def test_semantic_rank_does_not_hard_fail_equivalent_target_for_sparse_known_quantity_surface(
+    tmp_path: Path,
+) -> None:
+    prompt = tmp_path / "D_semantic_rank.txt"
+    prompt.write_text("__TASK_D_SEMANTIC_RANK__", encoding="utf-8")
+    payload = """
+    {
+      "results": [
+        {
+          "candidate_id": "c1",
+          "back_translation": "The target displacement of prism A is determined by a compact center-of-mass relation.",
+          "semantic_score": 0.9,
+          "semantic_pass": true,
+          "target_relation": "equivalent",
+          "reason": "The target is correct; the problem givens are compressed into the modeling equation.",
+          "failure_summary": "",
+          "failure_tags": ["known_quantity_mismatch"],
+          "mismatch_fields": ["known_quantities"],
+          "missing_or_incorrect_translations": [],
+          "suggested_fix_direction": "Optionally expose the mass ratio as a separate hypothesis."
+        }
+      ]
+    }
+    """
+    mod = ModuleD(model_client=DetailedSemanticLLM(payload), prompt_path=prompt, pass_threshold=0.7)
+
+    grounding = GroundingResult(
+        sample_id="s4_known_compact",
+        model_id="m",
+        problem_ir={
+            "unknown_target": {"symbol": "x_A", "description": "horizontal displacement of prism A"},
+            "goal_statement": "find the horizontal displacement of prism A",
+            "known_quantities": [{"symbol": "m_A"}, {"symbol": "m_B"}, {"symbol": "a"}, {"symbol": "b"}],
+            "physical_laws": ["Kinematics"],
+        },
+        parse_ok=True,
+        raw_response="",
+        error=None,
+    )
+    candidates = [
+        StatementCandidate(
+            sample_id="s4_known_compact",
+            candidate_id="c1",
+            lean_header="import MechLib",
+            theorem_decl=(
+                "theorem c1 (x_A shift : Real) "
+                "(h_cm : x_A = shift / 4) : x_A = shift / 4"
+            ),
+        )
+    ]
+    compile_rows = [
+        CompileCheckResult(
+            sample_id="s4_known_compact",
+            candidate_id="c1",
+            compile_pass=True,
+            syntax_ok=True,
+            elaboration_ok=True,
+            error_type=None,
+            stderr_digest="",
+            log_path=None,
+        )
+    ]
+
+    rank = mod.run(grounding, candidates, compile_rows, problem_text="Find the horizontal displacement x_A.")
+    row = rank.ranking[0]
+    assert rank.semantic_pass is True
+    assert row["target_relation"] == "equivalent"
+    assert "known_quantity_mismatch" not in row["hard_gate_reasons"]
+
+
 def test_semantic_rank_rejects_special_case_target_relation(tmp_path: Path) -> None:
     prompt = tmp_path / "D_semantic_rank.txt"
     prompt.write_text("__TASK_D_SEMANTIC_RANK__", encoding="utf-8")

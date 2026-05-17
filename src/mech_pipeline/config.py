@@ -204,7 +204,7 @@ class SolutionRendererConfig:
     natural_language_enabled: bool = False
     repair_on_audit_fail: bool = True
     max_trace_steps_for_prompt: int = 24
-    max_prompt_chars: int = 8000
+    max_prompt_chars: int = 12000
     max_natural_solution_chars_in_readme: int = 2400
 
 
@@ -309,8 +309,8 @@ def load_config(path: Path) -> PipelineConfig:
 
 
 def validate_config(cfg: PipelineConfig) -> None:
-    if cfg.dataset.source not in {"local_archive", "phyx", "lean4phys"}:
-        raise ValueError("dataset.source must be one of {'local_archive', 'phyx', 'lean4phys'}")
+    if cfg.dataset.source not in {"local_archive", "phyx", "lean4phys", "mixed_v2"}:
+        raise ValueError("dataset.source must be one of {'local_archive', 'phyx', 'lean4phys', 'mixed_v2'}")
     if cfg.dataset.local_archive.mode not in {"text_only", "image_text"}:
         raise ValueError("dataset.local_archive.mode must be one of {'text_only', 'image_text'}")
     if cfg.dataset.sample_policy not in {"index_head", "seed_random"}:

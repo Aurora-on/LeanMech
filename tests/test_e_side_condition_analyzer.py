@@ -50,6 +50,29 @@ def test_side_condition_analyzer_extracts_simple_denominator() -> None:
     assert extract_denominators("a.val = F.val / m.val") == ["m.val"]
 
 
+def test_side_condition_analyzer_discovers_denominator_from_accepted_fact() -> None:
+    context = ProofContext(
+        sample_id="s1",
+        candidate_id="c1",
+        theorem_decl="theorem c1 (g : Acceleration) (h_g_pos : 0 < g.val) : True",
+        lean_header="import MechLib",
+        target_formula="x.val = y.val",
+        local_binders=["g : Acceleration", "h_g_pos : 0 < g.val"],
+        allowed_local_facts=["h_g_pos"],
+        local_hypotheses=["h_g_pos"],
+    )
+
+    proposals = propose_side_condition_actions(
+        context,
+        ["h_sub : (P.val / g.val) * x.val + (Q.val / g.val) * y.val = 0", "h_g_pos : 0 < g.val"],
+    )
+
+    assert len(proposals) == 1
+    assert proposals[0].strategy == "prove_side_condition"
+    assert proposals[0].expected_effect == "prove denominator nonzero: g.val"
+    assert proposals[0].uses_facts == ["h_g_pos"]
+
+
 def test_side_condition_analyzer_handles_constant_times_positive_quantity() -> None:
     context = ProofContext(
         sample_id="s1",

@@ -1,0 +1,2 @@
+__TASK_D_SEMANTIC_RANK__
+{{candidate_payload_json}}

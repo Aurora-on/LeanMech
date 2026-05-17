@@ -72,6 +72,7 @@ EVIDENCE_BINDER_TAGS = {
 SKETCH_TAGS = {
     "sketch_audit_failed",
     "upstream_sketch_audit_failed",
+    "verified_decl_uninstantiated",
     "proof_step_missing_verified_decl",
     "gap_step_in_proof_steps",
     "too_many_sketch_steps",
@@ -369,6 +370,8 @@ def build_failure_route(
             route_tags.add("tautological_function_formula")
         if "non_lean_like_formal_claim" in blob:
             route_tags.add("non_lean_like_formal_claim")
+        if "verified_decl_uninstantiated" in blob:
+            route_tags.add("verified_decl_uninstantiated")
         if "upstream_sketch_audit_failed" in blob:
             route_tags.add("upstream_sketch_audit_failed")
         if "raw_law_equation_in_hypotheses" in blob:

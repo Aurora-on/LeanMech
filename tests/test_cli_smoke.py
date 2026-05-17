@@ -139,6 +139,8 @@ def test_revision_feedback_includes_compile_and_semantic_details() -> None:
     )
 
     assert feedback["retry_reason"] == "semantic_fail"
+    assert "compile_repair_must_preserve_mechanics_target" in feedback["revision_directives"]
+    assert "do_not_replace_with_pure_arithmetic_identity_or_tuple_equality" in feedback["revision_directives"]
     row = feedback["candidates"][0]
     assert row["sub_error_type"] == "wrong_api_shape"
     assert row["failure_summary"] == "Applied averageVelocity with the wrong function shape."

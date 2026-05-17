@@ -21,5 +21,9 @@ def test_solution_renderer_prompt_constraints_and_compact_payload():
     assert "完整 Lean proof" in prompt
     assert "完整 MechLib context" in prompt
     assert "教材式中文解题过程" in prompt
+    assert "renderer_plan" in prompt
+    assert "solution_trace_summary" in prompt
+    assert "symbol_intro" in prompt
+    assert "algebra_exposition" in prompt
     assert "轨迹中给出" in prompt
     assert "SECRET_FULL_PROOF" not in prompt

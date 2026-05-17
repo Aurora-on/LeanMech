@@ -52,12 +52,50 @@ def _binder_chunks(theorem_decl: str) -> list[str]:
 
 def _split_decl_target(theorem_decl: str) -> tuple[str, str] | None:
     decl = _decl_without_body(theorem_decl)
-    if " : " not in decl:
+    target_colon = _target_colon_index(decl)
+    if target_colon is None:
         return None
-    prefix, target = decl.rsplit(" : ", 1)
+    prefix, target = decl[:target_colon], decl[target_colon + 1 :]
     if not prefix.strip() or not target.strip():
         return None
     return prefix.strip(), target.strip()
+
+
+def _target_colon_index(decl: str) -> int | None:
+    """Find the theorem target separator without splitting type ascriptions.
+
+    The old implementation used a final textual ``" : "`` split.  That is
+    unsafe for targets containing Lean terms such as ``(1 : Real)``: the last
+    colon may be inside the target, not the theorem signature separator.
+    """
+    depth = 0
+    in_string = False
+    escape = False
+    for idx, char in enumerate(decl):
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char in "([{":
+            depth += 1
+            continue
+        if char in ")]}":
+            depth = max(0, depth - 1)
+            continue
+        if char != ":" or depth != 0:
+            continue
+        prev = decl[idx - 1] if idx > 0 else ""
+        nxt = decl[idx + 1] if idx + 1 < len(decl) else ""
+        if prev.isspace() and nxt.isspace():
+            return idx
+    return None
 
 
 def _binder_names(chunk: str) -> list[str]:

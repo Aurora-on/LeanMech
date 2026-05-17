@@ -55,7 +55,7 @@ def _used_required_decls(required: list[str], proof_body: str) -> list[str]:
 
 def _uses_gap_law(proof_context: ProofContext, proof_body: str) -> bool:
     body = normalize_lean_text(proof_body or "")
-    if proof_context.gap_laws or proof_context.explicit_model_gaps:
+    if proof_context.gap_laws or proof_context.explicit_model_gaps or proof_context.obligation_replay_blocked:
         return True
     return "explicit_gap_law" in body or "gap_law" in body
 

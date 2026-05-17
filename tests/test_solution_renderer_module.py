@@ -13,9 +13,11 @@ class _MockModel:
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = 0
+        self.prompts = []
 
     def generate_text(self, prompt):
         self.calls += 1
+        self.prompts.append(prompt)
         return _Response(self.responses.pop(0))
 
 
@@ -112,12 +114,58 @@ def _mechanics73_modeling_only_candidate():
             "proof_steps": [],
             "algebra_obligation": None,
             "model_interface_instantiations": [
+                {"instantiation_id": "dir1", "kind": "sign_convention_equation", "formal_claim": "positive_direction_m1 = toward_pulley"},
+                {"instantiation_id": "dir2", "kind": "sign_convention_equation", "formal_claim": "positive_direction_m2 = downward"},
                 {"instantiation_id": "mii1", "kind": "local_model_equation", "formal_claim": "T = m1 * a"},
                 {"instantiation_id": "mii2", "kind": "local_model_equation", "formal_claim": "m2 * g - T = m2 * a"},
                 {"instantiation_id": "mii3", "kind": "local_model_equation", "formal_claim": "Fnet_m1 = T"},
                 {"instantiation_id": "mii4", "kind": "local_model_equation", "formal_claim": "a1 = a"},
+                {"instantiation_id": "mii5", "kind": "constraint_acceleration_relation", "formal_claim": "a_hanging = a"},
+                {"instantiation_id": "mii6", "kind": "sign_or_uniformity_convention", "formal_claim": "T_glider = T"},
             ],
         },
+    }
+
+
+def _mechanics73_model_ir():
+    return {
+        "sample_id": "s1",
+        "model_instances": [
+            {
+                "instance_id": "mi1",
+                "kind": "particle_dynamics_along_track",
+                "natural_language": "Model the glider m1 as a particle moving horizontally on a frictionless level track, with tension as the only unbalanced force along the track.",
+                "variables": {"mass": "m1", "acceleration": "a", "tension": "T"},
+                "coordinate_convention": "For m1, positive x is along the track toward the pulley.",
+                "expected_claim": "The net force on m1 along the track equals the string tension, and this net force equals m1 times the common acceleration.",
+                "planning_schema_id": "Apply Newton's second law to the glider along the track direction.",
+            },
+            {
+                "instance_id": "mi2",
+                "kind": "particle_dynamics_hanging_mass",
+                "natural_language": "Model the hanging mass m2 as a particle moving vertically, with weight downward and tension upward.",
+                "variables": {"mass": "m2", "acceleration": "a", "tension": "T", "gravity": "g"},
+                "coordinate_convention": "For m2, positive y is vertically downward.",
+                "expected_claim": "The net downward force on m2 is weight minus tension, and this equals m2 times the common acceleration.",
+                "planning_schema_id": "Apply Newton's second law to the hanging mass along the vertical direction.",
+            },
+        ],
+        "interface_instantiations": [
+            {
+                "instantiation_id": "global_glider_force_equation",
+                "kind": "sign_or_constraint_equation",
+                "formal_claim": "T = m1 * a",
+                "source_model_instance": "mi1",
+                "notes": "This is the assembled modeling equation for m1.",
+            },
+            {
+                "instantiation_id": "global_hanging_force_equation",
+                "kind": "sign_or_constraint_equation",
+                "formal_claim": "m2 * g - T = m2 * a",
+                "source_model_instance": "mi2",
+                "notes": "This is the assembled modeling equation for m2.",
+            },
+        ],
     }
 
 
@@ -261,7 +309,7 @@ def test_module_renders_generic_textbook_plan_for_two_body_system():
     result = module.run(
         sample={"sample_id": "s1"},
         grounding={"sample_id": "s1", "problem_ir": {}},
-        model_ir={"sample_id": "s1"},
+        model_ir=_mechanics73_model_ir(),
         controlled_sketch=None,
         selected_candidate=_mechanics73_candidate(),
         proof_attempts=[
@@ -287,9 +335,14 @@ def test_module_renders_generic_textbook_plan_for_two_body_system():
     )
 
     assert result.render_audit.audit_pass is True
-    assert "本题要求求出 a, T" in result.natural_solution
+    assert "设小车质量为 m₁，悬挂物质量为 m₂" in result.natural_solution
+    assert "取小车运动方向和悬挂物向下方向为正方向" in result.natural_solution
+    assert "对小车进行受力分析" in result.natural_solution
+    assert "对悬挂物进行受力分析" in result.natural_solution
     assert "T = m₁a。        (1)" in result.natural_solution
     assert "m₂g - m₁a = m₂a" in result.natural_solution
+    assert "由 (1) 和 (2) 联立" in result.natural_solution
+    assert "\\qquad" in result.natural_solution
     assert "\\frac{m₂g}{m₁ + m₂}" in result.natural_solution
     assert "轨迹中给出" not in result.natural_solution
     assert "目标公式：" not in result.natural_solution
@@ -303,7 +356,7 @@ def test_module_generic_textbook_plan_handles_modeling_only_two_body_equations()
     result = module.run(
         sample={"sample_id": "s1"},
         grounding={"sample_id": "s1", "problem_ir": {}},
-        model_ir={"sample_id": "s1"},
+        model_ir=_mechanics73_model_ir(),
         controlled_sketch=None,
         selected_candidate=_mechanics73_modeling_only_candidate(),
         proof_attempts=[
@@ -330,11 +383,16 @@ def test_module_generic_textbook_plan_handles_modeling_only_two_body_equations()
     )
 
     assert result.render_audit.audit_pass is True
-    assert "本题要求求出 a, T" in result.natural_solution
+    assert "设小车质量为 m₁，悬挂物质量为 m₂" in result.natural_solution
+    assert "对小车进行受力分析" in result.natural_solution
     assert "T = m₁a。        (1)" in result.natural_solution
     assert "m₂g - m₁a = m₂a" in result.natural_solution
     assert "Fnet_m1" not in result.natural_solution
     assert "a1 = a" not in result.natural_solution
+    assert "a_hanging = a" not in result.natural_solution
+    assert "positive_direction_m1" not in result.natural_solution
+    assert "T_glider = T" not in result.natural_solution
+    assert "摩擦模型" not in result.natural_solution
     assert "本题 Lean replay 已通过" in result.natural_solution
     assert "gap law" in result.natural_solution
     assert "目标公式：" not in result.natural_solution

@@ -1,0 +1,74 @@
+[
+  {
+    "Name": "archive_part1_7_1",
+    "Level": "archive_part1",
+    "Category": "mechanics",
+    "Header": "",
+    "Theorem": "",
+    "Statement": "",
+    "Proof": "",
+    "Informal_statement": "7-1如图所示，光点 $M$ 沿 $y$ 轴作谐振动，其运动方程为  \n\n$$\nx\\,=\\,0\\,,\\qquad y\\,=\\,a\\cos\\left(\\,k t\\,+\\,\\beta\\,\\right)\n$$  \n\n如将点 $M$ 投影到感光记录纸上，此纸以等速 $v_{c}$ 向左运动。求点 $M$ 在记录纸上的轨迹。",
+    "V2Order": 17,
+    "V2SourceKind": "archive_part1",
+    "V2SourceRef": "7-1",
+    "V2ArchiveId": "7-1",
+    "V2ArchiveCheckedPath": "archive/output_checked_part1/7-1.md",
+    "V2ArchiveImagePaths": [],
+    "V2Notes": "Converted from archive part1 output_checked markdown using leakage cutoff; images are passed through MixedV2DatasetAdapter as image_path when present; no image_description is used."
+  },
+  {
+    "Name": "archive_part1_10_8",
+    "Level": "archive_part1",
+    "Category": "mechanics",
+    "Header": "",
+    "Theorem": "",
+    "Statement": "",
+    "Proof": "",
+    "Informal_statement": "10-8在静止的小船上，一人自船头走到船尾，设人重 $P,$ 船重 $Q\\,,$ 船长L，水的阻力不计。求船的位移。",
+    "V2Order": 20,
+    "V2SourceKind": "archive_part1",
+    "V2SourceRef": "10-8",
+    "V2ArchiveId": "10-8",
+    "V2ArchiveCheckedPath": "archive/output_checked_part1/10-8.md",
+    "V2ArchiveImagePaths": [],
+    "V2Notes": "Converted from archive part1 output_checked markdown using leakage cutoff; images are passed through MixedV2DatasetAdapter as image_path when present; no image_description is used."
+  },
+  {
+    "Name": "archive_part1_12_7",
+    "Level": "archive_part1",
+    "Category": "mechanics",
+    "Header": "",
+    "Theorem": "",
+    "Statement": "",
+    "Proof": "",
+    "Informal_statement": "12-7图示曲柄连杆机构位于水平面内，曲柄重为 $P\\,,$ 长为 $r,$ 连杆重为 $Q\\,,$ 长为L，滑块重为G，曲柄和连杆可视为均质细长杆。今在曲柄上作用一不变的矩为 $M$ 的力偶，当 $\\angle B O A=90^{\\circ}$ 时，A点的速度为u。求当曲柄转至水平位置时A点的速度。  \n\n![](images/83cbaa99e148753aed9809640c29db9e5511d3d53a4f16d64f8340e1f0f7e1ba.jpg)  \n题12-7图",
+    "V2Order": 26,
+    "V2SourceKind": "archive_part1",
+    "V2SourceRef": "12-7",
+    "V2ArchiveId": "12-7",
+    "V2ArchiveCheckedPath": "archive/output_checked_part1/12-7.md",
+    "V2ArchiveImagePaths": [
+      "images/83cbaa99e148753aed9809640c29db9e5511d3d53a4f16d64f8340e1f0f7e1ba.jpg"
+    ],
+    "V2Notes": "Converted from archive part1 output_checked markdown using leakage cutoff; images are passed through MixedV2DatasetAdapter as image_path when present; no image_description is used."
+  },
+  {
+    "Name": "archive_part2_1_16",
+    "Level": "archive_part2",
+    "Category": "mechanics",
+    "Header": "",
+    "Theorem": "",
+    "Statement": "",
+    "Proof": "",
+    "Informal_statement": "1-16设有一个与弹簧相连的滑块A，其质量为 $m_{\\textsc{l}},$ 它可沿光滑水平面无摩擦地来回滑动，弹簧的刚性系数为 $k$ 。在滑块A上又连一单摆，如图所示。摆长为 $l,B$ 的质量为 $m_{2}$ 。试列出该系统的运动微分方程。  \n\n![](images/5941baf54ffea15bb8e8f257a31f4095629436f2c7c9b7bb71f27d2663058656.jpg)  \n题1-16图",
+    "V2Order": 29,
+    "V2SourceKind": "archive_part2",
+    "V2SourceRef": "1-16",
+    "V2ArchiveId": "1-16",
+    "V2ArchiveCheckedPath": "archive/output_checked_part2/1-16.md",
+    "V2ArchiveImagePaths": [
+      "images/5941baf54ffea15bb8e8f257a31f4095629436f2c7c9b7bb71f27d2663058656.jpg"
+    ],
+    "V2Notes": "Converted from archive part2 output_checked markdown using leakage cutoff; images are passed through MixedV2DatasetAdapter as image_path when present; no image_description is used."
+  }
+]

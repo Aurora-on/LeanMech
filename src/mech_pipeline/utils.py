@@ -214,6 +214,9 @@ def normalize_lean_text(text: str) -> str:
     # In Lean theorem propositions, `!=` is boolean inequality (BEq), which is often wrong here.
     # Normalize to propositional inequality to avoid BEq synthesis failures.
     out = out.replace("!=", "≠")
+    out = out.replace("/\\", "∧")
+    out = out.replace("\\/", "∨")
+    out = re.sub(r"\bforal\b", "forall", out)
     out = out.replace("�", "")
     return out
 

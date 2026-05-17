@@ -272,6 +272,73 @@ def test_controlled_sketch_uses_verified_binding_for_law_step(tmp_path: Path) ->
     json.dumps(controlled_sketch_stage_row("s1", sketch))
 
 
+def test_controlled_sketch_blocks_packed_comma_expected_claim_from_auto_step(tmp_path: Path) -> None:
+    payload = json.dumps({"proof_steps": [], "blocked_law_steps": []})
+    module = ModuleControlledSketch(StaticSketchClient(payload), _prompt(tmp_path))
+
+    sketch = module.run(
+        sample_id="s1",
+        problem_text="A compound initial condition is described.",
+        problem_ir={},
+        model_ir=_model_ir(),
+        evidence_bindings=[
+            EvidenceBinding(
+                binding_id="b_bad",
+                model_instance_id="mi1",
+                planning_schema="law.kinematics.constant_speed",
+                verified_decl="MechLib.Kinematics.constant_speed_relation",
+                proof_fact_allowed=True,
+                binding_status="ok",
+                expected_claim="omega_i = 0, v_i = u, v_G = u",
+            )
+        ],
+        structured_mechlib_context=_context(),
+    )
+
+    assert sketch.parse_ok is True
+    assert sketch.status == "blocked_by_evidence_gap"
+    assert sketch.proof_steps == []
+    assert sketch.blocked_law_steps
+    assert sketch.blocked_law_steps[0].verified_decl == "MechLib.Kinematics.constant_speed_relation"
+    assert sketch.blocked_law_steps[0].binding_status == "verified_decl_uninstantiated"
+    assert sketch.blocked_law_steps[0].reason == "Proof-eligible binding does not provide a single valid Lean-like expected_claim."
+
+
+def test_controlled_sketch_blocks_invalid_llm_proof_step_formula(tmp_path: Path) -> None:
+    payload = json.dumps(
+        {
+            "proof_steps": [
+                {
+                    "step_id": "sk_bad",
+                    "kind": "law_to_equation",
+                    "formal_claim": "omega_i = 0, v_i = u, v_G = u",
+                    "source_model_instance": "mi1",
+                    "binding_status": "ok",
+                    "proof_fact_allowed": True,
+                    "produces": "h_bad",
+                }
+            ]
+        }
+    )
+    module = ModuleControlledSketch(StaticSketchClient(payload), _prompt(tmp_path))
+
+    sketch = module.run(
+        sample_id="s1",
+        problem_text="A compound initial condition is described.",
+        problem_ir={},
+        model_ir=_model_ir(),
+        evidence_bindings=[_ok_binding()],
+        structured_mechlib_context=_context(),
+    )
+
+    assert sketch.parse_ok is True
+    assert sketch.status == "ok"
+    assert len(sketch.proof_steps) == 1
+    assert sketch.proof_steps[0].formal_claim == "s = v * t"
+    assert sketch.blocked_law_steps == []
+    assert all(step.formal_claim != "omega_i = 0, v_i = u, v_G = u" for step in sketch.proof_steps)
+
+
 def test_controlled_sketch_keeps_two_verified_law_steps_and_one_algebra_obligation(tmp_path: Path) -> None:
     payload = json.dumps(
         {

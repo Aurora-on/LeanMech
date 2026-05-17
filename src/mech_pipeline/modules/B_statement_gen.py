@@ -145,7 +145,25 @@ LEAN_CORE_TOKENS = {
     "Quantity",
     "SI",
 }
-SAFE_FUNCTION_TOKENS = {"sqrt", "abs", "min", "max", "sin", "cos", "tan", "asin", "acos", "atan", "exp", "log", "pow"}
+SAFE_FUNCTION_TOKENS = {
+    "sqrt",
+    "abs",
+    "min",
+    "max",
+    "sin",
+    "cos",
+    "tan",
+    "asin",
+    "acos",
+    "atan",
+    "arcsin",
+    "arccos",
+    "arctan",
+    "exp",
+    "log",
+    "pow",
+    "deriv",
+}
 
 DEFAULT_PROMPT = """__TASK_B_GENERATE_STATEMENTS__
 You are a Lean4 statement generator for classical mechanics.
@@ -318,15 +336,19 @@ Return exactly 4 candidates:
 Revision rules:
 1) Do not repeat the same theorem declarations from the previous round.
 2) If compile feedback reports syntax/library-symbol/import issues, fix those first.
-3) If semantic feedback reports target mismatch, law drift, trivial goals, or wrong known quantities, correct those before trying stylistic variation.
-4) Do not output assumption-replay goals whose conclusion merely restates a hypothesis or flips an equality assumption.
-5) Keep the unknown target, known quantities, laws, and constraints aligned with ProblemIR.
-6) Prefer direct algebraic statements over undocumented helper APIs.
-7) If typed MechLib modeling is causing failures, switch to `Real`.
-8) Never output proof bodies.
-9) Keep output fully valid JSON.
-10) Use structured feedback to remove unsupported claims and unresolved library references.
-11) Every nontrivial physical claim must have a source in `supporting_facts` / `fact_sources`.
+3) Compile repair must preserve the mechanics target and modeling semantics. Do not replace a failed mechanics statement with a theorem whose conclusion is only a numeric simplification, tuple equality, reflexive equality, or expression identity detached from the physical target.
+4) If an unsupported library symbol caused failure, replace that API with explicit Real-level problem/model hypotheses or definitions that keep the same physical relation. Do not delete the relation.
+5) For function/derivative targets, keep the target-facing functions in the theorem statement, e.g. use `v_x a_x : Real -> Real`, velocity definitions, and acceleration-value hypotheses/conclusions over `a_x 2` / `a_y 2`; do not collapse the theorem to `((1/2),(3/10)) = ...`.
+6) The theorem conclusion must still mention the requested target object or target function/value from ProblemIR whenever possible.
+7) If semantic feedback reports target mismatch, law drift, trivial goals, or wrong known quantities, correct those before trying stylistic variation.
+8) Do not output assumption-replay goals whose conclusion merely restates a hypothesis or flips an equality assumption.
+9) Keep the unknown target, known quantities, laws, and constraints aligned with ProblemIR.
+10) Prefer direct algebraic statements over undocumented helper APIs, but keep them attached to physical variables/functions and problem/model hypotheses.
+11) If typed MechLib modeling is causing failures, switch to `Real` while preserving units, laws, and target semantics in assumptions or the conclusion.
+12) Never output proof bodies.
+13) Keep output fully valid JSON.
+14) Use structured feedback to remove unsupported claims and unresolved library references.
+15) Every nontrivial physical claim must have a source in `supporting_facts` / `fact_sources`.
 
 ProblemIR:
 {{problem_ir_json}}
@@ -518,6 +540,36 @@ def _normalize_value_level_numeric_quantity_casts(text: str) -> str:
         r"\1",
         text,
     )
+
+
+REAL_MATH_FUNCTIONS = {
+    "sin": "Real.sin",
+    "cos": "Real.cos",
+    "tan": "Real.tan",
+    "asin": "Real.arcsin",
+    "acos": "Real.arccos",
+    "atan": "Real.arctan",
+    "sqrt": "Real.sqrt",
+    "exp": "Real.exp",
+    "log": "Real.log",
+}
+
+
+def _qualify_real_math_functions(text: str) -> str:
+    out = text
+    for name, lean_name in sorted(REAL_MATH_FUNCTIONS.items(), key=lambda item: len(item[0]), reverse=True):
+        out = re.sub(
+            rf"(?<![A-Za-z0-9_.]){re.escape(name)}(?![A-Za-z0-9_'])(?=\s*(?:\(|[A-Za-z_0-9]))",
+            lean_name,
+            out,
+        )
+    for lean_name in REAL_MATH_FUNCTIONS.values():
+        out = re.sub(rf"(?<![A-Za-z0-9_.]){re.escape(lean_name)}\s*\(", f"{lean_name} (", out)
+    return out
+
+
+def _normalize_deriv_namespace(text: str) -> str:
+    return re.sub(r"(?<![A-Za-z0-9_.])Real\.deriv\b", "deriv", text)
 
 
 def _extract_context_symbols(mechlib_context: str) -> set[str]:
@@ -803,14 +855,22 @@ def _ensure_real_binder(text: str, symbol: str) -> str:
     return "\n".join(lines)
 
 
-def _coerce_typed_binders_to_real(text: str) -> str:
+def _coerce_typed_binders_to_real_legacy_only(text: str) -> str:
     out = text
+    typed_symbols: set[str] = set()
+    for match in re.finditer(
+        r"\(\s*([A-Za-z_][A-Za-z0-9_']*(?:\s+[A-Za-z_][A-Za-z0-9_']*)*)\s*:\s*"
+        r"(Mass|Force|Acceleration|Length|Time|Speed|Momentum)\b",
+        out,
+    ):
+        typed_symbols.update(match.group(1).split())
     out = re.sub(
         r":\s*(Mass|Force|Acceleration|Length|Time|Speed|Momentum)\b",
         ": Real",
         out,
     )
-    out = out.replace(".val", "")
+    for symbol in sorted(typed_symbols, key=len, reverse=True):
+        out = re.sub(rf"(?<![A-Za-z0-9_.]){re.escape(symbol)}\.val\b", symbol, out)
     out = _ensure_real_binder(out, "g")
     return out
 
@@ -973,7 +1033,7 @@ def _repair_decl_for_mechlib_safety(
         unknown_library_symbols = _find_unknown_library_symbols(text, mechlib_context)
     if "Quantity.cast" in text or unknown_library_symbols:
         text = _rewrite_known_mechlib_hallucinations(text)
-        text = _coerce_typed_binders_to_real(text)
+        text = _coerce_typed_binders_to_real_legacy_only(text)
         text = _normalize_numeric_literals(text)
         if MOJIBAKE_PATTERN.search(text):
             return None
@@ -984,7 +1044,7 @@ def _repair_decl_for_mechlib_safety(
     if _contains_typed_mechlib_types(text):
         risky = "/" in text or "≠ 0" in text or ".val" in text
         if risky:
-            text = _coerce_typed_binders_to_real(text)
+            text = _coerce_typed_binders_to_real_legacy_only(text)
             if not _has_balanced_delimiters(text):
                 return None
     return text
@@ -1118,7 +1178,7 @@ TYPE_HINTS: tuple[tuple[str, str], ...] = (
     ("time", "Time"),
     ("mass", "Mass"),
 )
-QUANTITY_TYPE_NAMES = set(SUPPORTED_SI_QUANTITY_TYPES)
+QUANTITY_TYPE_NAMES = set(SUPPORTED_LEAN_QUANTITY_TYPES)
 
 
 def _as_bool(value: object) -> bool:
@@ -1387,39 +1447,12 @@ def _expected_claim_instantiations_for_blocked_predicates(
     blocked_model_predicates: list[dict[str, Any]],
     selected_model_instances: set[str],
 ) -> list[ModelInterfaceInstantiation]:
-    if model_ir is None:
-        return []
-    blocked_instances = {
-        str(row.get("source_model_instance") or "").strip()
-        for row in blocked_model_predicates
-        if str(row.get("source_model_instance") or "").strip()
-    }
-    out: list[ModelInterfaceInstantiation] = []
-    for instance in model_ir.model_instances:
-        if selected_model_instances and instance.instance_id not in selected_model_instances:
-            continue
-        if instance.instance_id not in blocked_instances:
-            continue
-        if not str(instance.expected_claim or "").strip():
-            continue
-        out.append(
-            ModelInterfaceInstantiation(
-                instantiation_id=f"{lean_ident(instance.instance_id, prefix='mi')}_expected_claim",
-                kind=instance.kind or "model_expected_claim",
-                formal_claim=str(instance.expected_claim or "").strip(),
-                source_model_instance=instance.instance_id,
-                interface_name=instance.planning_schema_id,
-                source_type="model_ir",
-                modeling_basis=[item for item in [instance.natural_language] if item],
-                proof_fact_allowed=False,
-                binding_status="explicit_model_gap",
-                notes=(
-                    "No checked Prop-valued MechLib model predicate matched this ModelInstance; "
-                    "ModelIR expected_claim is kept as an explicit modeling gap."
-                ),
-            )
-        )
-    return out
+    _ = (model_ir, blocked_model_predicates, selected_model_instances)
+    # ModelInstance.expected_claim is planning metadata.  Minimal skeleton only
+    # introduces explicit model equations from audited
+    # ModelInterfaceInstantiation rows; otherwise a failed MechLib binding can
+    # silently turn a law-application result into a theorem hypothesis.
+    return []
 
 
 def _introduced_quantity_info(item: ModelInterfaceInstantiation) -> dict[str, Any] | None:
@@ -1542,6 +1575,21 @@ def _bound_formula_variables(formula: str) -> set[str]:
     return out
 
 
+def _bound_formula_variable_types(formula: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for match in re.finditer(
+        r"\b(?:forall|∀)\s+([A-Za-z_][A-Za-z0-9_']*)(?:\.val)?\s*:\s*([^,]+?)\s*,",
+        formula,
+    ):
+        out[match.group(1)] = " ".join(match.group(2).split())
+    for match in re.finditer(
+        r"\bfun\s+([A-Za-z_][A-Za-z0-9_']*)(?:\.val)?\s*:\s*([^=]+?)\s*=>",
+        formula,
+    ):
+        out[match.group(1)] = " ".join(match.group(2).split())
+    return out
+
+
 def _normalize_invalid_val_binders(formula: str) -> str:
     out = formula
     out = re.sub(r"\b(fun\s+)([A-Za-z_][A-Za-z0-9_']*)\.val(\s*(?::|=>))", r"\1\2\3", out)
@@ -1591,15 +1639,20 @@ def _inferred_bound_type_from_function_application(
 
 
 def _normalize_quantified_binders(formula: str, quantity_infos: list[dict[str, Any]]) -> str:
+    def choose_type(symbol: str, explicit_type: str) -> str | None:
+        inferred = _inferred_bound_type_from_function_application(symbol, formula, quantity_infos)
+        if explicit_type:
+            normalized, supported, _status = normalize_quantity_lean_type(explicit_type)
+            if supported and normalized == "Time" and inferred == "Real":
+                return "Real"
+            return explicit_type
+        return inferred or _declared_quantity_type(symbol, quantity_infos)
+
     def forall_repl(match: re.Match[str]) -> str:
         keyword = match.group("kw")
         symbol = match.group("sym")
         explicit_type = " ".join(str(match.group("typ") or "").split())
-        lean_type = (
-            explicit_type
-            or _declared_quantity_type(symbol, quantity_infos)
-            or _inferred_bound_type_from_function_application(symbol, formula, quantity_infos)
-        )
+        lean_type = choose_type(symbol, explicit_type)
         if not lean_type:
             return f"{keyword} {symbol},"
         return f"{keyword} {symbol} : {lean_type},"
@@ -1607,11 +1660,7 @@ def _normalize_quantified_binders(formula: str, quantity_infos: list[dict[str, A
     def fun_repl(match: re.Match[str]) -> str:
         symbol = match.group("sym")
         explicit_type = " ".join(str(match.group("typ") or "").split())
-        lean_type = (
-            explicit_type
-            or _declared_quantity_type(symbol, quantity_infos)
-            or _inferred_bound_type_from_function_application(symbol, formula, quantity_infos)
-        )
+        lean_type = choose_type(symbol, explicit_type)
         if not lean_type:
             return f"fun {symbol} =>"
         return f"fun {symbol} : {lean_type} =>"
@@ -1663,10 +1712,50 @@ def _rewrite_function_lambda_equalities(formula: str, quantity_infos: list[dict[
     return out
 
 
+REAL_FUNCTION_ARG_PATTERN = (
+    r"(?:"
+    r"[A-Za-z_][A-Za-z0-9_']*(?:\.val)?"
+    r"|[-+]?(?:\d+(?:\.\d+)?)"
+    r"|\(\s*[-+]?(?:\d+(?:\.\d+)?)\s*:\s*Real\s*\)"
+    r"|\(\(\s*[-+]?\d+\s*:\s*Real\s*\)\s*/\s*\d+\)"
+    r")"
+)
+
+
 def _function_application_pattern(name: str) -> re.Pattern[str]:
     return re.compile(
         rf"(?<![A-Za-z0-9_.]){re.escape(name)}\s+([A-Za-z_][A-Za-z0-9_']*)(?:\.val)?"
         rf"(?![A-Za-z0-9_']|\s*\.|\s*\)\s*\.val)"
+    )
+
+
+def _numeric_function_application_pattern(name: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"(?<![A-Za-z0-9_.]){re.escape(name)}\s+"
+        rf"(?P<arg>[-+]?(?:\d+(?:\.\d+)?|\(\s*\d+(?:\.\d+)?\s*:\s*Real\s*\)|"
+        rf"\(\(\s*\d+\s*:\s*Real\s*\)\s*/\s*\d+\)))"
+        rf"(?![A-Za-z0-9_']|\s*\.|\s*\)\s*\.val)"
+    )
+
+
+def _existing_value_function_application_pattern(name: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"\(\s*(?<![A-Za-z0-9_.]){re.escape(name)}\s+"
+        rf"(?P<arg>{REAL_FUNCTION_ARG_PATTERN})\s*\)\.val"
+    )
+
+
+def _call_style_value_function_application_pattern(name: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"(?<![A-Za-z0-9_.]){re.escape(name)}\s*\(\s*"
+        rf"(?P<arg>{REAL_FUNCTION_ARG_PATTERN})\s*\)\.val"
+    )
+
+
+def _double_value_function_application_pattern(name: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"\(\s*\(\s*(?<![A-Za-z0-9_.]){re.escape(name)}\s+"
+        rf"(?P<arg>{REAL_FUNCTION_ARG_PATTERN})\s*\)\.val\s*\)\.val"
     )
 
 
@@ -1690,6 +1779,285 @@ def _restore_matches(text: str, protected: dict[str, str]) -> str:
     out = text
     for key, value in protected.items():
         out = out.replace(key, value)
+    return out
+
+
+def _real_domain_function_arg(
+    arg: str,
+    *,
+    domain: str,
+    info_by_symbol: dict[str, dict[str, Any]],
+    bound_variable_types: dict[str, str],
+    already_value: bool = False,
+) -> str:
+    raw_arg = str(arg or "").strip()
+    if domain != "Real":
+        return raw_arg
+    if not raw_arg:
+        return raw_arg
+    if raw_arg.endswith(".val"):
+        return raw_arg
+    if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", raw_arg):
+        return f"({raw_arg} : Real)"
+    if re.fullmatch(r"\(\s*[-+]?\d+(?:\.\d+)?\s*:\s*Real\s*\)", raw_arg):
+        return raw_arg
+    if re.fullmatch(r"\(\(\s*[-+]?\d+\s*:\s*Real\s*\)\s*/\s*\d+\)", raw_arg):
+        return raw_arg
+    if already_value:
+        return f"{raw_arg}.val"
+    bound_type_text = bound_variable_types.get(raw_arg)
+    if bound_type_text:
+        bound_type, bound_supported, _status = normalize_quantity_lean_type(bound_type_text)
+        if bound_supported and bound_type == "Real":
+            return raw_arg
+    arg_info = info_by_symbol.get(raw_arg)
+    if (
+        arg_info is not None
+        and str(arg_info.get("lean_type") or "") != "Real"
+        and not is_function_quantity_lean_type(str(arg_info.get("lean_type") or ""))
+    ):
+        return f"{raw_arg}.val"
+    return raw_arg
+
+
+def _rewrite_existing_function_value_applications(
+    formula: str,
+    *,
+    function_info: dict[str, Any],
+    domain: str,
+    codomain: str,
+    info_by_symbol: dict[str, dict[str, Any]],
+    bound_variable_types: dict[str, str],
+) -> str:
+    lean_name = str(function_info.get("name") or "")
+    names = [
+        str(function_info.get("source_name") or ""),
+        lean_name,
+    ]
+    out = formula
+    for function_name in [name for idx, name in enumerate(names) if name and name not in names[:idx]]:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_']*", function_name):
+            continue
+
+        def repl(match: re.Match[str]) -> str:
+            arg = match.group("arg")
+            arg_expr = _real_domain_function_arg(
+                arg,
+                domain=domain,
+                info_by_symbol=info_by_symbol,
+                bound_variable_types=bound_variable_types,
+            )
+            application = f"{lean_name} {arg_expr}"
+            if codomain == "Real":
+                return f"({application})"
+            return f"({application}).val"
+
+        out = _double_value_function_application_pattern(function_name).sub(repl, out)
+        out = _call_style_value_function_application_pattern(function_name).sub(repl, out)
+        out = _existing_value_function_application_pattern(function_name).sub(repl, out)
+    return out
+
+
+def _rewrite_numeric_function_applications(
+    formula: str,
+    *,
+    function_info: dict[str, Any],
+    domain: str,
+    codomain: str,
+) -> str:
+    if domain != "Real":
+        return formula
+    lean_name = str(function_info.get("name") or "")
+    names = [
+        str(function_info.get("source_name") or ""),
+        lean_name,
+    ]
+    out = formula
+    for function_name in [name for idx, name in enumerate(names) if name and name not in names[:idx]]:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_']*", function_name):
+            continue
+
+        def repl(match: re.Match[str]) -> str:
+            raw_arg = match.group("arg").strip()
+            arg_expr = raw_arg if raw_arg.startswith("(") else f"({raw_arg} : Real)"
+            application = f"{lean_name} {arg_expr}"
+            if codomain == "Real":
+                return application
+            return f"({application}).val"
+
+        out = _numeric_function_application_pattern(function_name).sub(repl, out)
+    return out
+
+
+def _normalize_compound_quantity_val_projection(
+    formula: str,
+    quantity_infos: list[dict[str, Any]],
+) -> str:
+    info_by_symbol = _quantity_info_map(quantity_infos)
+
+    def is_typed_scalar(name: str) -> bool:
+        info = info_by_symbol.get(name)
+        return bool(
+            info is not None
+            and str(info.get("lean_type") or "") != "Real"
+            and not is_function_quantity_lean_type(str(info.get("lean_type") or ""))
+        )
+
+    def repl(match: re.Match[str]) -> str:
+        lhs = match.group("lhs")
+        rhs = match.group("rhs")
+        op = match.group("op")
+        if is_typed_scalar(lhs) and is_typed_scalar(rhs):
+            return f"({lhs}.val {op} {rhs}.val)"
+        return match.group(0)
+
+    return re.sub(
+        r"\(\s*(?P<lhs>[A-Za-z_][A-Za-z0-9_']*)\s*(?P<op>[+\-])\s*(?P<rhs>[A-Za-z_][A-Za-z0-9_']*)\s*\)\.val",
+        repl,
+        formula,
+    )
+
+
+def _looks_like_value_level_compound(inner: str, quantity_infos: list[dict[str, Any]]) -> bool:
+    text = normalize_lean_text(str(inner or "")).strip()
+    if not text:
+        return False
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_']*\s+.+", text):
+        return False
+    if not any(token in text for token in ("+", "-", "*", "/", "^", ".val", "Real.")):
+        return False
+    info_by_symbol = _quantity_info_map(quantity_infos)
+    protected = text
+    protected, placeholders = _protect_matches(
+        protected,
+        [
+            re.compile(r"\([^)]+\)\.val"),
+            re.compile(r"\bReal\.[A-Za-z_][A-Za-z0-9_']*"),
+        ],
+    )
+    for token in IDENT_PATTERN.findall(protected):
+        if token in LEAN_CORE_TOKENS or token in SAFE_FUNCTION_TOKENS or token in {"Real", "val", "pi"}:
+            continue
+        if re.search(rf"(?<![A-Za-z0-9_.]){re.escape(token)}\.val\b", text):
+            continue
+        info = info_by_symbol.get(token)
+        if info is None:
+            continue
+        lean_type = str(info.get("lean_type") or "")
+        if lean_type != "Real" and not is_function_quantity_lean_type(lean_type):
+            return False
+    _ = placeholders
+    return True
+
+
+def _strip_value_level_compound_val_projection(
+    formula: str,
+    quantity_infos: list[dict[str, Any]],
+) -> str:
+    out = formula
+    pattern = re.compile(r"\((?P<inner>[^()]*?(?:\.val|Real\.[A-Za-z_][A-Za-z0-9_']*)[^()]*)\)\.val")
+    for _ in range(8):
+        changed = False
+
+        def repl(match: re.Match[str]) -> str:
+            nonlocal changed
+            inner = match.group("inner").strip()
+            if _looks_like_value_level_compound(inner, quantity_infos):
+                changed = True
+                return inner
+            return match.group(0)
+
+        out = pattern.sub(repl, out)
+        if not changed:
+            break
+
+    # The simple regex above intentionally avoids nested parentheses, but
+    # formulas from model interfaces often contain value-level function
+    # applications inside a larger Real expression, e.g.
+    #   (-k.val * ((x t).val)).val
+    # The outer `.val` is invalid because the whole parenthesized expression is
+    # already Real, while the inner `(x t).val` must be preserved.  Use a small
+    # matching-parenthesis pass for exactly this safe case instead of trying to
+    # repair arbitrary Lean syntax.
+    for _ in range(8):
+        changed = False
+        idx = out.find(").val")
+        while idx != -1:
+            close_idx = idx
+            depth = 0
+            open_idx: int | None = None
+            for pos in range(close_idx, -1, -1):
+                ch = out[pos]
+                if ch == ")":
+                    depth += 1
+                elif ch == "(":
+                    depth -= 1
+                    if depth == 0:
+                        open_idx = pos
+                        break
+            if open_idx is None:
+                idx = out.find(").val", idx + 5)
+                continue
+            inner = out[open_idx + 1 : close_idx].strip()
+            if _looks_like_value_level_compound(inner, quantity_infos):
+                replacement = f"({inner})"
+                out = out[:open_idx] + replacement + out[close_idx + 5 :]
+                changed = True
+                idx = out.find(").val", max(open_idx + len(replacement) - 1, 0))
+            else:
+                idx = out.find(").val", idx + 5)
+        if not changed:
+            break
+    return out
+
+
+def _angle_source_uses_degrees(info: dict[str, Any]) -> bool:
+    if str(info.get("lean_type") or "") != "PhysAngle":
+        return False
+    source = info.get("source") if isinstance(info.get("source"), dict) else {}
+    annotation = source.get("quantity_annotation") if isinstance(source.get("quantity_annotation"), dict) else {}
+    fields = [
+        info.get("source_name"),
+        source.get("unit"),
+        source.get("units"),
+        source.get("unit_or_dimension"),
+        source.get("description"),
+        annotation.get("unit_or_dimension"),
+        annotation.get("evidence_text"),
+        annotation.get("reasoning_note"),
+        annotation.get("semantic_role"),
+    ]
+    blob = " ".join(str(item or "").lower() for item in fields)
+    return bool("°" in blob or re.search(r"\b(?:deg|degree|degrees)\b", blob))
+
+
+def _normalize_degree_angle_equalities(
+    formula: str,
+    quantity_infos: list[dict[str, Any]],
+) -> str:
+    degree_angle_names = {
+        str(name)
+        for info in quantity_infos
+        if _angle_source_uses_degrees(info)
+        for name in (info.get("name"), info.get("source_name"))
+        if str(name or "").strip()
+    }
+    if not degree_angle_names:
+        return formula
+    out = formula
+    numeric_rhs = r"(?P<value>[-+]?\d+(?:\.\d+)?|\(\s*[-+]?\d+(?:\.\d+)?\s*:\s*Real\s*\))"
+    for name in sorted(degree_angle_names, key=len, reverse=True):
+        escaped = re.escape(name)
+
+        def repl(match: re.Match[str]) -> str:
+            value = match.group("value").strip()
+            return f"{name}.val = ({value} * Real.pi / 180)"
+
+        out = re.sub(
+            rf"(?<![A-Za-z0-9_.]){escaped}\.val\s*=\s*{numeric_rhs}(?!\s*[*+/^-]|\s*\.|\s*[A-Za-z0-9_'])",
+            repl,
+            out,
+        )
     return out
 
 
@@ -1736,11 +2104,70 @@ def _replace_quantity_value_symbol(
     return _restore_matches(protected_formula, protected)
 
 
-def _typed_formula_from_text(text: object, quantity_infos: list[dict[str, Any]]) -> str:
-    formula = normalize_lean_text(_normalize_unicode_identifiers(str(text or ""))).strip()
+def _formula_normalization_edits(source: str, normalized: str, quantity_infos: list[dict[str, Any]]) -> list[dict[str, str]]:
+    edits: list[dict[str, str]] = []
+    if "!=" in source and "≠" in normalized:
+        edits.append({"kind": "normalize_not_equal"})
+    if re.search(r"\b(?:sin|cos|tan|asin|acos|atan|sqrt|exp|log)\b", source) and "Real." in normalized:
+        edits.append({"kind": "qualify_real_function"})
+    if re.search(r"\d+\.\d+", source) and " : Real" in normalized:
+        edits.append({"kind": "normalize_decimal"})
+    for info in quantity_infos:
+        name = str(info.get("name") or "")
+        source_name = str(info.get("source_name") or "")
+        lean_type = str(info.get("lean_type") or "")
+        if not name or lean_type == "Real" or is_function_quantity_lean_type(lean_type):
+            continue
+        if (
+            re.search(rf"(?<![A-Za-z0-9_.]){re.escape(source_name or name)}(?![A-Za-z0-9_']|\s*\.)", source)
+            and re.search(rf"(?<![A-Za-z0-9_.]){re.escape(name)}\.val\b", normalized)
+        ):
+            edits.append({"kind": "add_val", "symbol": name})
+    if ".val).val" in normalized:
+        edits.append({"kind": "potential_double_val"})
+    return edits
+
+
+def _formula_blocked_reason(formula: str, quantity_infos: list[dict[str, Any]]) -> str | None:
+    if not formula:
+        return "empty_formula"
+    if _has_unsupported_derivative_field(formula):
+        return "derivative_field_not_supported"
+    if "?" in formula:
+        return "placeholder_formula"
+    if _has_unsupported_tuple_formula(formula):
+        return "tuple_valued_formula"
+    if _has_unregistered_formula_symbol(formula, quantity_infos):
+        return "unregistered_formula_symbol"
+    if re.search(r"\([^)]+[+\-*/][^)]+\)\.val\b", formula):
+        return "typed_compound_expression"
+    return None
+
+
+def _typed_formula_from_text(
+    text: object,
+    quantity_infos: list[dict[str, Any]],
+    *,
+    trace_sink: list[dict[str, Any]] | None = None,
+    trace_source: str | None = None,
+) -> str:
+    source_text = str(text or "")
+    formula = normalize_lean_text(_normalize_unicode_identifiers(source_text)).strip()
+    if _has_unsupported_derivative_field(formula):
+        if trace_sink is not None:
+            trace_sink.append(
+                {
+                    "source": source_text,
+                    "source_id": trace_source,
+                    "normalized": formula,
+                    "edits": [],
+                    "blocked_reason": "derivative_field_not_supported",
+                }
+            )
+        return ""
     formula = _normalize_invalid_val_binders(formula)
-    formula = _rewrite_function_lambda_equalities(formula, quantity_infos)
     formula = _normalize_quantified_binders(formula, quantity_infos)
+    formula = _normalize_compound_quantity_val_projection(formula, quantity_infos)
     formula = formula.replace("!=", "≠")
     formula = re.sub(r"\s+•\s+", " * ", formula)
     formula = _normalize_numeric_literals(formula)
@@ -1750,13 +2177,17 @@ def _typed_formula_from_text(text: object, quantity_infos: list[dict[str, Any]])
         formula,
     )
     formula = _normalize_value_level_numeric_quantity_casts(formula)
-    formula = re.sub(r"(?<!\d)\.(?=\s*$)", "", formula).strip()
+    formula = _qualify_real_math_functions(formula)
+    formula = _normalize_deriv_namespace(formula)
+    formula = re.sub(r"\.(?=\s*$)", "", formula).strip()
     if not formula:
         return ""
     bound_variables = _bound_formula_variables(formula)
+    bound_variable_types = _bound_formula_variable_types(formula)
     function_infos = [
         info for info in quantity_infos if is_function_quantity_lean_type(str(info.get("lean_type") or ""))
     ]
+    info_by_symbol = _quantity_info_map(quantity_infos)
     for info in sorted(function_infos, key=lambda row: len(str(row["source_name"])), reverse=True):
         source_name = str(info["source_name"])
         lean_name = str(info["name"])
@@ -1765,11 +2196,32 @@ def _typed_formula_from_text(text: object, quantity_infos: list[dict[str, Any]])
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_']*", source_name):
             continue
         parts = function_quantity_parts(str(info.get("lean_type") or ""))
+        domain = parts[0] if parts else "Real"
         codomain = parts[1] if parts else "Real"
+        formula = _rewrite_existing_function_value_applications(
+            formula,
+            function_info=info,
+            domain=domain,
+            codomain=codomain,
+            info_by_symbol=info_by_symbol,
+            bound_variable_types=bound_variable_types,
+        )
+        formula = _rewrite_numeric_function_applications(
+            formula,
+            function_info=info,
+            domain=domain,
+            codomain=codomain,
+        )
 
         def repl(match: re.Match[str]) -> str:
             arg = match.group(1)
-            application = f"{lean_name} {arg}"
+            arg_expr = _real_domain_function_arg(
+                arg,
+                domain=domain,
+                info_by_symbol=info_by_symbol,
+                bound_variable_types=bound_variable_types,
+            )
+            application = f"{lean_name} {arg_expr}"
             if codomain != "Real":
                 return f"({application}).val"
             return application
@@ -1795,6 +2247,8 @@ def _typed_formula_from_text(text: object, quantity_infos: list[dict[str, Any]])
             continue
         source_name = str(info["source_name"])
         lean_name = str(info["name"])
+        if source_name in bound_variables or lean_name in bound_variables:
+            continue
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_']*", source_name):
             continue
         formula = _replace_quantity_value_symbol(
@@ -1802,6 +2256,18 @@ def _typed_formula_from_text(text: object, quantity_infos: list[dict[str, Any]])
             source_name=source_name,
             lean_name=lean_name,
             function_infos=function_infos,
+        )
+    formula = _normalize_degree_angle_equalities(formula, quantity_infos)
+    formula = _strip_value_level_compound_val_projection(formula, quantity_infos)
+    if trace_sink is not None:
+        trace_sink.append(
+            {
+                "source": source_text,
+                "source_id": trace_source,
+                "normalized": formula,
+                "edits": _formula_normalization_edits(source_text, formula, quantity_infos),
+                "blocked_reason": _formula_blocked_reason(formula, quantity_infos),
+            }
         )
     return formula
 
@@ -1863,6 +2329,7 @@ def _safe_given_binders(
     model_ir: ModelIR | None,
     quantity_infos: list[dict[str, Any]],
     selected_givens: set[str],
+    trace_sink: list[dict[str, Any]] | None = None,
 ) -> tuple[list[HypothesisProvenance], list[dict[str, Any]], list[dict[str, Any]]]:
     if model_ir is None:
         return [], [], []
@@ -1880,7 +2347,12 @@ def _safe_given_binders(
         lean_text = _payload_lean(raw)
         role = str(payload.get("role") or "problem_fact").strip() or "problem_fact"
         allowed = _payload_allowed(raw)
-        typed_lean = _typed_formula_from_text(lean_text, quantity_infos)
+        typed_lean = _typed_formula_from_text(
+            lean_text,
+            quantity_infos,
+            trace_sink=trace_sink,
+            trace_source=f"given:{name}",
+        )
         reason: str | None = None
         if not allowed:
             reason = "not_allowed_by_model_ir"
@@ -1890,6 +2362,10 @@ def _safe_given_binders(
             reason = "tautological_hypothesis"
         elif _has_unsupported_tuple_formula(typed_lean):
             reason = "tuple_valued_formula"
+        elif _is_function_equality_text(typed_lean):
+            reason = "function_equality_requires_function_formula_ir"
+        elif _has_invalid_function_value_shape(typed_lean):
+            reason = "invalid_function_value_shape"
         elif _is_qualitative_hypothesis(typed_lean):
             reason = "qualitative_or_unknown_predicate"
         elif not _is_allowed_lean_hypothesis(typed_lean):
@@ -1943,6 +2419,7 @@ def _model_interface_hypotheses(
     selected_model_instances: set[str],
     extra_instantiations: list[ModelInterfaceInstantiation] | None = None,
     include_explicit_gaps: bool = True,
+    trace_sink: list[dict[str, Any]] | None = None,
 ) -> tuple[list[HypothesisProvenance], list[dict[str, Any]], list[dict[str, Any]]]:
     if not include_explicit_gaps:
         return [], [], []
@@ -1963,7 +2440,12 @@ def _model_interface_hypotheses(
         ):
             continue
         raw_claim = normalize_lean_text(item.formal_claim).strip()
-        typed_claim = _typed_formula_from_text(raw_claim, quantity_infos)
+        typed_claim = _typed_formula_from_text(
+            raw_claim,
+            quantity_infos,
+            trace_sink=trace_sink,
+            trace_source=f"model_interface:{item.instantiation_id}",
+        )
         hyp_name = lean_ident(f"h_{item.instantiation_id}", prefix="h")
         reason: str | None = None
         if item.proof_fact_allowed and not item.verified_constructor:
@@ -1974,6 +2456,10 @@ def _model_interface_hypotheses(
             reason = "tautological_model_interface"
         elif _has_unsupported_tuple_formula(typed_claim):
             reason = "tuple_valued_model_interface"
+        elif _is_function_equality_text(typed_claim):
+            reason = "function_equality_requires_function_formula_ir"
+        elif _has_invalid_function_value_shape(typed_claim):
+            reason = "invalid_function_value_shape"
         elif _is_qualitative_hypothesis(typed_claim):
             reason = "qualitative_or_unknown_predicate"
         elif not _is_allowed_lean_hypothesis(typed_claim):
@@ -2091,40 +2577,193 @@ def _predicate_fq_from_short_name(binding_fq_name: str, predicate_name: str) -> 
     return f"{namespace}.{predicate_name}" if namespace else predicate_name
 
 
-def _model_predicate_from_decl_statement(binding: EvidenceBinding) -> tuple[str, list[str]] | None:
+def _model_predicate_from_decl_statement(binding: EvidenceBinding) -> tuple[str, list[str], list[str]] | None:
     statement = normalize_lean_text(binding.decl_statement or "")
     if not binding.verified_decl or not statement:
         return None
     param_types = _decl_param_types(statement)
     if _decl_returns_model_predicate(statement):
-        return binding.verified_decl, param_types
-    conclusion = statement.rsplit(":", 1)[-1].strip() if ":" in statement else ""
-    match = re.match(r"([A-Z][A-Za-z0-9']*(?:\.[A-Z][A-Za-z0-9']*)*)\s+(.+?)\s*=", conclusion)
-    if not match:
-        return None
-    predicate_name = match.group(1)
-    if not param_types:
-        return None
-    lhs_arg_count = len(re.findall(r"[A-Za-z_][A-Za-z0-9_']*", match.group(2)))
-    if lhs_arg_count != len(param_types):
-        return None
-    return _predicate_fq_from_short_name(binding.verified_decl, predicate_name), param_types
+        param_names = [name for name, _typ in _decl_param_names_and_types(statement)]
+        return binding.verified_decl, param_types, param_names
+    premise = _model_predicate_premise_from_decl_statement(binding)
+    if premise is not None:
+        return premise
+    # A theorem may conclude with a predicate-looking head such as `HasDerivAt ...`,
+    # but that head is not necessarily a MechLib declaration in the theorem
+    # namespace.  Do not synthesize names like
+    # `MechLib.Kinematics.PointMotion.HasDerivAt`; only verified Prop-valued
+    # declarations or predicate premises of verified extractor theorems are
+    # allowed to become skeleton model predicates here.
+    return None
+
+
+def _decl_binder_rows(statement: str) -> list[tuple[list[str], str]]:
+    rows: list[tuple[list[str], str]] = []
+    for match in re.finditer(
+        r"\(\s*([A-Za-z_][A-Za-z0-9_']*(?:\s+[A-Za-z_][A-Za-z0-9_']*)*)\s*:\s*([^)]+)\)",
+        statement,
+    ):
+        names = [name for name in match.group(1).split() if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_']*", name)]
+        raw_type = " ".join(match.group(2).split())
+        if names and raw_type:
+            rows.append((names, raw_type))
+    return rows
+
+
+MODEL_PREDICATE_PREMISE_MARKERS = (
+    "Relation",
+    "Predicate",
+    "Law",
+    "Constraint",
+    "Balance",
+    "Residual",
+    "Interface",
+    "HasVelocity",
+    "HasAcceleration",
+    "VelocityDerivative",
+    "AccelerationDerivative",
+)
+
+
+def _looks_like_model_predicate_name(name: str) -> bool:
+    short = str(name or "").rsplit(".", 1)[-1]
+    if not short or short in LEAN_CORE_TOKENS:
+        return False
+    if short in QUANTITY_TYPE_NAMES or short in {"Real", "Nat", "Int", "Rat"}:
+        return False
+    if any(marker in short for marker in MODEL_PREDICATE_PREMISE_MARKERS):
+        return True
+    return bool(short.startswith("Has") and len(short) > 3)
+
+
+def _model_predicate_premise_from_decl_statement(binding: EvidenceBinding) -> tuple[str, list[str], list[str]] | None:
+    rows = _decl_binder_rows(normalize_lean_text(binding.decl_statement or ""))
+    param_type_by_name: dict[str, str] = {}
+    for names, raw_type in rows:
+        normalized, supported, _status = normalize_quantity_lean_type(raw_type)
+        if supported and (
+            normalized in QUANTITY_TYPE_NAMES
+            or normalized == "Real"
+            or is_function_quantity_lean_type(normalized)
+        ):
+            for name in names:
+                param_type_by_name[name] = normalized
+            continue
+        premise = re.match(r"(?P<predicate>[A-Za-z_][A-Za-z0-9_'.]*)\s+(?P<args>.+)$", raw_type)
+        if not premise:
+            continue
+        predicate_name = premise.group("predicate")
+        if not _looks_like_model_predicate_name(predicate_name):
+            continue
+        arg_tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_']*", premise.group("args"))
+        param_types = [param_type_by_name[token] for token in arg_tokens if token in param_type_by_name]
+        if len(param_types) != len(arg_tokens) or not param_types:
+            continue
+        return _predicate_fq_from_short_name(str(binding.verified_decl or ""), predicate_name), param_types, arg_tokens
+    return None
 
 
 def _decl_param_types(statement: str) -> list[str]:
     types: list[str] = []
-    for match in re.finditer(r"\(\s*[A-Za-z_][A-Za-z0-9_']*(?:\s+[A-Za-z_][A-Za-z0-9_']*)*\s*:\s*([^)]+)\)", statement):
-        raw_type = " ".join(match.group(1).split())
+    for _names, raw_type in _decl_binder_rows(statement):
         if any(token in raw_type for token in ("->", "→", "=>", "∀", "forall")):
+            normalized, supported, _status = normalize_quantity_lean_type(raw_type)
+            if supported and is_function_quantity_lean_type(normalized):
+                types.append(normalized)
             continue
-        lean_type = raw_type.rsplit(".", 1)[-1]
-        if lean_type in QUANTITY_TYPE_NAMES or lean_type == "Real":
-            types.append(lean_type)
+        normalized, supported, _status = normalize_quantity_lean_type(raw_type)
+        if supported and (normalized in QUANTITY_TYPE_NAMES or normalized == "Real"):
+            types.append(normalized)
     return types
+
+
+def _decl_param_names_and_types(statement: str) -> list[tuple[str, str]]:
+    params: list[tuple[str, str]] = []
+    for names, raw_type in _decl_binder_rows(statement):
+        if any(token in raw_type for token in ("=>", "∀", "forall")):
+            continue
+        normalized, supported, _status = normalize_quantity_lean_type(raw_type)
+        if not supported:
+            continue
+        if not (normalized in QUANTITY_TYPE_NAMES or normalized == "Real" or is_function_quantity_lean_type(normalized)):
+            continue
+        for name in names:
+            params.append((name, normalized))
+    return params
 
 
 def _role_type_hint(role: object) -> str:
     return _type_from_hint(role)
+
+
+ROLE_ALIASES_BY_PARAM_NAME: dict[str, list[str]] = {
+    "f": ["net_force", "resultant_force", "force", "tension"],
+    "force": ["net_force", "resultant_force", "force", "tension"],
+    "fnet": ["net_force", "resultant_force", "force"],
+    "fext": ["external_force", "net_force", "resultant_force", "force"],
+    "f_ext": ["external_force", "net_force", "resultant_force", "force"],
+    "m": ["mass"],
+    "mass": ["mass"],
+    "a": ["acceleration", "angular_acceleration"],
+    "accel": ["acceleration"],
+    "acceleration": ["acceleration"],
+    "rddot": ["acceleration", "center_of_mass_acceleration"],
+    "alpha": ["angular_acceleration", "acceleration"],
+    "i": ["moment_of_inertia", "inertia"],
+    "j": ["moment_of_inertia", "inertia"],
+    "r": ["radius", "length", "position"],
+    "l": ["length", "radius"],
+    "t": ["time"],
+    "time": ["time"],
+    "x": ["position", "displacement", "trajectory"],
+    "v": ["velocity", "speed"],
+    "omega": ["angular_velocity"],
+    "theta": ["angle", "angular_position"],
+}
+
+
+def _binding_slot_order(binding: EvidenceBinding, param_names: list[str]) -> list[str] | None:
+    explicit = getattr(binding, "slot_order", None)
+    if isinstance(explicit, list) and explicit and all(str(item).strip() for item in explicit):
+        return [str(item).strip() for item in explicit]
+    for name in param_names:
+        key = str(name or "").strip().lower()
+        if key not in ROLE_ALIASES_BY_PARAM_NAME:
+            return None
+    return [str(name).strip() for name in param_names]
+
+
+def _symbol_for_slot(
+    *,
+    instance: ModelInstance,
+    slot: str,
+    expected_type: str,
+    info_by_symbol: dict[str, dict[str, Any]],
+) -> str | None:
+    variables = instance.variables or {}
+    role_candidates = [str(slot or "").strip()]
+    role_candidates.extend(ROLE_ALIASES_BY_PARAM_NAME.get(str(slot or "").strip().lower(), []))
+    # For declarations whose parameter name is generic `F`, prefer the
+    # semantically registered net/resultant force if present, then explicit
+    # force/tension roles.  This is still role based; it does not scan by type.
+    if str(slot or "").strip().lower() in {"f", "force"}:
+        role_candidates = ["net_force", "resultant_force", "force", "tension"]
+    seen_roles: set[str] = set()
+    for role in role_candidates:
+        if not role or role in seen_roles:
+            continue
+        seen_roles.add(role)
+        if role not in variables:
+            continue
+        raw_symbol = variables.get(role)
+        if not isinstance(raw_symbol, str):
+            continue
+        symbol = lean_ident(_normalize_unicode_identifiers(raw_symbol), prefix="q")
+        info = info_by_symbol.get(raw_symbol) or info_by_symbol.get(symbol)
+        actual_type = str(info.get("lean_type")) if info else "Real"
+        if actual_type == expected_type:
+            return symbol
+    return None
 
 
 def _instance_symbol_by_type(
@@ -2197,18 +2836,27 @@ def _predicate_application_for_instance(
     statement = normalize_lean_text(binding.decl_statement or "")
     if predicate_info is None:
         return None
-    predicate_fq_name, param_types = predicate_info
+    predicate_fq_name, param_types, param_names = predicate_info
     if not param_types:
         return None
     if "Force" in param_types and not _force_argument_is_safe_for_predicate(instance, predicate_fq_name):
         return None
-    symbols_by_type = _instance_symbol_by_type(instance, info_by_symbol)
+    if len(param_names) != len(param_types):
+        return None
+    slot_order = _binding_slot_order(binding, param_names)
+    if slot_order is None or len(slot_order) != len(param_types):
+        return None
     used_symbols: list[str] = []
-    for lean_type in param_types:
-        choices = symbols_by_type.get(lean_type, [])
-        if not choices:
+    for slot, lean_type in zip(slot_order, param_types, strict=False):
+        symbol = _symbol_for_slot(
+            instance=instance,
+            slot=slot,
+            expected_type=lean_type,
+            info_by_symbol=info_by_symbol,
+        )
+        if symbol is None:
             return None
-        used_symbols.append(choices.pop(0))
+        used_symbols.append(symbol)
     proposition = " ".join([predicate_fq_name, *used_symbols])
     binder_name = lean_ident(f"{instance.instance_id}_law", prefix="law")
     return {
@@ -2282,11 +2930,24 @@ FUNCTION_FORMULA_KINDS = {
     "scalar_relation",
     "pointwise_relation",
     "evaluation_relation",
+    "derivative_relation",
     "ode_relation",
     "component_relation",
     "property",
     "unknown",
 }
+FUNCTION_TARGET_KINDS = {"pointwise_function_relation", "derivative_relation", "ode_relation"}
+FUNCTION_FORMULA_POINTWISE_KINDS = {"pointwise_relation"}
+
+
+def _raw_arrow_type_parts(text: object) -> tuple[str, str] | None:
+    normalized = " ".join(str(text or "").strip().replace("→", "->").split())
+    if "->" not in normalized:
+        return None
+    parts = [part.strip().strip("() ") for part in normalized.split("->")]
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        return None
+    return parts[0], parts[1]
 
 
 def _quantity_infos_with_bound_variables(
@@ -2298,8 +2959,14 @@ def _quantity_infos_with_bound_variables(
     existing.update(str(info.get("source_name") or "") for info in out)
     for item in bound_variables:
         name = str(item.get("name") or item.get("symbol") or item.get("variable") or "").strip()
-        if not name or name in existing:
+        if not name:
             continue
+        if name in existing:
+            out = [
+                info
+                for info in out
+                if name not in {str(info.get("name") or ""), str(info.get("source_name") or "")}
+            ]
         requested = str(item.get("lean_type") or item.get("type") or item.get("domain") or "").strip()
         lean_type, supported, status = normalize_quantity_lean_type(requested or "Real")
         if not supported:
@@ -2322,6 +2989,353 @@ def _quantity_infos_with_bound_variables(
     return out
 
 
+def _rewrite_real_time_bound_variable_text(text: object, real_time_names: set[str]) -> str:
+    value = normalize_lean_text(str(text or "")).strip()
+    if not value or not real_time_names:
+        return value
+    for name in sorted(real_time_names, key=len, reverse=True):
+        escaped = re.escape(name)
+        value = re.sub(rf"\b{escaped}\.val\b", name, value)
+        value = re.sub(rf"(\b(?:forall|∀)\s+{escaped}\s*:\s*)Time\b", r"\1Real", value)
+        value = re.sub(rf"(\bfun\s+{escaped}\s*:\s*)Time\b", r"\1Real", value)
+    return value
+
+
+def _function_info_for_symbol(symbol: str, quantity_infos: list[dict[str, Any]]) -> dict[str, Any] | None:
+    raw = str(symbol or "").strip()
+    if not raw:
+        return None
+    for info in quantity_infos:
+        if raw in {str(info.get("name") or ""), str(info.get("source_name") or "")}:
+            if is_function_quantity_lean_type(str(info.get("lean_type") or "")):
+                return info
+            return None
+    return None
+
+
+def _contains_function_quantity_application(text: object, quantity_infos: list[dict[str, Any]]) -> bool:
+    value = normalize_lean_text(str(text or "")).strip()
+    if not value:
+        return False
+    for info in quantity_infos:
+        if not is_function_quantity_lean_type(str(info.get("lean_type") or "")):
+            continue
+        for name in {str(info.get("name") or ""), str(info.get("source_name") or "")}:
+            if not name or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_']*", name):
+                continue
+            escaped = re.escape(name)
+            if re.search(rf"(?<![A-Za-z0-9_.]){escaped}\s+(?:[A-Za-z_][A-Za-z0-9_']*|[-+]?\d)", value):
+                return True
+            if re.search(rf"(?<![A-Za-z0-9_.]){escaped}\s*\(", value):
+                return True
+            if re.search(rf"\(\s*{escaped}\s+[^)]*\)\.val", value):
+                return True
+    return False
+
+
+def _function_symbol_from_lhs(lhs: object) -> str:
+    text = normalize_lean_text(str(lhs or "")).strip()
+    patterns = [
+        r"^\(?\s*([A-Za-z_][A-Za-z0-9_']*)\s+[A-Za-z_][A-Za-z0-9_']*(?:\.val)?\s*\)?(?:\.val)?$",
+        r"^\(?\s*([A-Za-z_][A-Za-z0-9_']*)\s+[-+]?\d+(?:\.\d+)?\s*\)?(?:\.val)?$",
+        r"^\(\s*([A-Za-z_][A-Za-z0-9_']*)\s+\(\s*[-+]?\d+(?:\.\d+)?\s*:\s*Real\s*\)\s*\)\.val$",
+        r"^([A-Za-z_][A-Za-z0-9_']*)\s*\(\s*[A-Za-z_][A-Za-z0-9_']*(?:\.val)?\s*\)\.val$",
+        r"^([A-Za-z_][A-Za-z0-9_']*)\s*\(\s*[-+]?\d+(?:\.\d+)?\s*\)\.val$",
+    ]
+    for pattern in patterns:
+        match = re.match(pattern, text)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _function_application_arg_from_lhs(lhs: object, function_symbol: str) -> str:
+    text = normalize_lean_text(str(lhs or "")).strip()
+    if not function_symbol:
+        return ""
+    escaped = re.escape(function_symbol)
+    patterns = [
+        rf"^\(?\s*{escaped}\s+(?P<arg>[A-Za-z_][A-Za-z0-9_']*(?:\.val)?|[-+]?\d+(?:\.\d+)?|\(\s*[-+]?\d+(?:\.\d+)?\s*:\s*Real\s*\))\s*\)?(?:\.val)?$",
+        rf"^{escaped}\s*\(\s*(?P<arg>[A-Za-z_][A-Za-z0-9_']*(?:\.val)?|[-+]?\d+(?:\.\d+)?|\(\s*[-+]?\d+(?:\.\d+)?\s*:\s*Real\s*\))\s*\)\.val$",
+    ]
+    for pattern in patterns:
+        match = re.match(pattern, text)
+        if match:
+            return str(match.group("arg") or "").strip()
+    return ""
+
+
+def _has_invalid_function_value_shape(text: object) -> bool:
+    value = normalize_lean_text(str(text or "")).strip()
+    if not value:
+        return False
+    return bool(
+        re.search(r"\b[A-Za-z_][A-Za-z0-9_']*\.val\s*(?:\(|\s+[A-Za-z_0-9(])", value)
+        or re.search(r"\(\s*[A-Za-z_][A-Za-z0-9_']*\.val\s+(?![+\-*/])[^()]*\)\.val", value)
+        or re.search(r"\(\s*\([^)]*\.val\s*\)\s*\)\.val", value)
+        or re.search(r"\(\s*\([^)]*\)\.val\s*\)\.val", value)
+    )
+
+
+def _has_unsupported_derivative_field(text: object) -> bool:
+    value = normalize_lean_text(str(text or "")).strip()
+    if not value:
+        return False
+    return bool(
+        re.search(r"\)\s*\.(?:dot|ddot)\s*\.val\b", value)
+        or re.search(r"\b[A-Za-z_][A-Za-z0-9_']*\s*\([^)]*\)\s*\.(?:dot|ddot)\s*\.val\b", value)
+        or re.search(r"\b[A-Za-z_][A-Za-z0-9_']*\s+[^()=<>]+\s*\.(?:dot|ddot)\s*\.val\b", value)
+    )
+
+
+def _has_unsupported_vector_formula(text: object) -> bool:
+    value = normalize_lean_text(str(text or "")).strip()
+    if not value:
+        return False
+    if any(token in value for token in ("×", "⨯")):
+        return True
+    if re.search(r"\s•\s", value):
+        return True
+    if re.search(r"(?<![A-Za-z0-9_])e_[A-Za-z0-9_']+", value):
+        return True
+    return False
+
+
+def _vector_scalar_proxy_formula(
+    raw_formulas: list[str],
+    quantity_infos: list[dict[str, Any]],
+    trace_sink: list[dict[str, Any]] | None = None,
+) -> str:
+    """Best-effort scalar proxy for vector-valued targets.
+
+    This is deliberately marked downstream as `vector_scalar_proxy`; it is a
+    compile/semantic-coverage fallback, not a fully grounded vector theorem.
+    """
+    formulas: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_formulas:
+        text = normalize_lean_text(str(raw or "")).strip()
+        if not text:
+            continue
+        text = text.replace("×", "*").replace("⨯", "*").replace("•", "*")
+        text = re.sub(r"(?<![A-Za-z0-9_])e_[A-Za-z0-9_']+", "1", text)
+        text = re.sub(r"\*\s*1(?![A-Za-z0-9_'])", "", text)
+        text = re.sub(r"(?<![A-Za-z0-9_])1\s*\*", "", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        formula = _typed_formula_from_text(
+            text,
+            quantity_infos,
+            trace_sink=trace_sink,
+            trace_source="canonical_target:vector_scalar_proxy",
+        )
+        if (
+            not formula
+            or _has_unsupported_vector_formula(formula)
+            or _has_unsupported_tuple_formula(formula)
+            or _has_invalid_function_value_shape(formula)
+            or _has_unregistered_formula_symbol(formula, quantity_infos)
+            or not _is_allowed_lean_target(formula)
+        ):
+            continue
+        for part in _split_top_level_conjunctions(formula):
+            key = re.sub(r"\s+", "", part)
+            if key and key not in seen:
+                seen.add(key)
+                formulas.append(part)
+    return " ∧\n  ".join(formulas) if formulas else "True"
+
+
+def _is_function_equality_text(text: object) -> bool:
+    value = normalize_lean_text(str(text or "")).strip()
+    return bool(re.search(r"(?<![A-Za-z0-9_.])[A-Za-z_][A-Za-z0-9_']*\s*=\s*fun\b", value))
+
+
+def _split_top_level_conjunctions(text: str) -> list[str]:
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}" and depth > 0:
+            depth -= 1
+        elif ch == "∧" and depth == 0:
+            part = text[start:i].strip()
+            if part:
+                parts.append(part)
+            start = i + 1
+        i += 1
+    tail = text[start:].strip()
+    if tail:
+        parts.append(tail)
+    return parts or [text.strip()]
+
+
+def _strip_wrapping_parens(text: object) -> str:
+    value = normalize_lean_text(str(text or "")).strip()
+    while value.startswith("(") and value.endswith(")"):
+        depth = 0
+        wraps = True
+        for index, ch in enumerate(value):
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0 and index != len(value) - 1:
+                    wraps = False
+                    break
+        if not wraps:
+            break
+        value = value[1:-1].strip()
+    return value
+
+
+def _split_top_level_commas(text: object) -> list[str]:
+    value = _strip_wrapping_parens(text)
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for index, ch in enumerate(value):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}" and depth > 0:
+            depth -= 1
+        elif ch == "," and depth == 0:
+            part = value[start:index].strip()
+            if part:
+                parts.append(part)
+            start = index + 1
+    tail = value[start:].strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _tuple_relation_to_conjunction(lhs: object, relation: object, rhs: object) -> str | None:
+    lhs_parts = _split_top_level_commas(lhs)
+    rhs_parts = _split_top_level_commas(rhs)
+    if len(lhs_parts) <= 1 or len(lhs_parts) != len(rhs_parts):
+        return None
+    rel = str(relation or "=").strip() or "="
+    return " ∧ ".join(f"{left} {rel} {right}" for left, right in zip(lhs_parts, rhs_parts))
+
+
+def _split_relation_formula(text: str) -> tuple[str, str, str] | None:
+    depth = 0
+    relations = ("≠", "≤", "≥", "=", "<", ">")
+    for i, ch in enumerate(text):
+        if ch in "([{":
+            depth += 1
+            continue
+        if ch in ")]}" and depth > 0:
+            depth -= 1
+            continue
+        if depth != 0:
+            continue
+        for rel in relations:
+            if text.startswith(rel, i):
+                lhs = text[:i].strip()
+                rhs = text[i + len(rel) :].strip()
+                if lhs and rhs:
+                    return lhs, rel, rhs
+    return None
+
+
+def _synthesize_function_formula_rows(
+    raw_formulas: list[str],
+    quantity_infos: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    function_symbols = {
+        str(value)
+        for info in quantity_infos
+        if is_function_quantity_lean_type(str(info.get("lean_type") or ""))
+        for value in (info.get("name"), info.get("source_name"))
+        if str(value or "").strip()
+    }
+    if not function_symbols:
+        return rows
+    for raw in raw_formulas:
+        text = normalize_lean_text(str(raw or "")).strip()
+        if not text:
+            continue
+        for index, part in enumerate(_split_top_level_conjunctions(text), start=1):
+            relation = _split_relation_formula(part)
+            if re.match(r"^\s*(?:forall|∀)\b", part):
+                rows.append(
+                    {
+                        "formula_id": f"synth_function_formula_{len(rows) + 1}",
+                        "formula_kind": "property",
+                        "lean_formula": part,
+                        "parse_ok": True,
+                    }
+                )
+                continue
+            if relation is None:
+                if _contains_function_quantity_application(part, quantity_infos):
+                    rows.append(
+                        {
+                            "formula_id": f"synth_function_formula_{len(rows) + 1}",
+                            "formula_kind": "property",
+                            "lean_formula": part,
+                            "parse_ok": True,
+                        }
+                    )
+                continue
+            lhs, rel, rhs = relation
+            symbol = _function_symbol_from_lhs(lhs)
+            if symbol and symbol in function_symbols:
+                rows.append(
+                    {
+                        "formula_id": f"synth_function_formula_{len(rows) + 1}",
+                        "formula_kind": "evaluation_relation",
+                        "function_symbol": symbol,
+                        "lhs": lhs,
+                        "relation": rel,
+                        "rhs": rhs,
+                        "parse_ok": True,
+                    }
+                )
+                continue
+            if _contains_function_quantity_application(part, quantity_infos):
+                rows.append(
+                    {
+                        "formula_id": f"synth_function_formula_{len(rows) + 1}",
+                        "formula_kind": "property",
+                        "lean_formula": part,
+                        "parse_ok": True,
+                    }
+                )
+    return rows
+
+
+def _normalize_function_formula_bound_variables(
+    bound_variables: list[dict[str, Any]],
+    *,
+    allow_time_domain_coercion: bool = False,
+) -> tuple[list[dict[str, Any]], set[str]]:
+    normalized: list[dict[str, Any]] = []
+    real_time_names: set[str] = set()
+    for item in bound_variables:
+        row = dict(item)
+        name = str(row.get("name") or row.get("symbol") or row.get("variable") or "").strip()
+        requested = str(row.get("lean_type") or row.get("type") or row.get("domain") or "").strip()
+        lean_type, supported, _status = normalize_quantity_lean_type(requested or "Real")
+        if supported and lean_type == "Time" and allow_time_domain_coercion:
+            row["lean_type"] = "Real"
+            for key in ("type", "domain"):
+                if key in row:
+                    row[key] = "Real"
+            if name:
+                real_time_names.add(name)
+        elif supported and requested:
+            row["lean_type"] = lean_type
+        normalized.append(row)
+    return normalized, real_time_names
+
+
 def _bound_variable_binder(item: dict[str, Any]) -> tuple[str, str] | None:
     name = str(item.get("name") or item.get("symbol") or item.get("variable") or "").strip()
     requested = str(item.get("lean_type") or item.get("type") or item.get("domain") or "").strip()
@@ -2333,37 +3347,165 @@ def _bound_variable_binder(item: dict[str, Any]) -> tuple[str, str] | None:
     return name, lean_type
 
 
-def _formula_from_function_formula_ir(
+def render_function_formula_ir(
     row: dict[str, Any],
     quantity_infos: list[dict[str, Any]],
+    trace_sink: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str | None]:
     if row.get("parse_ok") is False:
         return "", str(row.get("error") or "invalid_function_formula_ir")
+    if any(
+        _has_unsupported_derivative_field(row.get(key))
+        for key in ("lhs", "rhs", "lean_formula")
+    ):
+        return "", "derivative_field_not_supported"
     formula_kind = str(row.get("formula_kind") or "unknown").strip() or "unknown"
     if formula_kind not in FUNCTION_FORMULA_KINDS:
         return "", "invalid_function_formula_kind"
-    bound_variables = [dict(item) for item in row.get("bound_variables") or [] if isinstance(item, dict)]
+    bound_variables, real_time_names = _normalize_function_formula_bound_variables(
+        [dict(item) for item in row.get("bound_variables") or [] if isinstance(item, dict)],
+        allow_time_domain_coercion=bool(row.get("allow_time_domain_coercion")),
+    )
     local_infos = _quantity_infos_with_bound_variables(quantity_infos, bound_variables)
-    lhs = normalize_lean_text(str(row.get("lhs") or "")).strip()
-    rhs = normalize_lean_text(str(row.get("rhs") or "")).strip()
+    function_symbol = str(row.get("function_symbol") or "").strip() or _function_symbol_from_lhs(row.get("lhs"))
+    function_info = _function_info_for_symbol(function_symbol, quantity_infos)
+    if formula_kind in FUNCTION_FORMULA_POINTWISE_KINDS | {"evaluation_relation"}:
+        if not function_symbol or function_info is None:
+            return "", "function_symbol_unresolved"
+        raw_function_type = str(
+            row.get("function_type")
+            or function_info.get("requested_lean_type")
+            or function_info.get("lean_type")
+            or ""
+        ).strip()
+        raw_parts = _raw_arrow_type_parts(raw_function_type)
+        if (
+            raw_parts is not None
+            and normalize_quantity_lean_type(raw_parts[0])[0] == "Time"
+            and not bool(row.get("allow_time_domain_coercion"))
+        ):
+            return "", "function_domain_policy_required"
+        parts = function_quantity_parts(str(function_info.get("lean_type") or row.get("function_type") or ""))
+        if parts is None:
+            return "", "function_domain_unresolved"
+        domain, codomain = parts
+        if formula_kind in FUNCTION_FORMULA_POINTWISE_KINDS and not bound_variables:
+            return "", "missing_function_bound_variables"
+        if formula_kind == "evaluation_relation":
+            lhs_arg = _function_application_arg_from_lhs(row.get("lhs"), function_symbol)
+            if not lhs_arg or _has_invalid_function_value_shape(row.get("lhs")):
+                return "", "invalid_function_lhs"
+            lhs_arg = _real_domain_function_arg(
+                lhs_arg,
+                domain=domain,
+                info_by_symbol=_quantity_info_map(local_infos),
+                bound_variable_types={},
+            )
+            lhs = f"{function_symbol} {lhs_arg}" if codomain == "Real" else f"({function_symbol} {lhs_arg}).val"
+            rhs = _typed_formula_from_text(
+                row.get("rhs") or "",
+                local_infos,
+                trace_sink=trace_sink,
+                trace_source=f"function_formula_ir:{row.get('formula_id') or formula_kind}:rhs",
+            )
+            relation = str(row.get("relation") or "=").strip() or "="
+            body = f"{lhs} {relation} {rhs}".strip()
+            if _has_invalid_function_value_shape(body):
+                return "", "invalid_function_value_shape"
+            if not rhs or "?" in body or _has_unsupported_tuple_formula(body) or not _is_allowed_lean_target(body):
+                return "", "invalid_function_formula_ir"
+            if _has_unregistered_formula_symbol(body, local_infos):
+                return "", "invalid_function_formula_ir"
+            return body, None
+        first_bound = _bound_variable_binder(bound_variables[0])
+        if first_bound is None:
+            return "", "invalid_function_bound_variable"
+        bound_name, bound_type = first_bound
+        normalized_bound_type = normalize_quantity_lean_type(bound_type)[0]
+        if normalized_bound_type != domain:
+            return "", "function_domain_mismatch"
+        lhs_text = str(row.get("lhs") or "").strip()
+        lhs_arg = _function_application_arg_from_lhs(lhs_text, function_symbol) if lhs_text else bound_name
+        if lhs_text and (not lhs_arg or _has_invalid_function_value_shape(lhs_text)):
+            return "", "invalid_function_lhs"
+        if lhs_arg != bound_name:
+            return "", "function_bound_variable_mismatch"
+        lhs = f"{function_symbol} {bound_name}" if codomain == "Real" else f"({function_symbol} {bound_name}).val"
+        rhs = _rewrite_real_time_bound_variable_text(row.get("rhs") or "", real_time_names)
+        if not str(rhs or "").strip():
+            return "", "missing_function_formula"
+        rhs = _typed_formula_from_text(
+            rhs,
+            local_infos,
+            trace_sink=trace_sink,
+            trace_source=f"function_formula_ir:{row.get('formula_id') or formula_kind}:rhs",
+        )
+        relation = str(row.get("relation") or "=").strip() or "="
+        body = f"{lhs} {relation} {rhs}".strip()
+        if _has_invalid_function_value_shape(body):
+            return "", "invalid_function_value_shape"
+        if not body or "?" in body or _has_unsupported_tuple_formula(body) or not _is_allowed_lean_target(body):
+            return "", "invalid_function_formula_ir"
+        if _has_unregistered_formula_symbol(body, local_infos):
+            return "", "invalid_function_formula_ir"
+        if _is_tautological_equality(body):
+            return "", "tautological_canonical_target"
+        domain_conditions = [
+            _typed_formula_from_text(
+                item,
+                local_infos,
+                trace_sink=trace_sink,
+                trace_source=f"function_formula_ir:{row.get('formula_id') or formula_kind}:domain_condition",
+            )
+            for item in row.get("domain_conditions") or []
+            if str(item or "").strip()
+        ]
+        domain_conditions = [
+            item
+            for item in domain_conditions
+            if item and "?" not in item and _is_allowed_lean_hypothesis(item)
+        ]
+        if domain_conditions:
+            body = f"{' ∧ '.join(domain_conditions)} -> {body}"
+        body = f"forall {bound_name} : {domain}, {body}"
+        if _is_tautological_equality(body):
+            return "", "tautological_canonical_target"
+        return body, None
+
+    lhs = _rewrite_real_time_bound_variable_text(row.get("lhs") or "", real_time_names)
+    rhs = _rewrite_real_time_bound_variable_text(row.get("rhs") or "", real_time_names)
     relation = str(row.get("relation") or "=").strip() or "="
-    raw_formula = normalize_lean_text(str(row.get("lean_formula") or "")).strip()
+    raw_formula = _rewrite_real_time_bound_variable_text(row.get("lean_formula") or "", real_time_names)
     if lhs and rhs:
-        raw_formula = f"{lhs} {relation} {rhs}"
+        tuple_formula = _tuple_relation_to_conjunction(lhs, relation, rhs)
+        if tuple_formula is not None:
+            raw_formula = tuple_formula
+        elif not raw_formula:
+            raw_formula = f"{lhs} {relation} {rhs}"
     if not raw_formula:
         return "", "missing_function_formula"
     if formula_kind in {"pointwise_relation", "ode_relation"} and not bound_variables and not re.match(
         r"^\s*(?:forall|∀)\b", raw_formula
     ):
         return "", "missing_function_bound_variables"
-    body = _typed_formula_from_text(raw_formula, local_infos)
+    body = _typed_formula_from_text(
+        raw_formula,
+        local_infos,
+        trace_sink=trace_sink,
+        trace_source=f"function_formula_ir:{row.get('formula_id') or formula_kind}",
+    )
     if not body or "?" in body or _has_unsupported_tuple_formula(body) or not _is_allowed_lean_target(body):
         return "", "invalid_function_formula_ir"
     if _has_unregistered_formula_symbol(body, local_infos):
         return "", "invalid_function_formula_ir"
     if not re.match(r"^\s*(?:forall|∀)\b", body):
         domain_conditions = [
-            _typed_formula_from_text(item, local_infos)
+            _typed_formula_from_text(
+                item,
+                local_infos,
+                trace_sink=trace_sink,
+                trace_source=f"function_formula_ir:{row.get('formula_id') or formula_kind}:domain_condition",
+            )
             for item in row.get("domain_conditions") or []
             if str(item or "").strip()
         ]
@@ -2385,31 +3527,167 @@ def _formula_from_function_formula_ir(
     return body, None
 
 
+def _formula_from_function_formula_ir(
+    row: dict[str, Any],
+    quantity_infos: list[dict[str, Any]],
+    trace_sink: list[dict[str, Any]] | None = None,
+) -> tuple[str, str | None]:
+    return render_function_formula_ir(row, quantity_infos, trace_sink=trace_sink)
+
+
+def _target_equivalent_hypothesis_norms(
+    model_ir: ModelIR | None,
+    controlled_sketch: ControlledSketch | None,
+    quantity_infos: list[dict[str, Any]],
+) -> set[str]:
+    refs: list[str] = []
+    if model_ir is not None:
+        for item in [*model_ir.givens, *model_ir.local_definitions]:
+            payload = _dataclass_payload(item)
+            if str(payload.get("role") or "") == "target":
+                continue
+            refs.append(_payload_lean(item))
+        for item in _model_interface_instantiations_from_model_ir(model_ir):
+            refs.append(str(item.formal_claim or ""))
+    for item in _model_interface_instantiations_from_sketch(controlled_sketch):
+        refs.append(str(item.formal_claim or ""))
+
+    norms: set[str] = set()
+    for raw in refs:
+        text = normalize_lean_text(str(raw or "")).strip()
+        if not text or not _has_formula_relation(text):
+            continue
+        typed = _typed_formula_from_text(text, quantity_infos)
+        for part in _split_top_level_conjunctions(typed):
+            norm = _norm_compact(part)
+            if norm:
+                norms.add(norm)
+    return norms
+
+
+def _finalize_target_formulas(
+    formulas: list[str],
+    *,
+    model_ir: ModelIR | None,
+    controlled_sketch: ControlledSketch | None,
+    quantity_infos: list[dict[str, Any]],
+) -> list[str]:
+    hypothesis_norms = _target_equivalent_hypothesis_norms(model_ir, controlled_sketch, quantity_infos)
+    out: list[str] = []
+    deduped: list[str] = []
+    seen: set[str] = set()
+    seen_deduped: set[str] = set()
+    for formula in formulas:
+        for part in _split_top_level_conjunctions(formula):
+            text = part.strip()
+            if not text:
+                continue
+            norm = _norm_compact(text)
+            if not norm or norm in seen_deduped:
+                continue
+            seen_deduped.add(norm)
+            deduped.append(text)
+            if norm in hypothesis_norms:
+                continue
+            if norm in seen:
+                continue
+            seen.add(norm)
+            out.append(text)
+    return out or deduped
+
+
 def _target_formula(
     *,
     model_ir: ModelIR | None,
     controlled_sketch: ControlledSketch | None,
     quantity_infos: list[dict[str, Any]],
+    trace_sink: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str | None]:
     _ = controlled_sketch
     canonical = getattr(model_ir, "canonical_target", None) if model_ir is not None else None
     if canonical is None:
         return "False", "missing_canonical_target"
     payload = _dataclass_payload(canonical)
+    raw_formulas = [normalize_lean_text(str(payload.get("lean_formula") or "")).strip()]
+    secondary = payload.get("secondary_formulas")
+    if isinstance(secondary, list):
+        raw_formulas.extend(normalize_lean_text(str(item or "")).strip() for item in secondary)
     if payload.get("parse_ok") is not True:
-        return "False", str(payload.get("error") or "missing_canonical_target")
+        error_text = str(payload.get("error") or "missing_canonical_target")
+        if "vector" in error_text.lower() or _has_unsupported_vector_formula(payload.get("lean_formula")):
+            return _vector_scalar_proxy_formula(raw_formulas, quantity_infos, trace_sink), "vector_scalar_proxy"
+        if raw_formulas and not any(_has_unsupported_derivative_field(raw) for raw in raw_formulas):
+            formulas: list[str] = []
+            seen: set[str] = set()
+            for raw in raw_formulas:
+                if not raw:
+                    continue
+                formula = _typed_formula_from_text(
+                    raw,
+                    quantity_infos,
+                    trace_sink=trace_sink,
+                    trace_source="canonical_target:parse_gap_fallback",
+                )
+                key = re.sub(r"\s+", "", formula)
+                if not formula or key in seen:
+                    continue
+                if (
+                    "?" in formula
+                    or _has_unsupported_vector_formula(formula)
+                    or _has_unsupported_tuple_formula(formula)
+                    or _is_function_equality_text(formula)
+                    or _has_invalid_function_value_shape(formula)
+                    or not _is_allowed_lean_target(formula)
+                    or _has_unregistered_formula_symbol(formula, quantity_infos)
+                ):
+                    continue
+                seen.add(key)
+                formulas.append(formula)
+            if formulas:
+                formulas = _finalize_target_formulas(
+                    formulas,
+                    model_ir=model_ir,
+                    controlled_sketch=controlled_sketch,
+                    quantity_infos=quantity_infos,
+                )
+            if formulas:
+                return " ∧\n  ".join(formulas), "canonical_target_parse_gap_fallback"
+        return "False", error_text
     function_formula_rows = [
         _dataclass_payload(item)
         for item in (payload.get("function_formula_ir") or [])
         if _dataclass_payload(item)
     ]
-    if function_formula_rows:
+    if any(_has_unsupported_vector_formula(raw) for raw in raw_formulas):
+        return _vector_scalar_proxy_formula(raw_formulas, quantity_infos, trace_sink), "vector_scalar_proxy"
+    if any(_has_unsupported_derivative_field(raw) for raw in raw_formulas):
+        return "False", "derivative_field_not_supported"
+    if any(_contains_function_quantity_application(raw, quantity_infos) for raw in raw_formulas):
+        existing_keys = {
+            re.sub(r"\s+", "", str(row.get("lean_formula") or row.get("lhs") or ""))
+            for row in function_formula_rows
+        }
+        for row in _synthesize_function_formula_rows(raw_formulas, quantity_infos):
+            key = re.sub(r"\s+", "", str(row.get("lean_formula") or row.get("lhs") or ""))
+            if key and key in existing_keys:
+                continue
+            existing_keys.add(key)
+            function_formula_rows.append(row)
+    target_kind = str(payload.get("target_kind") or "").strip()
+    function_target_requires_valid_ir = target_kind in FUNCTION_TARGET_KINDS or any(
+        str(row.get("formula_kind") or "").strip() in {"pointwise_relation", "derivative_relation", "ode_relation"}
+        for row in function_formula_rows
+    )
+    valid_function_formula_rows = [row for row in function_formula_rows if row.get("parse_ok") is not False]
+    if valid_function_formula_rows or (function_formula_rows and function_target_requires_valid_ir):
         formulas: list[str] = []
         seen_ir: set[str] = set()
         for row in function_formula_rows:
-            formula, error = _formula_from_function_formula_ir(row, quantity_infos)
+            formula, error = _formula_from_function_formula_ir(row, quantity_infos, trace_sink=trace_sink)
             if error:
-                return "False", error
+                if function_target_requires_valid_ir:
+                    return "False", error
+                continue
             key = re.sub(r"\s+", "", formula)
             if key and key not in seen_ir:
                 seen_ir.add(key)
@@ -2420,18 +3698,72 @@ def _target_formula(
                     f"({formula})" if re.match(r"^\s*(?:forall|∀|Exists|∃)\b", formula) else formula
                     for formula in formulas
                 ]
-            return " ∧\n  ".join(formulas), None
+            secondary = payload.get("secondary_formulas")
+            if isinstance(secondary, list):
+                for raw_secondary in secondary:
+                    raw_text = normalize_lean_text(str(raw_secondary or "")).strip()
+                    if not raw_text:
+                        continue
+                    if _contains_function_quantity_application(raw_text, quantity_infos):
+                        synthesized = _synthesize_function_formula_rows([raw_text], quantity_infos)
+                        if not synthesized:
+                            return "False", "missing_function_formula_ir"
+                        for row in synthesized:
+                            secondary_formula, secondary_error = _formula_from_function_formula_ir(
+                                row,
+                                quantity_infos,
+                                trace_sink=trace_sink,
+                            )
+                            if secondary_error:
+                                return "False", secondary_error
+                            key = re.sub(r"\s+", "", secondary_formula)
+                            if secondary_formula and key not in seen_ir:
+                                seen_ir.add(key)
+                                formulas.append(secondary_formula)
+                        continue
+                    secondary_formula = _typed_formula_from_text(
+                        raw_text,
+                        quantity_infos,
+                        trace_sink=trace_sink,
+                        trace_source="canonical_target:secondary",
+                    )
+                    key = re.sub(r"\s+", "", secondary_formula)
+                    if not secondary_formula or key in seen_ir:
+                        continue
+                    if (
+                        "?" in secondary_formula
+                        or _has_unsupported_tuple_formula(secondary_formula)
+                        or _is_function_equality_text(secondary_formula)
+                        or _has_invalid_function_value_shape(secondary_formula)
+                        or not _is_allowed_lean_target(secondary_formula)
+                        or _has_unregistered_formula_symbol(secondary_formula, quantity_infos)
+                    ):
+                        return "False", "invalid_canonical_target_formula"
+                    seen_ir.add(key)
+                    formulas.append(secondary_formula)
+            formulas = _finalize_target_formulas(
+                formulas,
+                model_ir=model_ir,
+                controlled_sketch=controlled_sketch,
+                quantity_infos=quantity_infos,
+            )
+            if formulas:
+                return " ∧\n  ".join(formulas), None
+            return "False", "target_equivalent_to_hypothesis"
         return "False", "invalid_function_formula_ir"
-    raw_formulas = [normalize_lean_text(str(payload.get("lean_formula") or "")).strip()]
-    secondary = payload.get("secondary_formulas")
-    if isinstance(secondary, list):
-        raw_formulas.extend(normalize_lean_text(str(item or "")).strip() for item in secondary)
     formulas: list[str] = []
     seen: set[str] = set()
     for raw in raw_formulas:
         if not raw:
             continue
-        formula = _typed_formula_from_text(raw, quantity_infos)
+        if _contains_function_quantity_application(raw, quantity_infos):
+            return "False", "missing_function_formula_ir"
+        formula = _typed_formula_from_text(
+            raw,
+            quantity_infos,
+            trace_sink=trace_sink,
+            trace_source="canonical_target",
+        )
         key = re.sub(r"\s+", "", formula)
         if not formula or key in seen:
             continue
@@ -2441,12 +3773,22 @@ def _target_formula(
         if (
             "?" in formula
             or _has_unsupported_tuple_formula(formula)
+            or _is_function_equality_text(formula)
+            or _has_invalid_function_value_shape(formula)
             or not _is_allowed_lean_target(formula)
             or _has_unregistered_formula_symbol(formula, quantity_infos)
         ):
             return "False", "invalid_canonical_target_formula"
         formulas.append(formula)
     if formulas:
+        formulas = _finalize_target_formulas(
+            formulas,
+            model_ir=model_ir,
+            controlled_sketch=controlled_sketch,
+            quantity_infos=quantity_infos,
+        )
+        if not formulas:
+            return "False", "target_equivalent_to_hypothesis"
         if len(formulas) > 1:
             formulas = [
                 f"({formula})" if re.match(r"^\s*(?:forall|∀|Exists|∃)\b", formula) else formula
@@ -2550,12 +3892,14 @@ def _target_formula_with_policy(
     quantity_infos: list[dict[str, Any]],
     target_form_policy: str,
     selected_target: object | None,
+    trace_sink: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str | None]:
     _ = (target_form_policy, selected_target)
     return _target_formula(
         model_ir=model_ir,
         controlled_sketch=controlled_sketch,
         quantity_infos=quantity_infos,
+        trace_sink=trace_sink,
     )
 
 
@@ -2586,7 +3930,7 @@ def _is_allowed_lean_hypothesis(text: object) -> bool:
     if not value or value in {"True", "False"}:
         return False
     lowered = value.lower()
-    if any(unit in f" {lowered} " for unit in (" in ", " cm ", " kg ", " m/s ", " n ")):
+    if any(unit in f" {lowered} " for unit in (" in ", " cm ", " kg ", " m/s ")):
         return False
     if any(marker in lowered for marker in (" is ", " are ", " represented as ", " occurs ", " applies ")):
         return False
@@ -2827,11 +4171,7 @@ def _sanitize_minimal_theorem_decl(
         if hyp is not None and hyp.role not in MINIMAL_HYPOTHESIS_ROLES:
             remove.append((start, end))
             continue
-    sanitized = _remove_decl_spans(theorem_decl, remove)
-    formula_text = "\n".join([prop for _, prop in _hypothesis_binders(sanitized)])
-    goal = _goal_text(sanitized)
-    symbols = _unknown_real_symbols(f"{formula_text}\n{goal}", sanitized)
-    return _add_symbols_to_first_real_binder(sanitized, symbols)
+    return _remove_decl_spans(theorem_decl, remove)
 
 
 def _norm_compact(text: object) -> str:
@@ -2866,6 +4206,13 @@ def _has_formula_relation(text: object) -> bool:
     return any(token in raw for token in ("=", "≠", "<", ">", "≤", "≥", "\\le", "\\ge"))
 
 
+def _formula_relation_fragments(text: object) -> set[str]:
+    raw = str(text or "")
+    pieces = [raw]
+    pieces.extend(re.split(r"\s*(?:∧|\\land)\s*", raw))
+    return {_norm_compact(piece) for piece in pieces if _has_formula_relation(piece) and len(_norm_compact(piece)) >= 4}
+
+
 def _target_text_matches(reference: object, candidate: object) -> bool:
     ref = " ".join(str(reference or "").lower().split())
     cand = " ".join(str(candidate or "").lower().split())
@@ -2875,13 +4222,8 @@ def _target_text_matches(reference: object, candidate: object) -> bool:
         return True
     ref_compact = _norm_compact(reference)
     cand_compact = _norm_compact(candidate)
-    if _has_formula_relation(reference) and _has_formula_relation(candidate):
-        if len(ref_compact) >= 8 and ref_compact == cand_compact:
-            return True
-        if len(cand_compact) >= 16 and cand_compact in ref_compact:
-            return True
-        if len(ref_compact) >= 16 and ref_compact in cand_compact:
-            return True
+    if _has_formula_relation(reference) and _has_formula_relation(candidate) and ref_compact == cand_compact:
+        return True
     if len(ref_compact) >= 16 and ref_compact == cand_compact:
         return True
     return False
@@ -2905,7 +4247,144 @@ MODELING_HYPOTHESIS_MARKERS = (
     "nonstretch",
     "no_slip",
     "kinematic",
+    "relative",
+    "relative_displacement",
+    "displacement_relation",
+    "center_of_mass",
+    "centre_of_mass",
+    "com",
+    "mass_center",
+    "momentum_conservation",
+    "mass_from_weight",
+    "weight_to_mass",
+    "problem_relation",
+    "explicit_problem_relation",
 )
+
+
+def _looks_like_problem_function_definition_hypothesis(
+    hyp: HypothesisProvenance | None,
+    proposition: object,
+) -> bool:
+    if hyp is None:
+        return False
+    if hyp.source_type not in {"problem_ir", "problem_text", "model_ir"}:
+        return False
+    text = normalize_lean_text(str(proposition or "")).strip()
+    if not _is_allowed_lean_hypothesis(text):
+        return False
+    if _is_tautological_equality(text) or _has_unsupported_tuple_formula(text):
+        return False
+    blob = " ".join(
+        str(item or "").lower()
+        for item in (hyp.name, hyp.role, hyp.source_type, hyp.source_id, hyp.notes)
+    )
+    if re.search(r"(?<![A-Za-z0-9_])(target|goal|answer|final)(?![A-Za-z0-9_])", blob):
+        return False
+    if not any(
+        marker in blob
+        for marker in (
+            "known_quantit",
+            "given",
+            "givens",
+            "initial",
+            "definition",
+            "problem_fact",
+            "local_definition",
+        )
+    ):
+        return False
+    has_pointwise_function = bool(
+        re.search(r"\(\s*[A-Za-z_][A-Za-z0-9_']*\s+[^()=<>]+\)\.val", text)
+        or re.search(r"(?<![A-Za-z0-9_.])[A-Za-z_][A-Za-z0-9_']*\s+[-+]?\d", text)
+        or re.search(r"=\s*fun\b", text)
+    )
+    has_quantifier = bool(re.search(r"\bforall\b|∀", text))
+    return has_pointwise_function or (has_quantifier and "=" in text)
+
+
+PROBLEM_GIVEN_MARKERS = (
+    "given",
+    "givens",
+    "known",
+    "known_quantit",
+    "initial",
+    "start",
+    "constant",
+    "provided",
+    "specified",
+    "value",
+    "magnitude",
+)
+
+NON_GIVEN_LEAKAGE_MARKERS = (
+    "target",
+    "goal",
+    "answer",
+    "final",
+    "candidate",
+    "derived",
+    "algebra",
+    "solved",
+    "result",
+)
+
+
+def _split_conjunctive_formula(text: str) -> list[str]:
+    return [part.strip() for part in re.split(r"\s*(?:∧|\\land)\s*", text) if part.strip()]
+
+
+def _looks_like_numeric_literal_fact(text: str) -> bool:
+    value = normalize_lean_text(str(text or "")).strip()
+    if not value or not _has_formula_relation(value):
+        return False
+    parts = _split_conjunctive_formula(value)
+    if not parts:
+        return False
+    numeric_atom = r"(?:[-+]?\d+(?:\.\d+)?|\(\s*[-+]?\d+(?:\.\d+)?\s*:\s*Real\s*\)|Real\.pi)"
+    simple_term = r"[A-Za-z_][A-Za-z0-9_']*(?:\.val)?"
+    numeric_expr = rf"[-+*/^().\sA-Za-z0-9_]*{numeric_atom}[-+*/^().\sA-Za-z0-9_]*"
+    relation = r"(?:=|≠|<|>|≤|≥|\\le|\\ge)"
+    for part in parts:
+        if not re.search(numeric_atom, part):
+            return False
+        if re.fullmatch(rf"{simple_term}\s*{relation}\s*{numeric_expr}", part):
+            continue
+        if re.fullmatch(rf"{numeric_expr}\s*{relation}\s*{simple_term}", part):
+            continue
+        return False
+    return True
+
+
+def _looks_like_explicit_problem_given_hypothesis(
+    hyp: HypothesisProvenance | None,
+    proposition: object,
+) -> bool:
+    if hyp is None:
+        return False
+    if hyp.source_type not in {"problem_ir", "problem_text"}:
+        return False
+    if hyp.role not in {"problem_fact", "coordinate_convention", "local_definition"}:
+        return False
+    text = normalize_lean_text(str(proposition or "")).strip()
+    if not _is_allowed_lean_hypothesis(text):
+        return False
+    if _is_tautological_equality(text) or _has_unsupported_tuple_formula(text):
+        return False
+    blob = " ".join(
+        str(item or "").lower()
+        for item in (hyp.name, hyp.role, hyp.source_type, hyp.source_id, hyp.notes)
+    )
+    if any(marker in blob for marker in NON_GIVEN_LEAKAGE_MARKERS):
+        return False
+    has_given_marker = any(marker in blob for marker in PROBLEM_GIVEN_MARKERS)
+    has_known_quantity_source = bool(
+        str(hyp.source_id or "").startswith(("known_quantity", "given", "problem_given"))
+        or str(hyp.name or "").startswith(("given_", "known_"))
+    )
+    if not has_given_marker and not has_known_quantity_source:
+        return False
+    return _looks_like_numeric_literal_fact(text)
 
 
 def _looks_like_audited_modeling_hypothesis(
@@ -2920,6 +4399,8 @@ def _looks_like_audited_modeling_hypothesis(
     if _is_tautological_equality(text) or _has_unsupported_tuple_formula(text):
         return False
     if hyp.role == "explicit_gap_law" and hyp.source_type == "gap" and not hyp.proof_fact_allowed:
+        return True
+    if _looks_like_problem_function_definition_hypothesis(hyp, text):
         return True
     if hyp.role not in {"problem_fact", "coordinate_convention", "local_definition", "model_instance"}:
         return False
@@ -2948,6 +4429,20 @@ def _is_target_forbidden_text(text: object) -> bool:
     return low.startswith(("target", "goal", "candidate_answer", "final", "final_numeric")) or _has_target_marker(low)
 
 
+def _target_forbidden_formula_tail(text: object) -> str:
+    value = str(text or "").strip()
+    if not value or not _has_formula_relation(value):
+        return ""
+    match = re.search(
+        r"(?:candidate answer|final answer|final_numeric|target|goal)\s*(?:is|:|=)?\s*(?P<formula>.+)",
+        value,
+        flags=re.IGNORECASE,
+    )
+    if match and _has_formula_relation(match.group("formula")):
+        return match.group("formula").strip()
+    return ""
+
+
 def _step_result_refs(step: ControlledSketchStep) -> list[str]:
     refs = [str(step.formal_claim or step.expected_claim or "").strip()]
     if not refs[0]:
@@ -2961,10 +4456,13 @@ def _target_texts(model_ir: ModelIR | None, problem_ir: dict[str, Any] | None) -
         canonical = getattr(model_ir, "canonical_target", None)
         if canonical is not None:
             payload = _dataclass_payload(canonical)
-            keys = ("lean_formula", "source_text") if payload.get("parse_ok") is True else ("source_text",)
-            for key in keys:
-                value = str(payload.get(key) or "").strip()
+            if payload.get("parse_ok") is True:
+                value = str(payload.get("lean_formula") or "").strip()
                 if value:
+                    out.append(value)
+            else:
+                value = str(payload.get("source_text") or "").strip()
+                if value and _has_target_marker(value):
                     out.append(value)
             secondary = payload.get("secondary_formulas")
             if payload.get("parse_ok") is True and isinstance(secondary, list):
@@ -2973,31 +4471,45 @@ def _target_texts(model_ir: ModelIR | None, problem_ir: dict[str, Any] | None) -
             if payload.get("parse_ok") is True and isinstance(function_formula_ir, list):
                 for item in function_formula_ir:
                     row = _dataclass_payload(item)
-                    for key in ("lean_formula", "lhs", "rhs", "source_text"):
-                        value = str(row.get(key) or "").strip()
-                        if value:
-                            out.append(value)
+                    value = str(row.get("lean_formula") or "").strip()
+                    if value:
+                        out.append(value)
         else:
             target = model_ir.target or {}
             if isinstance(target, dict):
-                pieces = [str(v).strip() for v in target.values() if str(v).strip()]
+                pieces = [
+                    str(v).strip()
+                    for v in target.values()
+                    if str(v).strip() and (_has_formula_relation(v) or _has_target_marker(v))
+                ]
                 if len(pieces) > 1:
                     out.append(" ".join(pieces))
                 out.extend(v for v in pieces if len(v) >= 2)
-        out.extend(
-            str(item).strip()
-            for item in model_ir.forbidden_as_assumption
-            if str(item).strip() and _is_target_forbidden_text(item)
-        )
+        for item in model_ir.forbidden_as_assumption:
+            text = str(item).strip()
+            # A2 uses forbidden_as_assumption as a broad "do not assume this as
+            # solved proof fact" list. It may include legitimate local
+            # definitions or model equations. For target leakage, only explicit
+            # target/final-answer records should be compared against binders.
+            if text and _is_target_forbidden_text(text):
+                out.append(text)
+                tail = _target_forbidden_formula_tail(text)
+                if tail:
+                    out.append(tail)
     ir = problem_ir or {}
     unknown = ir.get("unknown_target")
     if isinstance(unknown, dict):
-        pieces = [str(unknown.get("symbol") or ""), str(unknown.get("description") or "")]
+        pieces = [
+            str(unknown.get(key) or "")
+            for key in ("lean", "formula", "target_formula", "expected_form", "description")
+            if str(unknown.get(key) or "").strip()
+            and (_has_formula_relation(unknown.get(key)) or _has_target_marker(unknown.get(key)))
+        ]
         text = " ".join(x for x in pieces if x.strip()).strip()
         if text:
             out.append(text)
     goal = str(ir.get("goal_statement") or "").strip()
-    if goal:
+    if goal and (_has_formula_relation(goal) or _has_target_marker(goal)):
         out.append(goal)
     seen: set[str] = set()
     unique: list[str] = []
@@ -3022,7 +4534,17 @@ def _candidate_answer_texts(problem_ir: dict[str, Any] | None) -> list[str]:
 def _model_expected_claims(model_ir: ModelIR | None) -> list[str]:
     if model_ir is None:
         return []
-    return [str(item.expected_claim or "").strip() for item in model_ir.model_instances if str(item.expected_claim or "").strip()]
+    out: list[str] = []
+    for item in model_ir.model_instances:
+        claim = normalize_lean_text(str(item.expected_claim or "")).strip()
+        if not claim:
+            continue
+        # Natural-language expected claims are planning metadata, not equations
+        # that can make a theorem binder look like a leaked law application.
+        if not _is_allowed_lean_hypothesis(claim):
+            continue
+        out.append(claim)
+    return out
 
 
 def _selected_sketch_steps(
@@ -3183,6 +4705,30 @@ def _deterministic_minimal_payload(
     ]
 
 
+def _pragmatic_target_payload(reason: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "candidate_id": "c1",
+            "theorem_name_hint": "pragmatic_target_skeleton",
+            "selected_model_instances": ["__pragmatic_target_only__"],
+            "selected_givens": [],
+            "selected_target": {
+                "target_form_policy": "canonical_target",
+            },
+            "controlled_sketch_steps_used": [],
+            "unsupported_claims": [f"pragmatic_target_skeleton:{reason}"],
+            "variant_id": "pragmatic_target_skeleton",
+            "variant_policy": "pragmatic_target_skeleton",
+            "target_form_policy": "canonical_target",
+            "hypothesis_policy": "safe_givens_only",
+            "law_policy": "none",
+            "gap_policy": "none",
+            "obligation_policy": "none",
+            "repair_directives": [reason],
+        }
+    ]
+
+
 def _theorem_shape(theorem_decl: str) -> str:
     shape = re.sub(r"theorem\s+[^\s]+", "theorem NAME", theorem_decl or "", count=1)
     return re.sub(r"\s+", " ", shape).strip()
@@ -3257,6 +4803,27 @@ def _gap_laws_from_steps_and_hypotheses(
             }
         )
     return out
+
+
+def _gap_law_unsupported_tags(gap_laws: list[dict[str, Any]]) -> list[str]:
+    tags: list[str] = []
+    statuses = {str(row.get("binding_status") or "").strip() for row in gap_laws}
+    if any(status == "verified_decl_uninstantiated" for status in statuses):
+        tags.append("verified_decl_uninstantiated")
+    if any(status in {"", "gap_schema_only", "decl_not_found", "corpus_unavailable"} for status in statuses):
+        tags.append("gap_schema_only:no_verified_decl_binding")
+    if any(status in {"lean_check_failed", "lean_check_decl_failed"} for status in statuses):
+        tags.append("lean_check_failed")
+    if any(status == "signature_mismatch" for status in statuses):
+        tags.append("signature_mismatch")
+    return tags
+
+
+def _has_schema_only_gap_law(gap_laws: list[dict[str, Any]]) -> bool:
+    return any(
+        str(row.get("binding_status") or "").strip() in {"", "gap_schema_only", "decl_not_found", "corpus_unavailable"}
+        for row in gap_laws
+    )
 
 
 def _build_skeleton_audit(
@@ -3386,7 +4953,15 @@ def _build_skeleton_audit(
             if "candidate_answer_leakage" not in tags:
                 tags.append("candidate_answer_leakage")
         law_match = any(_text_matches(ref, hyp_text) for ref in [*law_claims, *model_expected])
-        if active_hypothesis and law_match and not gap_allowed and not checked_model_predicate and not modeling_hypothesis:
+        explicit_problem_given = _looks_like_explicit_problem_given_hypothesis(hyp, hyp.lean)
+        if (
+            active_hypothesis
+            and law_match
+            and not gap_allowed
+            and not checked_model_predicate
+            and not modeling_hypothesis
+            and not explicit_problem_given
+        ):
             raw_law_equation_in_hypotheses = True
             issues.append("law_application_claim_in_hypotheses")
             if "raw_law_equation_in_hypotheses" not in tags:
@@ -3465,6 +5040,7 @@ def _build_skeleton_audit(
             and not gap_allowed
             and not checked_model_predicate
             and not _looks_like_audited_modeling_hypothesis(hyp, proposition)
+            and not _looks_like_explicit_problem_given_hypothesis(hyp, proposition)
         ):
             raw_law_equation_in_hypotheses = True
             issues.append("law_application_claim_in_binder")
@@ -3868,6 +5444,8 @@ class ModuleB:
             payload = merged_payload
         elif not payload:
             payload = _deterministic_minimal_payload(controlled_sketch, model_ir)
+        if sketch_audit_result is not None and not sketch_audit_result.audit_pass:
+            payload = _pragmatic_target_payload("upstream_sketch_audit_failed")
         candidate_count = len(payload)
         payload = payload[:1]
         candidate_count_below_requested = llm_candidate_count is not None and llm_candidate_count < 1
@@ -3885,15 +5463,24 @@ class ModuleB:
             variant = variant_by_id.get(variant_id or "")
             effective_sketch = _sketch_for_variant(controlled_sketch, variant)
             gap_policy = str(item.get("gap_policy") or "").strip()
-            include_explicit_gaps = gap_policy == "explicit_gap_law" or (variant is None and allow_explicit_gap_laws)
+            include_explicit_gaps = (
+                gap_policy == "explicit_gap_law"
+                or (
+                    variant is None
+                    and allow_explicit_gap_laws
+                    and gap_policy not in {"none", "block", "metadata_only"}
+                )
+            )
             ignored_llm_theorem_decl = normalize_lean_text(str(item.get("theorem_decl") or "")).strip() or None
             quantity_infos = _quantity_infos(model_ir, effective_sketch)
+            formula_normalization_trace: list[dict[str, Any]] = []
             selected_givens = _selected_names(item.get("selected_givens"))
             selected_model_instances = _selected_names(item.get("selected_model_instances"))
             given_hypotheses, hypothesis_typed_rows, excluded_hypotheses = _safe_given_binders(
                 model_ir=model_ir,
                 quantity_infos=quantity_infos,
                 selected_givens=selected_givens,
+                trace_sink=formula_normalization_trace,
             )
             model_predicates, blocked_model_predicates = _model_predicate_bindings(
                 model_ir=model_ir,
@@ -3913,6 +5500,7 @@ class ModuleB:
                 selected_model_instances=selected_model_instances,
                 extra_instantiations=expected_claim_instantiations,
                 include_explicit_gaps=include_explicit_gaps,
+                trace_sink=formula_normalization_trace,
             )
             excluded_hypotheses.extend(excluded_interface_hypotheses)
             target_formula, target_block_reason = _target_formula_with_policy(
@@ -3922,6 +5510,7 @@ class ModuleB:
                 target_form_policy=str(item.get("target_form_policy") or "algebra_obligation").strip()
                 or "algebra_obligation",
                 selected_target=item.get("selected_target"),
+                trace_sink=formula_normalization_trace,
             )
             decl, quantity_typed_rows = _render_theorem_decl(
                 sample_id=grounding.sample_id,
@@ -3947,10 +5536,13 @@ class ModuleB:
                     )
                 )
             used_ids = _normalize_text_list(item.get("controlled_sketch_steps_used"))
-            proof_obligations = _canonical_proof_obligations(
-                controlled_sketch=effective_sketch,
-                requested_ids=used_ids,
-            )
+            if str(item.get("variant_policy") or "") == "pragmatic_target_skeleton":
+                proof_obligations = []
+            else:
+                proof_obligations = _canonical_proof_obligations(
+                    controlled_sketch=effective_sketch,
+                    requested_ids=used_ids,
+                )
             if not used_ids:
                 used_ids = [step.step_id for step in proof_obligations if step.step_id]
 
@@ -4020,7 +5612,9 @@ class ModuleB:
                 proof_obligations=proof_obligations,
                 verified_decls=verified_decls,
                 allow_explicit_gap_laws=allow_explicit_gap_laws,
-                upstream_sketch_audit=sketch_audit_result,
+                upstream_sketch_audit=None
+                if str(item.get("variant_policy") or "") == "pragmatic_target_skeleton"
+                else sketch_audit_result,
                 untrusted_verified_decls=untrusted_verified,
                 registered_model_predicates=model_predicates,
             )
@@ -4054,10 +5648,16 @@ class ModuleB:
                 tag = f"unbound_verified_decl:{decl_name}"
                 if tag not in unsupported_claims:
                     unsupported_claims.append(tag)
-            if gap_laws and "gap_schema_only:no_verified_decl_binding" not in unsupported_claims:
-                unsupported_claims.append("gap_schema_only:no_verified_decl_binding")
+            for tag in _gap_law_unsupported_tags(gap_laws):
+                if tag not in unsupported_claims:
+                    unsupported_claims.append(tag)
             generation_blocked_reason: str | None = None
-            if target_block_reason:
+            target_warning_reason: str | None = None
+            if target_block_reason in {"vector_scalar_proxy", "canonical_target_parse_gap_fallback"}:
+                target_warning_reason = target_block_reason
+                if target_block_reason not in unsupported_claims:
+                    unsupported_claims.append(target_block_reason)
+            elif target_block_reason:
                 generation_blocked_reason = target_block_reason
             has_verified_proof_obligations = any(
                 step.verified_decl and step.proof_fact_allowed and step.verified_decl in whitelist
@@ -4068,18 +5668,27 @@ class ModuleB:
                 for row in blocked_model_predicates
                 if str(row.get("source_model_instance") or "").strip() not in explicit_model_gap_source_instances
             ]
-            if (
-                blocked_model_predicates
-                and not model_predicates
-                and not interface_hypotheses
-                and not has_verified_proof_obligations
-            ):
-                generation_blocked_reason = "blocked_by_evidence_gap"
-            elif uncovered_blocked_predicates and not allow_explicit_gap_laws and not has_verified_proof_obligations:
-                generation_blocked_reason = "blocked_by_evidence_gap"
+            evidence_gap_present = bool(
+                (
+                    blocked_model_predicates
+                    and not model_predicates
+                    and not interface_hypotheses
+                    and not has_verified_proof_obligations
+                )
+                or (uncovered_blocked_predicates and not has_verified_proof_obligations)
+                or (gap_laws and not has_verified_proof_obligations)
+            )
+            if evidence_gap_present:
+                tag = "evidence_gap_present"
+                if tag not in unsupported_claims:
+                    unsupported_claims.append(tag)
             if gap_laws and not allow_explicit_gap_laws:
                 generation_blocked_reason = generation_blocked_reason or "blocked_by_evidence_gap"
-            if sketch_audit_result is not None and not sketch_audit_result.audit_pass:
+            if (
+                sketch_audit_result is not None
+                and not sketch_audit_result.audit_pass
+                and str(item.get("variant_policy") or "") != "pragmatic_target_skeleton"
+            ):
                 generation_blocked_reason = generation_blocked_reason or "upstream_sketch_audit_failed"
             if generation_blocked_reason:
                 tag = f"generation_blocked:{generation_blocked_reason}"
@@ -4097,8 +5706,14 @@ class ModuleB:
                 and bool(model_predicates)
                 and all(str(row["verified_decl"]) in whitelist for row in model_predicates)
             )
-            if generation_blocked_reason == "blocked_by_evidence_gap":
-                grounding_status = "blocked_by_evidence_gap"
+            if target_warning_reason == "vector_scalar_proxy":
+                grounding_status = "vector_scalar_proxy"
+            elif str(item.get("variant_policy") or "") == "pragmatic_target_skeleton":
+                grounding_status = "pragmatic_target_skeleton"
+            elif evidence_gap_present and not generation_blocked_reason:
+                grounding_status = "partial_mechlib_with_evidence_gap"
+            elif generation_blocked_reason == "blocked_by_evidence_gap":
+                grounding_status = "partial_mechlib_with_evidence_gap"
             elif generation_blocked_reason:
                 grounding_status = generation_blocked_reason
             elif not skeleton_audit.audit_pass:
@@ -4108,7 +5723,11 @@ class ModuleB:
             elif interface_hypotheses:
                 grounding_status = "partial_mechlib_with_model_gaps"
             elif gap_laws:
-                grounding_status = "gap_schema_only"
+                grounding_status = (
+                    "gap_schema_only"
+                    if _has_schema_only_gap_law(gap_laws)
+                    else "verified_decl_uninstantiated"
+                )
             elif verified_decls:
                 grounding_status = "verified_decl_bound"
             else:
@@ -4129,7 +5748,13 @@ class ModuleB:
                 if prop
             ]
             header = _minimal_header(evidence_bindings=evidence_bindings, verified_decls=verified_decls)
-            parse_ok = bool(skeleton_audit.audit_pass and generation_blocked_reason is None)
+            parse_ok = bool(
+                skeleton_audit.audit_pass
+                and (
+                    generation_blocked_reason is None
+                    or generation_blocked_reason == "blocked_by_evidence_gap"
+                )
+            )
             out.append(
                 TheoremSkeletonCandidate(
                     sample_id=grounding.sample_id,
@@ -4150,12 +5775,13 @@ class ModuleB:
                     schema_refs=[],
                     alias_refs=[],
                     grounding_status=grounding_status,
-                    gap_schema_only=bool(gap_laws),
+                    gap_schema_only=_has_schema_only_gap_law(gap_laws),
                     parse_ok=parse_ok,
                     raw_response=raw,
                     error=error,
                     round_index=round_index,
                     source_round_index=(round_index - 1) if round_index > 0 else None,
+                    grounding_level=grounding_status,
                     hypothesis_provenance=hypothesis_provenance,
                     model_ir_digest=_model_ir_digest(model_ir),
                     evidence_bindings=list(evidence_bindings),
@@ -4191,6 +5817,7 @@ class ModuleB:
                     excluded_hypotheses=excluded_hypotheses,
                     generation_blocked_reason=generation_blocked_reason,
                     ignored_llm_theorem_decl=ignored_llm_theorem_decl,
+                    formula_normalization_trace=formula_normalization_trace,
                 )
             )
         return out

@@ -7,7 +7,7 @@ __TASK_F_SOLUTION_RENDERER__
 3. 不要新增物理定律。
 4. 不要修改最终答案。
 5. 不要隐藏 gap、partial、legacy/no-audit 或 proof_failed 状态。
-6. 只使用 renderer_plan / SolutionTrace 中的步骤、公式和验证状态。优先使用 renderer_plan；SolutionTrace 只作为追溯依据。
+6. 只使用 renderer_plan / solution_trace_summary 中的步骤、公式和验证状态。优先使用 renderer_plan；solution_trace_summary 只作为追溯依据。
 7. 不要输入、依赖或复述完整 Lean proof、完整 MechLib context、完整 theorem corpus、完整 raw_response。
 
 风格要求：
@@ -17,6 +17,8 @@ __TASK_F_SOLUTION_RENDERER__
 4. 如果 renderer_plan 没有某个中间公式，不要补写该公式。
 5. 不要把 target_display 直接作为“目标公式”抄在开头；开头只说明“本题要求求出/证明”的量或关系。
 6. 公式编号应服务于解题叙述，例如“得到 ... (1)”“联立 (1)(2)”。不要暴露 step_id、verified_decl、source_artifacts 等内部字段名。
+7. 可以把 renderer_plan.symbol_intro、numbered_equations[].narrative_intro 和 algebra_exposition[].text 改写成更自然的中文，但不能改变其公式和验证含义。
+8. 如果 renderer_plan 给出了 modeling_notes，可以翻译成必要的受力分析、正方向和建模说明；不要照抄英文。
 
 输出内容必须包含：
 1. 题意与符号说明

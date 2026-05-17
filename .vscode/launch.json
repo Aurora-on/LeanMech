@@ -5,6 +5,7 @@
       "name": "Pipeline: Run Selected Config (Terminal)",
       "type": "python",
       "request": "launch",
+      "python": "${workspaceFolder}/.venv/bin/python",
       "module": "mech_pipeline.cli",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
@@ -28,6 +29,7 @@
       "name": "Pipeline: 4-Sample Real API (Terminal)",
       "type": "python",
       "request": "launch",
+      "python": "${workspaceFolder}/.venv/bin/python",
       "module": "mech_pipeline.cli",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
@@ -42,9 +44,9 @@
       "args": [
         "run",
         "--config",
-        "configs/mechanics73_plus3_proxy_gpt54_seed2026033001.yaml",
+        "configs/local_mac_gpt54_physlib_mechlib.yaml",
         "--sample-concurrency",
-        "4"
+        "1"
       ]
     }
   ],
@@ -53,8 +55,9 @@
       "id": "pipelineConfig",
       "type": "pickString",
       "description": "Choose pipeline config",
-      "default": "configs/default_mechanics73_openai.yaml",
+      "default": "configs/local_mac_gpt54_physlib_mechlib.yaml",
       "options": [
+        "configs/local_mac_gpt54_physlib_mechlib.yaml",
         "configs/default_mechanics73_openai.yaml",
         "configs/mechanics73_plus3_proxy_gpt54_seed2026033001.yaml",
         "configs/mechanics73_plus3_proxy_gpt54.yaml",
@@ -66,7 +69,7 @@
       "id": "sampleConcurrency",
       "type": "pickString",
       "description": "Choose sample concurrency",
-      "default": "4",
+      "default": "1",
       "options": [
         "1",
         "2",

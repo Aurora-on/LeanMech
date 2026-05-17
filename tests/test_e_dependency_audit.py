@@ -123,6 +123,39 @@ exact gap_law_solution
     assert audit.fully_mechlib_verified is False
 
 
+def test_dependency_audit_classifies_blocked_obligations_as_gap_assisted() -> None:
+    context = ProofContext(
+        sample_id="s1",
+        candidate_id="c1",
+        theorem_decl="theorem c1 : True",
+        lean_header="import MechLib",
+        obligation_replay_blocked=[
+            ProofObligationReplayItem(
+                obligation_id="blocked1",
+                kind="law_to_equation",
+                from_hypothesis=None,
+                must_use="MechLib.Bad.Extractor",
+                formal_claim="x = y",
+                produced_fact_name="h_blocked",
+                replay_status="blocked",
+                error="missing_proof_friendly_extractor",
+            )
+        ],
+    )
+
+    audit = audit_proof_dependencies(
+        proof_context=context,
+        proof_body="exact True.intro",
+        final_replay_pass=True,
+    )
+
+    assert audit.classification == "gap_assisted_success"
+    assert audit.gap_laws_used is True
+    assert audit.fully_mechlib_verified is False
+    assert audit.required_verified_decls == []
+    assert audit.missing_required_decls == []
+
+
 def test_dependency_audit_classifies_partial_mechlib_verified() -> None:
     proof = f"""
 have h_obl_1 : Fnet1.val = m1.val * a.val := by

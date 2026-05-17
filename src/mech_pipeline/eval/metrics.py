@@ -9,6 +9,10 @@ MINIMAL_SKELETON_METRIC_KEYS = (
     "model_ir_success_rate",
     "evidence_binding_success_rate",
     "verified_binding_rate",
+    "retrieved_verified_decl_rate",
+    "instantiated_model_predicate_binding_rate",
+    "extractor_binding_rate",
+    "slot_order_binding_rate",
     "gap_schema_only_rate",
     "sketch_audit_pass_rate",
     "skeleton_generation_success_rate",
@@ -281,12 +285,36 @@ def _minimal_skeleton_metrics(
     binding_total = len(evidence_rows)
     binding_ok = sum(1 for row in evidence_rows if str(row.get("binding_status") or "") == "ok")
     verified_bindings = sum(1 for row in evidence_rows if _row_bool(row, "proof_fact_allowed"))
+    retrieved_verified_decls = sum(1 for row in evidence_rows if str(row.get("verified_decl") or "").strip())
+    slot_order_bindings = sum(
+        1 for row in evidence_rows if isinstance(row.get("slot_order"), list) and bool(row.get("slot_order"))
+    )
+    extractor_bindings = sum(
+        1
+        for row in evidence_rows
+        if any(
+            token in " ".join(
+                str(row.get(key) or "").lower()
+                for key in ("binding_id", "verified_decl", "planning_schema", "notes")
+            )
+            for token in ("extract", "extractor", "to_", "hasderivat", "hasvelocity", "hasacceleration")
+        )
+    )
     gap_bindings = sum(1 for row in evidence_rows if str(row.get("binding_status") or "") == "gap_schema_only")
+    instantiated_model_predicate_candidates = sum(
+        1
+        for row in skeleton_rows
+        if isinstance(row.get("model_predicate_bindings"), list) and bool(row.get("model_predicate_bindings"))
+    )
 
     return {
         "model_ir_success_rate": _safe_rate(len(model_ok_samples), sample_den),
         "evidence_binding_success_rate": _safe_rate(binding_ok, binding_total),
         "verified_binding_rate": _safe_rate(verified_bindings, binding_total),
+        "retrieved_verified_decl_rate": _safe_rate(retrieved_verified_decls, binding_total),
+        "instantiated_model_predicate_binding_rate": _safe_rate(instantiated_model_predicate_candidates, len(skeleton_rows)),
+        "extractor_binding_rate": _safe_rate(extractor_bindings, binding_total),
+        "slot_order_binding_rate": _safe_rate(slot_order_bindings, binding_total),
         "gap_schema_only_rate": _safe_rate(gap_bindings, binding_total),
         "sketch_audit_pass_rate": _safe_rate(len(sketch_audit_pass_samples), sample_den),
         "skeleton_generation_success_rate": _safe_rate(len(skeleton_ok_samples), sample_den),

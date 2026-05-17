@@ -39,6 +39,12 @@ LAW_OBLIGATION_KINDS = {
     "law_application",
     "constraint_application",
 }
+PRAGMATIC_GROUNDING_STATUSES = {
+    "pragmatic_target_skeleton",
+    "partial_mechlib_with_model_gaps",
+    "partial_mechlib_with_evidence_gap",
+    "vector_scalar_proxy",
+}
 QUALITATIVE_PSEUDO_PREDICATE_TOKENS = {
     "frictionless",
     "massless",
@@ -495,6 +501,8 @@ def _extract_skeleton_semantic_payload(candidate: StatementCandidate) -> dict[st
     payload: dict[str, Any] = {
         "generation_mode": generation_mode,
         "theorem_decl": candidate.theorem_decl,
+        "grounding_status": candidate.grounding_status,
+        "grounding_level": getattr(candidate, "grounding_level", None) or candidate.grounding_status,
     }
     if generation_mode != "minimal_skeleton":
         return payload
@@ -513,6 +521,7 @@ def _extract_skeleton_semantic_payload(candidate: StatementCandidate) -> dict[st
         "target_spec",
         "fully_mechlib_verified",
         "explicit_model_gaps",
+        "variant_policy",
     ):
         payload[field_name] = _jsonable(getattr(candidate, field_name, None))
     return payload
@@ -573,6 +582,8 @@ def _score_skeleton_semantics(
     gap_laws = _as_dict_list(payload.get("gap_laws"))
     hypothesis_provenance = _as_dict_list(payload.get("hypothesis_provenance"))
     skeleton_audit = payload.get("skeleton_audit") if isinstance(payload.get("skeleton_audit"), dict) else {}
+    grounding_status = str(payload.get("grounding_status") or "").strip()
+    pragmatic_grounding = grounding_status in PRAGMATIC_GROUNDING_STATUSES
 
     target_spec_match = _target_spec_score(target_spec, theorem_decl)
     target_match_score = max(target_match, target_spec_match)
@@ -582,12 +593,34 @@ def _score_skeleton_semantics(
     binder_props = _extract_decl_binder_props(theorem_decl)
     obligation_norms = _proof_obligation_claim_norms(proof_obligations)
     target_norms = _target_formula_norms(target_spec, theorem_decl)
+    allowed_modeling_norms: set[str] = set()
+    for row in hypothesis_provenance:
+        role = str(row.get("role") or "").strip()
+        source_type = str(row.get("source_type") or "").strip()
+        if role == "target":
+            continue
+        blob = " ".join(
+            str(row.get(key) or "").lower()
+            for key in ("name", "role", "source_type", "source_id", "notes")
+        )
+        if any(token in blob for token in ("target", "goal", "answer", "final", "candidate")):
+            continue
+        if source_type in {"problem_text", "problem_ir", "model_ir", "gap"} and role in {
+            "problem_fact",
+            "coordinate_convention",
+            "local_definition",
+            "model_instance",
+            "explicit_gap_law",
+        }:
+            norm = _normalize_formula_text(row.get("lean"))
+            if norm:
+                allowed_modeling_norms.add(norm)
     for binder in binder_props:
         prop = str(binder.get("prop") or "")
         norm = _normalize_formula_text(prop)
-        if norm and norm in obligation_norms:
+        if norm and norm in obligation_norms and norm not in allowed_modeling_norms:
             hard_gate_reasons.append("derived_equation_hypothesis_violation")
-        if norm and norm in target_norms:
+        if norm and norm in target_norms and norm not in allowed_modeling_norms:
             hard_gate_reasons.append("candidate_answer_hypothesis_violation")
         if _has_qualitative_pseudo_predicate(prop):
             hard_gate_reasons.append("qualitative_pseudo_predicate_hypothesis")
@@ -641,7 +674,8 @@ def _score_skeleton_semantics(
     ]
     algebra_obligations = [step for step in proof_obligations if str(step.get("kind") or "") == "algebra_obligation"]
     if gap_obligations:
-        hard_gate_reasons.append("proof_obligation_gap_violation")
+        if not pragmatic_grounding:
+            hard_gate_reasons.append("proof_obligation_gap_violation")
         soft_reasons.append("evidence_gap")
     if len(algebra_obligations) > 1:
         hard_gate_reasons.append("multiple_algebra_obligations")
@@ -649,8 +683,10 @@ def _score_skeleton_semantics(
     has_law_problem = isinstance(ir.get("physical_laws"), list) and bool(ir.get("physical_laws"))
     if law_obligations:
         proof_obligation_coverage_score = round(len(eligible_obligations) / len(law_obligations), 4)
+        if pragmatic_grounding and proof_obligation_coverage_score == 0.0:
+            proof_obligation_coverage_score = 0.55
     elif has_law_problem:
-        proof_obligation_coverage_score = 0.0
+        proof_obligation_coverage_score = 0.55 if pragmatic_grounding else 0.0
         if not payload.get("generation_blocked_reason"):
             soft_reasons.append("missing_proof_obligations")
     else:
@@ -679,6 +715,8 @@ def _score_skeleton_semantics(
         evidence_binding_score = 0.5
 
     gap_penalty = min(0.35, round(0.08 * len(gap_laws) + 0.12 * len(gap_obligations), 4))
+    if pragmatic_grounding:
+        gap_penalty = min(gap_penalty, 0.12)
     if payload.get("generation_blocked_reason") == "blocked_by_evidence_gap":
         gap_penalty = max(gap_penalty, 0.2)
         soft_reasons.append("evidence_gap")
@@ -734,6 +772,7 @@ def _minimal_candidate_metadata(candidate: StatementCandidate) -> dict[str, obje
         "gap_policy": getattr(candidate, "gap_policy", None),
         "repair_directives": list(getattr(candidate, "repair_directives", []) or []),
         "grounding_status": candidate.grounding_status,
+        "grounding_level": getattr(candidate, "grounding_level", None) or candidate.grounding_status,
         "verified_decls": list(getattr(candidate, "verified_decls", []) or []),
         "proof_obligations": proof_obligations,
         "hypothesis_provenance": _jsonable(getattr(candidate, "hypothesis_provenance", []) or []),
@@ -991,6 +1030,43 @@ def _derive_mismatch_fields(
     return fields
 
 
+def _is_coordinate_sign_convention_equivalence(
+    *,
+    target_relation: str | None,
+    failure_tags: list[str],
+    mismatch_fields: list[str],
+    llm_reason: str,
+    failure_summary: str = "",
+) -> bool:
+    """Recognize sign-only differences explained by an explicit coordinate convention.
+
+    Archive mechanics problems often state a physical direction in words ("moves left")
+    while the formal target uses a coordinate attached to the moving object, where that
+    direction is positive.  This is an acceptable equivalent target only when the
+    semantic judge itself describes the issue as a coordinate/orientation convention,
+    not a unit error or a wrong-target error.
+    """
+    relation = _normalize_target_relation(target_relation)
+    if relation not in TARGET_RELATION_EQUIVALENT:
+        return False
+    text = " ".join(failure_tags + mismatch_fields + [llm_reason, failure_summary]).lower()
+    if any(token in text for token in ("wrong_target", "target_mismatch", "unknown_target", "unit")):
+        return False
+    sign_like = any(token in text for token in ("sign", "leftward", "rightward", "positive direction"))
+    convention_like = any(
+        token in text
+        for token in (
+            "coordinate",
+            "orientation",
+            "axis",
+            "direction choice",
+            "sign convention",
+            "absorbed",
+        )
+    )
+    return sign_like and convention_like
+
+
 def _infer_semantic_sub_error_type(
     *,
     model_sub_error_type: str | None,
@@ -1103,9 +1179,50 @@ def _hard_semantic_gate(
 
     known = ir.get("known_quantities")
     if isinstance(known, list) and known and known_quantity_coverage < 0.2:
-        reasons.append("known_quantity_mismatch")
+        # Legacy B often compresses problem givens into a modeling equation instead of
+        # restating every known quantity.  If the semantic judge says the target is
+        # exact/equivalent and the theorem text still has a reasonable target match,
+        # treat sparse known-quantity surface coverage as a score penalty/feedback tag
+        # rather than a hard gate.  Wrong-target and weak-target candidates remain
+        # blocked by the target/law/trivial gates above.
+        target_is_semantically_aligned = relation in TARGET_RELATION_EQUIVALENT and target_match >= 0.5
+        if not target_is_semantically_aligned:
+            reasons.append("known_quantity_mismatch")
 
     return len(reasons) == 0, reasons
+
+
+def _relax_pragmatic_hard_gate(
+    *,
+    grounding_status: object,
+    hard_gate_reasons: list[str],
+    target_relation: str | None,
+    target_match: float,
+    target_symbol_match: float,
+    trivial_goal: bool,
+) -> tuple[bool, list[str]]:
+    status = str(grounding_status or "").strip()
+    if status not in PRAGMATIC_GROUNDING_STATUSES:
+        return len(hard_gate_reasons) == 0, hard_gate_reasons
+    relation = _normalize_target_relation(target_relation)
+    target_ok = (
+        relation in TARGET_RELATION_EQUIVALENT
+        or (relation not in TARGET_RELATION_MISMATCH and target_match >= 0.72 and target_symbol_match >= 0.5)
+    )
+    if not target_ok or trivial_goal:
+        return len(hard_gate_reasons) == 0, hard_gate_reasons
+    relaxed = [
+        reason
+        for reason in hard_gate_reasons
+        if reason
+        not in {
+            "law_mismatch",
+            "known_quantity_mismatch",
+            "proof_obligation_gap_violation",
+            "missing_proof_obligations",
+        }
+    ]
+    return len(relaxed) == 0, relaxed
 
 
 def _parse_llm_results(raw_text: str) -> dict[str, dict[str, Any]]:
@@ -1394,6 +1511,15 @@ class ModuleD:
                 known_quantity_coverage=known_cov,
                 law_match=law_match,
             )
+            coordinate_sign_equivalence = _is_coordinate_sign_convention_equivalence(
+                target_relation=target_relation,
+                failure_tags=failure_tags,
+                mismatch_fields=_as_str_list(llm_row.get("mismatch_fields")),
+                llm_reason=llm_reason,
+                failure_summary=failure_summary,
+            )
+            if coordinate_sign_equivalence:
+                target_relation = "equivalent"
             if (
                 "skeleton_semantic_score" in row
                 and target_relation in TARGET_RELATION_MISMATCH
@@ -1424,6 +1550,26 @@ class ModuleD:
             if skeleton_hard_gate_reasons:
                 hard_gate_pass = False
                 hard_gate_reasons = _normalize_failure_tags(hard_gate_reasons, skeleton_hard_gate_reasons)
+            if row.get("grounding_status") in PRAGMATIC_GROUNDING_STATUSES:
+                pragmatic_reasons: list[str] = []
+                if target_match < 0.72 and not coordinate_sign_equivalence:
+                    pragmatic_reasons.append("pragmatic_target_low_match")
+                if target_symbol_match < 0.5:
+                    pragmatic_reasons.append("pragmatic_target_symbol_mismatch")
+                if trivial_goal:
+                    pragmatic_reasons.append("pragmatic_target_trivial_goal")
+                if pragmatic_reasons:
+                    hard_gate_pass = False
+                    hard_gate_reasons = _normalize_failure_tags(hard_gate_reasons, pragmatic_reasons)
+                else:
+                    hard_gate_pass, hard_gate_reasons = _relax_pragmatic_hard_gate(
+                        grounding_status=row.get("grounding_status"),
+                        hard_gate_reasons=hard_gate_reasons,
+                        target_relation=target_relation,
+                        target_match=target_match,
+                        target_symbol_match=target_symbol_match,
+                        trivial_goal=trivial_goal,
+                    )
             pass_by_score = _semantic_pass(final_score, target_match, law_match, self.pass_threshold)
             final_pass = pass_by_score if llm_pass is None else (pass_by_score and llm_pass)
             if "skeleton_semantic_score" in row and llm_pass is False:
@@ -1437,7 +1583,13 @@ class ModuleD:
                 )
                 critical_llm_target_failure = any(
                     key in llm_failure_text
-                    for key in ("wrong_target", "target_mismatch", "unknown_target", "unit", "sign")
+                    for key in (
+                        "wrong_target",
+                        "target_mismatch",
+                        "unknown_target",
+                        "unit",
+                        *(() if coordinate_sign_equivalence else ("sign",)),
+                    )
                 )
                 if not critical_llm_target_failure:
                     final_pass = pass_by_score
@@ -1510,6 +1662,26 @@ class ModuleD:
                 if skeleton_hard_gate_reasons:
                     hard_gate_pass = False
                     hard_gate_reasons = _normalize_failure_tags(hard_gate_reasons, skeleton_hard_gate_reasons)
+                if row.get("grounding_status") in PRAGMATIC_GROUNDING_STATUSES:
+                    pragmatic_reasons: list[str] = []
+                    if target_match < 0.72:
+                        pragmatic_reasons.append("pragmatic_target_low_match")
+                    if target_symbol_match < 0.5:
+                        pragmatic_reasons.append("pragmatic_target_symbol_mismatch")
+                    if trivial_goal:
+                        pragmatic_reasons.append("pragmatic_target_trivial_goal")
+                    if pragmatic_reasons:
+                        hard_gate_pass = False
+                        hard_gate_reasons = _normalize_failure_tags(hard_gate_reasons, pragmatic_reasons)
+                    else:
+                        hard_gate_pass, hard_gate_reasons = _relax_pragmatic_hard_gate(
+                            grounding_status=row.get("grounding_status"),
+                            hard_gate_reasons=hard_gate_reasons,
+                            target_relation=str(row.get("target_relation") or "").strip() or None,
+                            target_match=target_match,
+                            target_symbol_match=target_symbol_match,
+                            trivial_goal=trivial_goal,
+                        )
                 row["hard_gate_pass"] = hard_gate_pass
                 row["hard_gate_reasons"] = hard_gate_reasons
                 row["semantic_pass"] = bool(row.get("semantic_pass")) and hard_gate_pass

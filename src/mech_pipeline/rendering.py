@@ -53,6 +53,16 @@ def build_revision_feedback(
     }
     feedback_rows: list[dict[str, object]] = []
     compile_pass_count = sum(1 for row in compile_results if row.compile_pass)
+    revision_directives: list[str] = []
+    if retry_reason == "no_compile_pass" or compile_pass_count == 0:
+        revision_directives.extend(
+            [
+                "compile_repair_must_preserve_mechanics_target",
+                "replace_unresolved_library_symbols_with_explicit_real_level_problem_or_definition_hypotheses",
+                "do_not_replace_with_pure_arithmetic_identity_or_tuple_equality",
+                "keep_target_objects_functions_and_law_semantics_in_theorem_statement",
+            ]
+        )
     for candidate in candidates:
         compile_row = compile_map.get(candidate.candidate_id)
         skeleton_audit = getattr(candidate, "skeleton_audit", None)
@@ -135,8 +145,27 @@ def build_revision_feedback(
             row["semantic_note"] = "semantic_not_evaluated"
         feedback_rows.append(row)
 
+    if any(
+        str(claim).startswith(("unsupported_library_symbol:", "unknown_library_symbol_in_decl:"))
+        for candidate in candidates
+        for claim in candidate.unsupported_claims
+    ):
+        revision_directives.append("exclude_unsupported_library_symbols_but_preserve_their_physical_role")
+    if semantic.sub_error_type == "trivial_goal" or any(
+        "trivial" in str(item.get("sub_error_type") or item.get("failure_tags") or "").lower()
+        for item in semantic.ranking
+        if isinstance(item, dict)
+    ):
+        revision_directives.append("avoid_trivial_or_assumption_replay_goal")
+
+    unique_directives: list[str] = []
+    for directive in revision_directives:
+        if directive not in unique_directives:
+            unique_directives.append(directive)
+
     payload = {
         "retry_reason": retry_reason,
+        "revision_directives": unique_directives,
         "candidate_count": len(candidates),
         "compile_pass_count": compile_pass_count,
         "semantic_pass": semantic.semantic_pass,

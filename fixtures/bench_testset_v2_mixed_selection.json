@@ -1,0 +1,382 @@
+{
+  "name": "bench_testset_v2_mixed",
+  "source_markdown": "/Users/weizhixin/Library/Mobile Documents/iCloud~md~obsidian/Documents/测试集v1.md",
+  "count_total": 33,
+  "count_lean4phys": 11,
+  "count_archive_part1": 16,
+  "notes": [
+    "Domain headings in the source markdown were ignored.",
+    "Long-form problems were matched to LeanPhysBench_v0 by problem text and stored as original Lean4Phys rows.",
+    "Archive ids were converted from output_checked_part1 markdown after leakage cutoff.",
+    "Archive images are stored as paths relative to dataset.local_archive.root and are consumed by MixedV2DatasetAdapter as CanonicalSample.image_path when present.",
+    "Archive rows without image links are allowed to run as text-only archive samples.",
+    "No archive image_description text is used for v2 archive samples.",
+    "Archive part2 ids were appended manually from output_checked_part2 markdown after leakage cutoff.",
+    "Archive part2 images are stored as paths relative to dataset.local_archive.root and are consumed by MixedV2DatasetAdapter as CanonicalSample.image_path when present."
+  ],
+  "items": [
+    {
+      "order": 1,
+      "source_kind": "lean4phys",
+      "source_ref": "university_mechanics_Mechanics_3_University",
+      "level": "college_level",
+      "category": "mechanics",
+      "informal_preview": "Question 3 Suppose an object is moving along a straight line, find its instantaneous velocity as a function of time during the time period 0 ≤ 𝑡 ≤ 4, if its position 𝑥(𝑡) during the same period is given by: 𝑥(𝑡) = 3𝑡^2 −"
+    },
+    {
+      "order": 2,
+      "source_kind": "lean4phys",
+      "source_ref": "university_mechanics_Mechanics_16_University",
+      "level": "college_level",
+      "category": "mechanics",
+      "informal_preview": "Question 16 A robotic vehicle, or rover, is exploring the surface of Mars. The stationary Mars lander is the origin of coordinates, and the surrounding Martian surface lies in the xy-plane. The rover, which we represent "
+    },
+    {
+      "order": 3,
+      "source_kind": "lean4phys",
+      "source_ref": "university_mechanics_Mechanics_31_University",
+      "level": "college_level",
+      "category": "mechanics",
+      "informal_preview": "Quesiton 31 You throw a ball vertically upward from the roof of a tall building. The ball leaves your hand at a point even with the roof railing withan upward speed of 15.0 m/s; the ball is then in free fall. (We ignorea"
+    },
+    {
+      "order": 4,
+      "source_kind": "lean4phys",
+      "source_ref": "competition_mechanics_Ch2_Q2",
+      "level": "competition_hard",
+      "category": "mechanics",
+      "informal_preview": "EXAMPLE Ch2_Q2 Q: A thin rod rotates about a vertical axis passing through its support with constant angular velocity \\(\\omega\\). The rod makes an angle \\(\\alpha\\) with the horizontal. A small ring of mass \\(m\\) can slid"
+    },
+    {
+      "order": 5,
+      "source_kind": "lean4phys",
+      "source_ref": "university_mechanics_Mechanics_76_University",
+      "level": "college_level",
+      "category": "mechanics",
+      "informal_preview": "Question 76 You want to move a 500 N crate across a level floor. To start the crate moving, you have to pull with a 230 N horizontal force. Once the crate starts to move, you can keep it moving at constant velocity with "
+    },
+    {
+      "order": 6,
+      "source_kind": "lean4phys",
+      "source_ref": "university_mechanics_Mechanics_74_University",
+      "level": "college_level",
+      "category": "mechanics",
+      "informal_preview": "Question 74 You want to move a 500 N crate across a level floor. To start the crate moving, you have to pull with a 230 N horizontal force. Once the crate starts to move, you can keep it moving at constant velocity with "
+    },
+    {
+      "order": 7,
+      "source_kind": "lean4phys",
+      "source_ref": "competition_mechanics_Ch2_Q1",
+      "level": "competition_hard",
+      "category": "mechanics",
+      "informal_preview": "EXAMPLE Ch2_Q1 Q: A uniform, massless rope is wrapped around a fixed cylinder; its two ends hang vertically with a heavier bucket of mass \\(M=1000\\ \\mathrm{kg}\\) on one end and a lighter bucket of mass \\(m=10\\ \\mathrm{kg"
+    },
+    {
+      "order": 8,
+      "source_kind": "lean4phys",
+      "source_ref": "university_mechanics_Mechanics_73_University",
+      "level": "college_level",
+      "category": "mechanics",
+      "informal_preview": "Question 73 an air-track glider with mass m1 moves on a level, frictionless air track in the physics lab. The glider is connected to a lab weight with mass m2 by a light, flexible, nonstretching string that passes over a"
+    },
+    {
+      "order": 9,
+      "source_kind": "lean4phys",
+      "source_ref": "university_mechanics_Mechanics_71_University",
+      "level": "college_level",
+      "category": "mechanics",
+      "informal_preview": "Question 71 A toboggan loaded with students (total weight $w$) slides down a snow-covered hill that slopes at a constant angle $\\alpha$. The toboggan is well waxed, so there is virtually no friction. What is its accelera"
+    },
+    {
+      "order": 10,
+      "source_kind": "lean4phys",
+      "source_ref": "competition_mechanics_Ch1_Q11",
+      "level": "competition_hard",
+      "category": "mechanics",
+      "informal_preview": "EXAMPLE Ch1_Q11 Q: Particles $A$ and $B$ start simultaneously from points $A$ and $B$, respectively. Particle $A$ moves with constant velocity $\\boldsymbol{v}_1$ along line $AB$, and particle $B$ moves with constant velo"
+    },
+    {
+      "order": 11,
+      "source_kind": "lean4phys",
+      "source_ref": "competition_mechanics_Ch3_Q1",
+      "level": "competition_hard",
+      "category": "mechanics",
+      "informal_preview": "EXAMPLE Ch3_Q1 Q: Two masses, $m_1$ and $m_2$, hang vertically from the lower end of a spring with stiffness $k$. After reaching equilibrium, $m_2$ is suddenly removed. Prove that the maximum velocity of $m_1$ after $m_2"
+    },
+    {
+      "order": 12,
+      "source_kind": "archive_part1",
+      "source_ref": "2-3",
+      "checked_path": "archive/output_checked_part1/2-3.md",
+      "image_paths": [
+        "images/faf99fe74294ed68d53c95097890aa985a79907f42092bc877edc946e21dac5c.jpg"
+      ],
+      "run_mode": "image_text",
+      "redacted_preview": "2-3火箭沿与水平线成 $\\beta=25^{\\circ}$ 角的方向作匀速直线运动，如图所示。火箭的推力 $F_{_1}=100~\\mathrm{kN}_{\\perp}$ 与运动方向成 $\\theta=5^{\\circ}$ 角。火箭重 $P=200\\,\\mathrm{~kN~}$ 求空气动力$\\boldsymbol{F}_{2}$ 和它与飞行方向的交角 $\\gamma$",
+      "contains_image_description_after_redaction": false,
+      "contains_solution_marker_after_redaction": false
+    },
+    {
+      "order": 13,
+      "source_kind": "archive_part1",
+      "source_ref": "9-1",
+      "checked_path": "archive/output_checked_part1/9-1.md",
+      "image_paths": [
+        "images/9b393223d9565c529a7ede867d9f857e95c192c2f971c3c6db302b49046d6809.jpg"
+      ],
+      "run_mode": "image_text",
+      "redacted_preview": "9-1如图a所示一汽车转过半径为 $R$ 的圆弯，而车道向圆心方向的倾斜角为 $\\theta\\,,$ 车胎与道面间的静摩擦因数为 $f_{\\mathrm{s}}$ 。已知 $R=20\\,\\mathrm{~m~},\\tan\\theta=2f_{\\circ}=0.5$ 。求汽车经过弯道时的最大速度。  \n\n![](images/9b393223d9565c529a7ede867d9f857e95c192c2f971c3c6db302b490",
+      "contains_image_description_after_redaction": false,
+      "contains_solution_marker_after_redaction": false
+    },
+    {
+      "order": 14,
+      "source_kind": "archive_part1",
+      "source_ref": "9-11",
+      "checked_path": "archive/output_checked_part1/9-11.md",
+      "image_paths": [],
+      "run_mode": "text_only",
+      "redacted_preview": "9-11一物体质量 $m=10~\\mathrm{kg}$ ，在变力 $F\\,{=}\\,100\\,(\\,1\\,{-}t\\,)~(\\$ $\\boldsymbol{F}$ 的单位为 $\\mathrm{~N~},t$ 的单位为s）作用下运动。设物体初速度为 $v_{0}=0.2\\,\\mathrm{~m/s}$ ，开始时，力的方向与速度方向相同。问经过多少时间后物体速度为零，此前走了多少路程？",
+      "contains_image_description_after_redaction": false,
+      "contains_solution_marker_after_redaction": false
+    },
+    {
+      "order": 15,
+      "source_kind": "archive_part1",
+      "source_ref": "5-10",
+      "checked_path": "archive/output_checked_part1/5-10.md",
+      "image_paths": [],
+      "run_mode": "text_only",
+      "redacted_preview": "5-10点沿空间曲线运动，在点 $M$ 处其速度 $v=4i+3j$ （单位为 $\\mathrm{m/s}$ ），加速度$^a$ 与速度 $\\boldsymbol{v}$ 的夹角 $\\beta\\!=\\!30^{\\circ}$ ，且 $a=10\\,\\;\\mathrm{m/s}^{2}$ 。试计算轨迹在该点密切面内的曲率半径 $\\rho$ 和切向加速度 $a_{\\scriptscriptstyle1}$",
+      "contains_image_description_after_redaction": false,
+      "contains_solution_marker_after_redaction": false
+    },
+    {
+      "order": 16,
+      "source_kind": "archive_part1",
+      "source_ref": "6-6",
+      "checked_path": "archive/output_checked_part1/6-6.md",
+      "image_paths": [
+        "images/1ea198296cb72bac83e8a353cbd0f5226d78166b51088a2dea2401d42f00fbf0.jpg"
+      ],
+      "run_mode": "image_text",
+      "redacted_preview": "6-6升降机装置由半径为 $\\scriptstyle{R}$ 的鼓轮带动，如图所示。轮与绳子之间无滑动。被升降物体的运动方程为 $x=a t^{2}\\,,$ 求任意瞬时，鼓轮轮缘上点 $M$ 的全加速度的大小。  \n\n\n![](images/1ea198296cb72bac83e8a353cbd0f5226d78166b51088a2dea2401d42f00fbf0.jpg)  \n题6-6图",
+      "contains_image_description_after_redaction": false,
+      "contains_solution_marker_after_redaction": false
+    },
+    {
+      "order": 17,
+      "source_kind": "archive_part1",
+      "source_ref": "7-1",
+      "checked_path": "archive/output_checked_part1/7-1.md",
+      "image_paths": [],
+      "run_mode": "text_only",
+      "redacted_preview": "7-1如图所示，光点 $M$ 沿 $y$ 轴作谐振动，其运动方程为  \n\n$$\nx\\,=\\,0\\,,\\qquad y\\,=\\,a\\cos\\left(\\,k t\\,+\\,\\beta\\,\\right)\n$$  \n\n如将点 $M$ 投影到感光记录纸上，此纸以等速 $v_{c}$ 向左运动。求点 $M$ 在记录纸上的轨迹。",
+      "contains_image_description_after_redaction": false,
+      "contains_solution_marker_after_redaction": false
+    },
+    {
+      "order": 18,
+      "source_kind": "archive_part1",
+      "source_ref": "10-2",
+      "checked_path": "archive/output_checked_part1/10-2.md",
+      "image_paths": [],
+      "run_mode": "text_only",
+      "redacted_preview": "10-2跳伞者质量为 $^{60}\\mathrm{~kg},$ 自停留在高空中的直升飞机中跳出，落下$100\\,\\mathrm{~m~}$ 后，将降落伞打开。设开伞前的空气阻力略去不计，伞重不计，开伞后所受的阻力不变，经 $5\\,\\mathrm{~s~}$ 后跳伞者的速度减为 $4.3\\,\\mathrm{~m/s}$ 。求阻力的大小。",
+      "contains_image_description_after_redaction": false,
+      "contains_solution_marker_after_redaction": false
+    },
+    {
+      "order": 19,
+      "source_kind": "archive_part1",
+      "source_ref": "10-4",
+      "checked_path": "archive/output_checked_part1/10-4.md",
+      "image_paths": [
+        "images/45c11ecf1898090a8040a050a6f21d871e67cffb3a486d17f43d9a03e8a79d31.jpg"
+      ],
+      "run_mode": "image_text",
+      "redacted_preview": "10-4图示水平面上放一均质三棱柱A，在其斜面上又放一均质三棱柱 $B$ 两三棱柱的横截面均为直角三角形。三棱柱A的质量 $m_{A}$ 为三棱柱 $B$ 质量 $m_{B}$ 的3倍，其尺寸如图所示。设各处摩擦不计，初始时系统静止。求当三棱柱 $B$ 沿三棱柱A滑下接触到水平面时，三棱柱A移动的距离。",
+      "contains_image_description_after_redaction": false,
+      "contains_solution_marker_after_redaction": false
+    },
+    {
+      "order": 20,
+      "source_kind": "archive_part1",
+      "source_ref": "10-8",
+      "checked_path": "archive/output_checked_part1/10-8.md",
+      "image_paths": [],
+      "run_mode": "text_only",
+      "redacted_preview": "10-8在静止的小船上，一人自船头走到船尾，设人重 $P,$ 船重 $Q\\,,$ 船长L，水的阻力不计。求船的位移。",
+      "contains_image_description_after_redaction": false,
+      "contains_solution_marker_after_redaction": false
+    },
+    {
+      "order": 21,
+      "source_kind": "archive_part1",
+      "source_ref": "11-1",
+      "checked_path": "archive/output_checked_part1/11-1.md",
+      "image_paths": [],
+      "run_mode": "text_only",
+      "redacted_preview": "11-1质量为 $m$ 的点在平面 $O x y$ 内运动，其运动方程为  \n\n$$\nx\\,=\\,a\\cos\\,\\omega t\\,,\\qquad y\\,=\\,b\\sin\\,2\\omega t\n$$  \n\n其中， $\\boldsymbol{\\cdot}\\boldsymbol{a}\\,,\\boldsymbol{b}$ 和 $\\omega$ 为常量。求质点对原点 $o$ 的动量矩。",
+      "contains_image_description_after_redaction": false,
+      "contains_solution_marker_after_redaction": false
+    },
+    {
+      "order": 22,
+      "source_kind": "archive_part1",
+      "source_ref": "11-4",
+      "checked_path": "archive/output_checked_part1/11-4.md",
+      "image_paths": [
+        "images/5866cf2b402b3f5ae49b0ff48d68b1dd5a69b0c201e67944b5a223d521f13bee.jpg"
+      ],
+      "run_mode": "image_text",
+      "redacted_preview": "11-4小球A的质量为 $_{.m}$ ，连接在长 $l$ 的杆 $A B$ 上，并被放在盛有液体的容器内，如图所示。杆以初角速 $\\omega_{0}$ 绕铅垂轴 $O_{1}O_{2}$ 转动.液体  \n\n的阻力与小球质量和角速度的乘积 $m\\omega$ 成正比，即 $F=k m\\omega$ 其中 $k$ 是比例常数。问经过多少时间，角速度减为初角速度的一半？",
+      "contains_image_description_after_redaction": false,
+      "contains_solution_marker_after_redaction": false
+    },
+    {
+      "order": 23,
+      "source_kind": "archive_part1",
+      "source_ref": "11-9",
+      "checked_path": "archive/output_checked_part1/11-9.md",
+      "image_paths": [
+        "images/ae6272d15a27c91f41701ba060c87a57b935de52cb2cadd8244a8a1d0e28228c.jpg"
+      ],
+      "run_mode": "image_text",
+      "redacted_preview": "11-9图示通风机的转动部分以初角速度 $\\omega_{0}$ 绕中心轴转动，空气的阻力矩与角速度成正比，即 $M=k\\omega$ ，其中 $k$ 为常数。如转动部分对其轴的转动惯量为$J,$ 问经过多少时间其转动角速度减少为初角速度的一半？又在此时间内共转过多少转？",
+      "contains_image_description_after_redaction": false,
+      "contains_solution_marker_after_redaction": false
+    },
+    {
+      "order": 24,
+      "source_kind": "archive_part1",
+      "source_ref": "11-23",
+      "checked_path": "archive/output_checked_part1/11-23.md",
+      "image_paths": [
+        "images/7f45a8c69b89fd5489c216a1bca19e3728f0614789ca0da0679382c615eac83f.jpg"
+      ],
+      "run_mode": "image_text",
+      "redacted_preview": "11-23如图所示，一火箭装备两台发动机A和 $B$ 。为了校正火箭的航向，需加大发动机A的推力。火箭的质量为$10^{5}~\\mathrm{kg}$ ，可视为 $60\\,\\mathrm{~m~}$ 长的均质杆。在未增加推力时，各发动机的推力均为 $2\\times10^{3}~\\mathrm{kN}$ 。现要求火箭在1s内转1°，求发动机A所需增加的推力。",
+      "contains_image_description_after_redaction": false,
+      "contains_solution_marker_after_redaction": false
+    },
+    {
+      "order": 25,
+      "source_kind": "archive_part1",
+      "source_ref": "12-1",
+      "checked_path": "archive/output_checked_part1/12-1.md",
+      "image_paths": [
+        "images/91a2f00a0df76e97d4b4a9ee58cb51619f62b924adc0752293b398d264b8d7d5.jpg"
+      ],
+      "run_mode": "image_text",
+      "redacted_preview": "$^{12-1}$ 圆盘的半径 $r=0.5\\,\\mathrm{~m~}$ ，可绕水平轴 $o$ 转动。在绕过圆盘的绳上吊有两物块 $A\\,,B$ ，质量分别为 $m_{A}=3~\\mathrm{kg}$ $m_{B}=2~\\mathrm{kg}$ 。绳与盘之间无相对滑动。在圆盘上作用一力偶，力偶矩按 $M=4\\varphi$ 的规律变化（ $M$ 以 $\\mathrm{~N~}\\cdot\\mathrm{~m~}$ 计， $\\varph",
+      "contains_image_description_after_redaction": false,
+      "contains_solution_marker_after_redaction": false
+    },
+    {
+      "order": 26,
+      "source_kind": "archive_part1",
+      "source_ref": "12-7",
+      "checked_path": "archive/output_checked_part1/12-7.md",
+      "image_paths": [
+        "images/83cbaa99e148753aed9809640c29db9e5511d3d53a4f16d64f8340e1f0f7e1ba.jpg"
+      ],
+      "run_mode": "image_text",
+      "redacted_preview": "12-7图示曲柄连杆机构位于水平面内，曲柄重为 $P\\,,$ 长为 $r,$ 连杆重为 $Q\\,,$ 长为L，滑块重为G，曲柄和连杆可视为均质细长杆。今在曲柄上作用一不变的矩为 $M$ 的力偶，当 $\\angle B O A=90^{\\circ}$ 时，A点的速度为u。求当曲柄转至水平位置时A点的速度。  \n\n![](images/83cbaa99e148753aed9809640c29db9e5511d3d53a4f16d64f834",
+      "contains_image_description_after_redaction": false,
+      "contains_solution_marker_after_redaction": false
+    },
+    {
+      "order": 27,
+      "source_kind": "archive_part1",
+      "source_ref": "13-3",
+      "checked_path": "archive/output_checked_part1/13-3.md",
+      "image_paths": [
+        "images/c40a6eda4aa43da84cfb501f1cf00b7033ef78b9524593479a39b8078cdf354a.jpg"
+      ],
+      "run_mode": "image_text",
+      "redacted_preview": "13-3图a所示均质矩形块质量 $m_{1}=100~\\mathrm{kg}\\,,$ 置于平台车上。车质量为$m_{2}=50~\\mathrm{kg}\\,.$ 此车沿光滑的水平面运动。车和矩形块在一起由质量为 $m_{3}$ 的物体牵引，使之作加速运动。设物块与车之间的摩擦力足够阻止相互滑动，求能够使车加速运动的质量 $m_{3}$ 的最大值，以及此时车的加速度大小。  \n\n![](images/c40a6eda4aa43da84cfb",
+      "contains_image_description_after_redaction": false,
+      "contains_solution_marker_after_redaction": false
+    },
+    {
+      "order": 28,
+      "source_kind": "archive_part2",
+      "source_ref": "1-9",
+      "checked_path": "archive/output_checked_part2/1-9.md",
+      "image_paths": [
+        "images/42d9951d08e178a87a9b17ac7e7e2acb834044fda0c0c8b90215d139ba8e1c59.jpg"
+      ],
+      "run_mode": "image_text",
+      "redacted_preview": "$_{1-9}$ 已知图示曲线为旋轮线，其方程为  \n\n$$\nx=R\\left(\\ \\theta{\\mathrm{-sin}}\\ \\theta\\right),y=R\\left(\\ 1{\\mathrm{-cos}}\\ \\theta\\right)\n$$  \n\n一小环 $M$ 在重力作用下沿该光滑曲线运动，求小环的运动微分方程。  \n\n![](images/42d9951d08e178a87a9b17ac7e7e2acb834044fda0c0c8b90215d139ba8e1c59.jpg)  \n题1-9图",
+      "contains_image_description_after_redaction": false,
+      "contains_solution_marker_after_redaction": false
+    },
+    {
+      "order": 29,
+      "source_kind": "archive_part2",
+      "source_ref": "1-16",
+      "checked_path": "archive/output_checked_part2/1-16.md",
+      "image_paths": [
+        "images/5941baf54ffea15bb8e8f257a31f4095629436f2c7c9b7bb71f27d2663058656.jpg"
+      ],
+      "run_mode": "image_text",
+      "redacted_preview": "1-16设有一个与弹簧相连的滑块A，其质量为 $m_{\\textsc{l}},$ 它可沿光滑水平面无摩擦地来回滑动，弹簧的刚性系数为 $k$ 。在滑块A上又连一单摆，如图所示。摆长为 $l,B$ 的质量为 $m_{2}$ 。试列出该系统的运动微分方程。  \n\n![](images/5941baf54ffea15bb8e8f257a31f4095629436f2c7c9b7bb71f27d2663058656.jpg)  \n题1-16图",
+      "contains_image_description_after_redaction": false,
+      "contains_solution_marker_after_redaction": false
+    },
+    {
+      "order": 30,
+      "source_kind": "archive_part2",
+      "source_ref": "4-2",
+      "checked_path": "archive/output_checked_part2/4-2.md",
+      "image_paths": [
+        "images/e5fcdcbd6384139d8ab8a7b3c9e2d24c45d7ad8ff43ed5de6f3943040189e31d.jpg"
+      ],
+      "run_mode": "image_text",
+      "redacted_preview": "4-2一盘悬挂在弹簧上，如图所示。当盘上放质量为 $m_{\\parallel}$ 的物体时，作微幅振动，测得的周期为 $\\tau_{\\textsc{i}};$ 如盘上换一质量为 $m_{2}$ 的物体时，测得振动周期为 $\\tau_{2}$  \n\n求弹簧的刚度系数 $k$  \n\n![](images/e5fcdcbd6384139d8ab8a7b3c9e2d24c45d7ad8ff43ed5de6f3943040189e31d.jpg)  \n题4-2图",
+      "contains_image_description_after_redaction": false,
+      "contains_solution_marker_after_redaction": false
+    },
+    {
+      "order": 31,
+      "source_kind": "archive_part2",
+      "source_ref": "4-5",
+      "checked_path": "archive/output_checked_part2/4-5.md",
+      "image_paths": [
+        "images/04ddef09b015bdc4fd73d462205a3e78737ec4c05075cf745b2a104be1cc5ef4.jpg"
+      ],
+      "run_mode": "image_text",
+      "redacted_preview": "4-5质量为 $m$ 的小车在斜面上自高度 $h$ 处滑下，而与缓冲器相碰，如图所示。缓冲弹簧的刚度系数为k，斜面倾角为 $\\theta$ 。求小车碰着缓冲器后自由振动的周期与振幅。  \n\n![](images/04ddef09b015bdc4fd73d462205a3e78737ec4c05075cf745b2a104be1cc5ef4.jpg)  \n题4-5图",
+      "contains_image_description_after_redaction": false,
+      "contains_solution_marker_after_redaction": false
+    },
+    {
+      "order": 32,
+      "source_kind": "archive_part2",
+      "source_ref": "5-8",
+      "checked_path": "archive/output_checked_part2/5-8.md",
+      "image_paths": [
+        "images/33b0e424f0ec4d88c56143eb850b09daecffda049d9243b864e481e9c2154061.jpg"
+      ],
+      "run_mode": "image_text",
+      "redacted_preview": "5-8陀螺以等角速度 $\\omega_{\\parallel}$ 绕轴 $O B$ 转动，而轴 $O B$ 等速地画出一圆锥，如图所示。如陀螺的中心轴 $O B$ 绕轴OS每分钟转数为 $n,\\angle B O S=\\theta($ （常量），求陀螺的角速度 $\\omega$ 和角加速 $\\alpha$  \n\n![](images/33b0e424f0ec4d88c56143eb850b09daecffda049d9243b864e481e9c2154061.jpg)  \n题5-8图",
+      "contains_image_description_after_redaction": false,
+      "contains_solution_marker_after_redaction": false
+    },
+    {
+      "order": 33,
+      "source_kind": "archive_part2",
+      "source_ref": "6-6",
+      "checked_path": "archive/output_checked_part2/6-6.md",
+      "image_paths": [
+        "images/8360906ca5d15cdda588d5571727989f41e8d78ad6e6e32a8b6058a0da5b1e86.jpg"
+      ],
+      "run_mode": "image_text",
+      "redacted_preview": "6-6火箭起飞质量 $1~000~\\mathrm{kg}$ ，其中包括燃料质量 $900~\\mathrm{kg}$ ，在 $t=0$ 时，铅垂发射，已知燃料以 $10~\\mathrm{kg/s}$ 的速率消耗，并以相对速度 $2\\,\\,100\\,\\mathrm{~m/s}$ 喷出。求 $t=0\\,\\mathrm{~s~}$ $^{45}\\mathrm{~s~},90\\$ s时火箭的速度和加速度。  \n\n![](images/8360906ca5d15cdda588d5571727989f41e8d78ad6e6e32a8b6058a0da5b1e86.j",
+      "contains_image_description_after_redaction": false,
+      "contains_solution_marker_after_redaction": false
+    }
+  ],
+  "count_archive_part2": 6
+}

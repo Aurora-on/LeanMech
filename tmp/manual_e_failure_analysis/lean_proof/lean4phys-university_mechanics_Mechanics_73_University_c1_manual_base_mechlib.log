@@ -1,0 +1,9 @@
+backend=mechlib
+returncode=1
+
+STDOUT:
+/Users/weizhixin/AI4Mechanics/LeanMech/tmp/manual_e_failure_analysis/.pipeline1_tmp/proof/mechlib/lean4phys-university_mechanics_Mechanics_73_University_c1_manual_base.lean:30:15: error(lean.unknownIdentifier): Unknown identifier `h_m1_pos`
+
+
+STDERR:
+

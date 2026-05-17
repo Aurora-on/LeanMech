@@ -11,7 +11,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from mech_pipeline.knowledge.mechlib_structured import StructuredMechLibContext
 from mech_pipeline.prompting import load_template, render_template
 from mech_pipeline.prompt_views import compact_problem_ir, compact_structured_context
-from mech_pipeline.quantity_types import SUPPORTED_SI_QUANTITY_TYPES, normalize_quantity_lean_type
+from mech_pipeline.quantity_types import (
+    SUPPORTED_SI_QUANTITY_TYPES,
+    is_function_quantity_lean_type,
+    normalize_quantity_lean_type,
+)
 from mech_pipeline.response_parser import ResponseParseError, parse_json_model
 from mech_pipeline.types import (
     CanonicalTarget,
@@ -41,12 +45,18 @@ Rules:
 10. forbidden_as_assumption must include the target/goal and any derived or algebraic result that should not be assumed.
 11. For every variable, output quantity_annotations using the problem statement, units, and definitions. Do not infer from symbol spelling alone.
 12. Use only existing MechLib.SI quantity types. For angles use PhysAngle, not Angle. If no existing SI type fits, use Real with low confidence and explain why.
-13. If a quantity is a function of time or another variable, write its Lean type as a function type, e.g. Time -> Length, Time -> Speed, Time -> Acceleration. Do not put .val in bound-variable names.
-14. Output exactly one canonical_target. It is the only target B may use. It may be a closed-form equation, a relation, a component relation, or a property; do not force a closed form unless the problem asks for one.
+13. If a quantity is a scalar function of time, prefer MechLib's native Real-time fields: MechLib.Mechanics.Kinematics.ScalarTrajectory for position/length, MechLib.Mechanics.Kinematics.ScalarVelocityField for speed, and MechLib.Mechanics.Kinematics.ScalarAccelerationField for acceleration. For other time-dependent quantities, use Real -> <QuantityType>, not Time -> <QuantityType>. Do not put .val in bound-variable names.
+14. Output exactly one canonical_target. It is the only target B may use. It may be a closed-form equation, a pointwise function relation, a derivative/ODE relation, a component relation, or a property; do not force a closed form unless the problem asks for one.
 15. If the problem asks for multiple required outputs, put the primary requested formula in canonical_target.lean_formula and the other required formulas in canonical_target.secondary_formulas. Do not drop requested outputs.
 16. Never use no-information tautologies such as x = x, v t = v t, a.val = a.val, or forall t, f t = f t as target or modeling equations.
 17. For function-valued targets, also fill canonical_target.function_formula_ir. B will trust this structure rather than infer function semantics from strings.
-18. Use formula_kind values: scalar_relation, pointwise_relation, evaluation_relation, ode_relation, component_relation, property. If the function target cannot be expressed in Lean-like first-order syntax, set parse_ok=false and explain error.
+18. Use target_kind values: closed_form, closed_form_value, relation, component_relation, pointwise_function_relation, derivative_relation, ode_relation, existence_or_property, unknown_or_ambiguous. Use formula_kind values: scalar_relation, pointwise_relation, evaluation_relation, derivative_relation, ode_relation, component_relation, property. If the function target cannot be expressed in Lean-like first-order syntax, set parse_ok=false and explain error.
+19. Do not pack multiple propositions into one field with commas. Use separate givens/local_definitions/model_instances, or use ∧ only when it is intentionally one proposition. If expected_claim is explanatory natural language, keep formal equations in interface_instantiations instead of mixing prose and final derived formulas.
+20. Do not cast numeric Real values into SI quantity types, e.g. never output ((1 : Real) : Speed) or ((1 : Real) : Acceleration). Ordinary algebraic formulas should stay value-level.
+21. For function-valued targets, prefer a Real chart time variable in function_formula_ir, e.g. t0 : Real. Numeric evaluation facts such as v 0 = v0 are allowed only when they are explicit givens/local definitions from the problem; B will normalize them to value-level pointwise form.
+22. Every formula involving a function-valued quantity must be pointwise. For x : MechLib.Mechanics.Kinematics.ScalarTrajectory, write forall t0 : Real, (x t0).val = ...; for M : PhysAngle -> Torque, write forall phi0 : PhysAngle, (M phi0).val = .... Never write x = ..., M = 4 * phi, v_rope = R * omega, or omega * R unless both function quantities are applied to the same bound variable.
+23. Mathlib/MechLib does not provide Real.atan2 in the current pipeline. If a direction angle would require atan2, either express it through component relations such as cos/sin constraints or set canonical_target.parse_ok=false with a clear error. Do not output Real.atan2.
+24. If the problem gives an angle in degrees, make that explicit in quantity_annotations.unit_or_dimension/evidence_text and use radians at value level, e.g. beta.val = 30 * Real.pi / 180, not beta.val = 30.
 
 Return this JSON shape:
 {
@@ -65,7 +75,7 @@ Return this JSON shape:
   ],
   "canonical_target": {
     "target_id": "target_1",
-    "target_kind": "closed_form | relation | component_relation | existence_or_property | unknown_or_ambiguous",
+    "target_kind": "closed_form | closed_form_value | relation | component_relation | pointwise_function_relation | derivative_relation | ode_relation | existence_or_property | unknown_or_ambiguous",
     "target_variables": ["a"],
     "lean_formula": "a = (m2 * g) / (m1 + m2)",
     "secondary_formulas": [],
@@ -73,6 +83,9 @@ Return this JSON shape:
       {
         "formula_id": "target_formula_1",
         "formula_kind": "scalar_relation",
+        "function_symbol": "",
+        "function_type": "",
+        "allow_time_domain_coercion": false,
         "bound_variables": [],
         "domain_conditions": [],
         "lhs": "a",
@@ -206,6 +219,9 @@ class _QuantityAnnotationPayload(_BasePayload):
 class _FunctionFormulaPayload(_BasePayload):
     formula_id: str = ""
     formula_kind: str = "scalar_relation"
+    function_symbol: str = ""
+    function_type: str = ""
+    allow_time_domain_coercion: bool = False
     bound_variables: list[dict[str, Any]] = Field(default_factory=list)
     domain_conditions: list[str] = Field(default_factory=list)
     lhs: str = ""
@@ -284,7 +300,7 @@ def _normalize_role(value: str) -> str:
 def _provenance_from_payload(payload: _ProvenancePayload) -> HypothesisProvenance:
     return HypothesisProvenance(
         name=payload.name,
-        lean=payload.lean,
+        lean=_normalize_packed_formula_text(payload.lean),
         role=_normalize_role(payload.role),
         source_type=payload.source_type or "problem_ir",
         source_id=payload.source_id,
@@ -302,7 +318,7 @@ def _interface_instantiation_from_payload(
     return ModelInterfaceInstantiation(
         instantiation_id=payload.instantiation_id.strip() or f"mii{index}",
         kind=payload.kind.strip() or "model_interface_instantiation",
-        formal_claim=payload.formal_claim.strip(),
+        formal_claim=_normalize_packed_formula_text(payload.formal_claim),
         source_model_instance=source_model_instance,
         interface_name=(payload.interface_name or "").strip() or None,
         parameter_role=(payload.parameter_role or "").strip() or None,
@@ -347,16 +363,22 @@ def _quantity_annotation_from_payload(payload: _QuantityAnnotationPayload) -> Qu
 
 TARGET_KINDS = {
     "closed_form",
+    "closed_form_value",
     "relation",
     "component_relation",
+    "pointwise_function_relation",
+    "derivative_relation",
+    "ode_relation",
     "existence_or_property",
     "unknown_or_ambiguous",
 }
+FUNCTION_TARGET_KINDS = {"pointwise_function_relation", "derivative_relation", "ode_relation"}
 
 FUNCTION_FORMULA_KINDS = {
     "scalar_relation",
     "pointwise_relation",
     "evaluation_relation",
+    "derivative_relation",
     "ode_relation",
     "component_relation",
     "property",
@@ -364,9 +386,338 @@ FUNCTION_FORMULA_KINDS = {
 }
 
 
+INFORMAL_DERIVATIVE_PLACEHOLDER_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9]*_(?:dot|ddot)\b")
+
+
+def _contains_informal_derivative_placeholder(text: object) -> bool:
+    return bool(INFORMAL_DERIVATIVE_PLACEHOLDER_RE.search(str(text or "")))
+
+
 def _has_formula_marker(text: object) -> bool:
     raw = str(text or "")
     return any(token in raw for token in ("=", "≠", "<", ">", "≤", "≥", "\\le", "\\ge", "∧", "∨", "forall", "∀", "Exists", "∃"))
+
+
+def _has_top_level_comma(text: object) -> bool:
+    value = str(text or "")
+    depth = 0
+    for idx, char in enumerate(value):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth = max(0, depth - 1)
+        elif char == "," and depth == 0:
+            prefix = value[:idx].strip()
+            if prefix.startswith(("forall ", "∀")) and not any(
+                marker in prefix for marker in ("=", "≠", "<", ">", "≤", "≥", "\\le", "\\ge", "∧", "∨")
+            ):
+                continue
+            if "∫" in prefix or re.search(r"\b(?:integral|Integral)\b", prefix):
+                continue
+            return True
+    return False
+
+
+def _split_top_level_commas(text: object) -> list[str]:
+    value = str(text or "")
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    for idx, char in enumerate(value):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth = max(0, depth - 1)
+        elif char == "," and depth == 0:
+            prefix = value[start:idx].strip()
+            if prefix.startswith(("forall ", "∀")) and not any(
+                marker in prefix for marker in ("=", "≠", "<", ">", "≤", "≥", "\\le", "\\ge", "∧", "∨")
+            ):
+                continue
+            if "∫" in prefix or re.search(r"\b(?:integral|Integral)\b", prefix):
+                continue
+            parts.append(value[start:idx].strip())
+            start = idx + 1
+    parts.append(value[start:].strip())
+    return [part for part in parts if part]
+
+
+NATURAL_LANGUAGE_FORMULA_MARKERS = (
+    " satisfies ",
+    " hence ",
+    " therefore ",
+    " because ",
+    " given ",
+    " asked ",
+    " requested ",
+    " final ",
+    " target ",
+    " should ",
+    " must ",
+    " where ",
+)
+
+
+def _looks_like_symbolic_formula_segment(text: object) -> bool:
+    value = normalize_lean_text(str(text or "")).strip()
+    if not value or not _has_formula_marker(value):
+        return False
+    lowered = f" {value.lower()} "
+    if any(marker in lowered for marker in NATURAL_LANGUAGE_FORMULA_MARKERS):
+        return False
+    lhs = re.split(r"=|≠|<|>|≤|≥|\\le|\\ge", value, maxsplit=1)[0]
+    lhs_tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_']*", lhs)
+    if len(lhs_tokens) >= 3 and not lhs.strip().startswith(("forall ", "∀", "Exists", "∃")):
+        return False
+    return True
+
+
+def _normalize_packed_formula_text(text: object) -> str:
+    value = normalize_lean_text(str(text or "")).strip()
+    if not value or not _has_top_level_comma(value):
+        return value
+    parts = _split_top_level_commas(value)
+    if len(parts) <= 1:
+        return value
+    if all(_looks_like_symbolic_formula_segment(part) for part in parts):
+        return " ∧ ".join(parts)
+    return value
+
+
+def _contains_illegal_si_cast(text: object) -> bool:
+    value = normalize_lean_text(str(text or ""))
+    if not value:
+        return False
+    quantity_type_pattern = "|".join(re.escape(name) for name in sorted(SUPPORTED_SI_QUANTITY_TYPES, key=len, reverse=True))
+    if not quantity_type_pattern:
+        return False
+    return bool(
+        re.search(
+            rf":\s*Real[^\n,;]*\)\s*:\s*(?:MechLib\.SI\.)?(?:{quantity_type_pattern})\s*\)",
+            value,
+        )
+    )
+
+
+def _function_symbols(quantity_annotations: list[QuantityTypeAnnotation]) -> set[str]:
+    return {
+        item.symbol
+        for item in quantity_annotations
+        if item.symbol and is_function_quantity_lean_type(item.lean_type)
+    }
+
+
+def _contains_numeric_function_application(text: object, function_symbols: set[str]) -> bool:
+    if not function_symbols:
+        return False
+    value = normalize_lean_text(str(text or ""))
+    for symbol in function_symbols:
+        if re.search(rf"\b{re.escape(symbol)}\s+[-+]?(?:\d+(?:\.\d+)?|\(\s*\d+(?:\.\d+)?\s*:\s*Real\s*\))\b", value):
+            return True
+    return False
+
+
+def _contains_bare_function_quantity_formula(text: object, function_symbols: set[str]) -> bool:
+    if not function_symbols:
+        return False
+    value = normalize_lean_text(str(text or "")).strip()
+    if not value or not _has_formula_marker(value):
+        return False
+    if not _looks_like_symbolic_formula_segment(value) and not value.lstrip().startswith(("forall ", "∀", "Exists", "∃")):
+        return False
+    for symbol in sorted(function_symbols, key=len, reverse=True):
+        pattern = re.compile(rf"(?<![A-Za-z0-9_.]){re.escape(symbol)}(?![A-Za-z0-9_'])")
+        for match in pattern.finditer(value):
+            before = value[: match.start()]
+            after = value[match.end() :]
+            if re.search(r"(?:forall|∀|fun)\s*$", before):
+                continue
+            if re.match(r"\s*=\s*fun\b", after):
+                continue
+            if re.match(r"\s+(?:[-+]?\d|[A-Za-z_][A-Za-z0-9_']*|\([^)]*\)|⟨[^⟩]*⟩)", after):
+                continue
+            return True
+    return False
+
+
+def _model_ir_formula_contract_error(
+    label: str,
+    value: object,
+    *,
+    function_symbols: set[str],
+    allow_top_level_comma: bool = False,
+) -> str | None:
+    text = _normalize_packed_formula_text(value)
+    if not text:
+        return None
+    if _contains_informal_derivative_placeholder(text):
+        return f"model_ir_informal_derivative_placeholder:{label}"
+    if (
+        not allow_top_level_comma
+        and _has_formula_marker(text)
+        and _has_top_level_comma(text)
+        and _looks_like_symbolic_formula_segment(text)
+    ):
+        return f"model_ir_multi_formula_field:{label}"
+    if _contains_illegal_si_cast(text):
+        return f"model_ir_illegal_si_cast:{label}"
+    if _contains_bare_function_quantity_formula(text, function_symbols):
+        return f"model_ir_function_quantity_not_pointwise:{label}"
+    return None
+
+
+def _drop_invalid_local_definitions(model_ir: ModelIR) -> list[str]:
+    function_symbols = _function_symbols(model_ir.quantity_annotations)
+    kept: list[HypothesisProvenance] = []
+    dropped: list[str] = []
+    for item in model_ir.local_definitions:
+        error = _model_ir_formula_contract_error(
+            f"local_definitions.{item.name or 'unnamed'}",
+            item.lean,
+            function_symbols=function_symbols,
+        )
+        if error:
+            dropped.append(error)
+            continue
+        kept.append(item)
+    if dropped:
+        model_ir.local_definitions = kept
+    return dropped
+
+
+def _can_drop_invalid_modeling_formula(error: str | None) -> bool:
+    if not error:
+        return False
+    # Illegal SI casts usually indicate that a typed quantity and a Real term
+    # were conflated. Keep those as hard failures so B does not receive a
+    # misleading typed model. Other model-instance/interface planning formulas
+    # are auxiliary evidence for later stages; if one is malformed, drop that
+    # auxiliary claim and keep a valid canonical target moving downstream.
+    return not error.startswith("model_ir_illegal_si_cast:")
+
+
+def _drop_invalid_modeling_formula_fields(model_ir: ModelIR) -> list[str]:
+    function_symbols = _function_symbols(model_ir.quantity_annotations)
+    dropped: list[str] = []
+
+    kept_top_level_interfaces: list[ModelInterfaceInstantiation] = []
+    for item in model_ir.interface_instantiations:
+        error = _model_ir_formula_contract_error(
+            f"interface_instantiations.{item.instantiation_id}",
+            item.formal_claim,
+            function_symbols=function_symbols,
+        )
+        if error and _can_drop_invalid_modeling_formula(error):
+            dropped.append(error)
+            continue
+        kept_top_level_interfaces.append(item)
+    model_ir.interface_instantiations = kept_top_level_interfaces
+
+    for instance in model_ir.model_instances:
+        error = _model_ir_formula_contract_error(
+            f"model_instances.{instance.instance_id}.expected_claim",
+            instance.expected_claim,
+            function_symbols=function_symbols,
+        )
+        if error and _can_drop_invalid_modeling_formula(error):
+            dropped.append(error)
+            instance.expected_claim = None
+
+        kept_instance_interfaces: list[ModelInterfaceInstantiation] = []
+        for item in instance.interface_instantiations:
+            error = _model_ir_formula_contract_error(
+                f"model_instances.{instance.instance_id}.interface_instantiations.{item.instantiation_id}",
+                item.formal_claim,
+                function_symbols=function_symbols,
+            )
+            if error and _can_drop_invalid_modeling_formula(error):
+                dropped.append(error)
+                continue
+            kept_instance_interfaces.append(item)
+        instance.interface_instantiations = kept_instance_interfaces
+
+    return dropped
+
+
+def _collect_model_ir_contract_error(model_ir: ModelIR) -> str | None:
+    function_symbols = _function_symbols(model_ir.quantity_annotations)
+    for collection_name, candidates in (
+        ("variables", list((model_ir.variables or {}).keys()) if isinstance(model_ir.variables, dict) else []),
+        ("quantity_annotations", [item.symbol for item in model_ir.quantity_annotations]),
+    ):
+        for item in candidates:
+            if _contains_informal_derivative_placeholder(item):
+                return f"model_ir_informal_derivative_placeholder:{collection_name}.{item}"
+
+    for collection_name, items in (
+        ("givens", model_ir.givens),
+        ("local_definitions", model_ir.local_definitions),
+    ):
+        for item in items:
+            error = _model_ir_formula_contract_error(
+                f"{collection_name}.{item.name or 'unnamed'}",
+                item.lean,
+                function_symbols=function_symbols,
+            )
+            if error:
+                return error
+    for item in model_ir.interface_instantiations:
+        error = _model_ir_formula_contract_error(
+            f"interface_instantiations.{item.instantiation_id}",
+            item.formal_claim,
+            function_symbols=function_symbols,
+        )
+        if error:
+            return error
+    for instance in model_ir.model_instances:
+        error = _model_ir_formula_contract_error(
+            f"model_instances.{instance.instance_id}.expected_claim",
+            instance.expected_claim,
+            function_symbols=function_symbols,
+        )
+        if error:
+            return error
+        for item in instance.interface_instantiations:
+            error = _model_ir_formula_contract_error(
+                f"model_instances.{instance.instance_id}.interface_instantiations.{item.instantiation_id}",
+                item.formal_claim,
+                function_symbols=function_symbols,
+            )
+            if error:
+                return error
+    target = model_ir.canonical_target
+    if target is not None:
+        for label, value in (
+            ("canonical_target.lean_formula", target.lean_formula),
+            *(
+                (f"canonical_target.secondary_formulas.{index}", formula)
+                for index, formula in enumerate(target.secondary_formulas, start=1)
+            ),
+        ):
+            error = _model_ir_formula_contract_error(
+                label,
+                value,
+                function_symbols=function_symbols,
+                allow_top_level_comma=False,
+            )
+            if error:
+                return error
+        for item in target.function_formula_ir:
+            if item.parse_ok is False:
+                continue
+            for label, value in (
+                (f"canonical_target.function_formula_ir.{item.formula_id or 'unnamed'}.lhs", item.lhs),
+                (f"canonical_target.function_formula_ir.{item.formula_id or 'unnamed'}.rhs", item.rhs),
+                (f"canonical_target.function_formula_ir.{item.formula_id or 'unnamed'}.lean_formula", item.lean_formula),
+            ):
+                error = _model_ir_formula_contract_error(
+                    label,
+                    value,
+                    function_symbols=function_symbols,
+                )
+                if error:
+                    return error
+    return None
 
 
 def _target_variables_from_formula(formula: str) -> list[str]:
@@ -411,6 +762,41 @@ def _target_variables_from_payloads(*payloads: object) -> list[str]:
     return out
 
 
+def _rewrite_real_time_bound_variable_text(text: object, real_time_names: set[str]) -> str:
+    value = normalize_lean_text(str(text or "")).strip()
+    if not value or not real_time_names:
+        return value
+    for name in sorted(real_time_names, key=len, reverse=True):
+        escaped = re.escape(name)
+        value = re.sub(rf"\b{escaped}\.val\b", name, value)
+        value = re.sub(rf"(\b(?:forall|∀)\s+{escaped}\s*:\s*)Time\b", r"\1Real", value)
+        value = re.sub(rf"(\bfun\s+{escaped}\s*:\s*)Time\b", r"\1Real", value)
+    return value
+
+
+def _normalize_function_bound_variables(raw_items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], set[str]]:
+    normalized_items: list[dict[str, Any]] = []
+    real_time_names: set[str] = set()
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        row = dict(item)
+        name = str(row.get("name") or row.get("symbol") or row.get("variable") or "").strip()
+        requested = str(row.get("lean_type") or row.get("type") or row.get("domain") or "").strip()
+        lean_type, supported, _status = normalize_quantity_lean_type(requested or "Real")
+        if supported and lean_type == "Time":
+            row["lean_type"] = "Real"
+            for key in ("type", "domain"):
+                if key in row:
+                    row[key] = "Real"
+            if name:
+                real_time_names.add(name)
+        elif supported and requested:
+            row["lean_type"] = lean_type
+        normalized_items.append(row)
+    return normalized_items, real_time_names
+
+
 def _function_formula_from_payload(payload: _FunctionFormulaPayload, index: int) -> FunctionFormulaIR:
     formula_kind = payload.formula_kind.strip() or "unknown"
     if formula_kind not in FUNCTION_FORMULA_KINDS:
@@ -418,9 +804,14 @@ def _function_formula_from_payload(payload: _FunctionFormulaPayload, index: int)
     relation = payload.relation.strip() or "="
     if relation not in {"=", "≠", "<", ">", "≤", "≥", "\\le", "\\ge"}:
         relation = "="
-    lean_formula = normalize_lean_text(payload.lean_formula).strip()
-    lhs = normalize_lean_text(payload.lhs).strip()
-    rhs = normalize_lean_text(payload.rhs).strip()
+    bound_variables, real_time_names = _normalize_function_bound_variables(
+        [dict(item) for item in payload.bound_variables if isinstance(item, dict)]
+    )
+    lean_formula = _normalize_packed_formula_text(
+        _rewrite_real_time_bound_variable_text(payload.lean_formula, real_time_names)
+    )
+    lhs = _normalize_packed_formula_text(_rewrite_real_time_bound_variable_text(payload.lhs, real_time_names))
+    rhs = _normalize_packed_formula_text(_rewrite_real_time_bound_variable_text(payload.rhs, real_time_names))
     if not lean_formula and lhs and rhs:
         lean_formula = f"{lhs} {relation} {rhs}"
     tautological = bool(lean_formula and is_tautological_equality(lean_formula))
@@ -431,9 +822,12 @@ def _function_formula_from_payload(payload: _FunctionFormulaPayload, index: int)
     return FunctionFormulaIR(
         formula_id=payload.formula_id.strip() or f"target_formula_{index}",
         formula_kind=formula_kind,
-        bound_variables=[dict(item) for item in payload.bound_variables if isinstance(item, dict)],
+        function_symbol=payload.function_symbol.strip(),
+        function_type=payload.function_type.strip(),
+        allow_time_domain_coercion=bool(payload.allow_time_domain_coercion),
+        bound_variables=bound_variables,
         domain_conditions=[
-            normalize_lean_text(str(item or "")).strip()
+            _rewrite_real_time_bound_variable_text(item, real_time_names)
             for item in payload.domain_conditions
             if str(item or "").strip()
         ],
@@ -479,7 +873,7 @@ def _formula_candidates_from_payload(payload: object) -> list[str]:
         return []
     formulas: list[str] = []
     for key in FORMULA_SCALAR_KEYS:
-        text = normalize_lean_text(str(payload.get(key) or "")).strip()
+        text = _normalize_packed_formula_text(payload.get(key))
         if text and _has_formula_marker(text):
             formulas.append(text)
     for key in FORMULA_LIST_KEYS:
@@ -490,7 +884,7 @@ def _formula_candidates_from_payload(payload: object) -> list[str]:
             if isinstance(item, dict):
                 nested = _formula_candidates_from_payload(item)
             else:
-                text = normalize_lean_text(str(item or "")).strip()
+                text = _normalize_packed_formula_text(item)
                 nested = [text] if text and _has_formula_marker(text) else []
             formulas.extend(nested)
     out: list[str] = []
@@ -553,11 +947,18 @@ def _canonical_target_from_payload(
         target_kind = payload.target_kind.strip() or "unknown_or_ambiguous"
         if target_kind not in TARGET_KINDS:
             target_kind = "unknown_or_ambiguous"
-        formula = normalize_lean_text(payload.lean_formula).strip()
+        formula = _normalize_packed_formula_text(payload.lean_formula)
         function_formula_ir = [
             _function_formula_from_payload(item, index)
             for index, item in enumerate(payload.function_formula_ir, start=1)
         ]
+        real_time_bound_names = {
+            str(bound.get("name") or bound.get("symbol") or bound.get("variable") or "").strip()
+            for row in function_formula_ir
+            for bound in row.bound_variables
+            if str(bound.get("lean_type") or bound.get("type") or bound.get("domain") or "").strip() == "Real"
+        }
+        formula = _rewrite_real_time_bound_variable_text(formula, {name for name in real_time_bound_names if name})
         secondary_formulas = _secondary_formulas_from_payloads(
             formula,
             {"secondary_formulas": list(payload.secondary_formulas)},
@@ -566,11 +967,20 @@ def _canonical_target_from_payload(
         )
         tautological_target = bool(formula and is_tautological_equality(formula))
         bad_function_formula = next((item for item in function_formula_ir if not item.parse_ok), None)
-        parse_ok = bool(payload.parse_ok and formula and not tautological_target and bad_function_formula is None)
+        function_target_requires_valid_ir = target_kind in FUNCTION_TARGET_KINDS or any(
+            item.formula_kind in {"pointwise_relation", "derivative_relation", "ode_relation"}
+            for item in function_formula_ir
+        )
+        parse_ok = bool(
+            payload.parse_ok
+            and formula
+            and not tautological_target
+            and (bad_function_formula is None or not function_target_requires_valid_ir)
+        )
         error = (payload.error or None) if not parse_ok else None
         if tautological_target:
             error = "tautological_canonical_target"
-        elif bad_function_formula is not None:
+        elif bad_function_formula is not None and function_target_requires_valid_ir:
             error = bad_function_formula.error or "invalid_function_formula_ir"
         return CanonicalTarget(
             target_id=payload.target_id.strip() or "target_1",
@@ -683,7 +1093,7 @@ def _model_instance_from_payload(payload: _ModelInstancePayload, index: int) -> 
         parameters=dict(payload.parameters),
         coordinate_convention=payload.coordinate_convention,
         planning_schema_id=(payload.planning_schema_id or payload.planning_schema_hint or None),
-        expected_claim=payload.expected_claim,
+        expected_claim=_normalize_packed_formula_text(payload.expected_claim),
         hypothesis_form=payload.hypothesis_form,
         interface_instantiations=[
             _interface_instantiation_from_payload(item, sub_index, source_instance=instance_id)
@@ -977,14 +1387,6 @@ class ModuleA2ModelIR:
                 parse_ok=False,
                 error="model_ir_missing_model_instances",
             )
-        if not _forbidden_contains_target(forbidden, parsed.target, problem_ir):
-            return ModelIR(
-                sample_id=sample_id,
-                source_problem_ir_hash=_problem_ir_hash(problem_ir),
-                raw_response=raw,
-                parse_ok=False,
-                error="model_ir_forbidden_as_assumption_missing_target",
-            )
         canonical_target = _canonical_target_from_payload(
             parsed.canonical_target,
             target=dict(parsed.target),
@@ -992,6 +1394,17 @@ class ModuleA2ModelIR:
             problem_ir=problem_ir,
             forbidden_as_assumption=forbidden,
         )
+        if not _forbidden_contains_target(forbidden, parsed.target, problem_ir):
+            if canonical_target.parse_ok and str(canonical_target.lean_formula or "").strip():
+                forbidden.append(f"target|{canonical_target.lean_formula}")
+            else:
+                return ModelIR(
+                    sample_id=sample_id,
+                    source_problem_ir_hash=_problem_ir_hash(problem_ir),
+                    raw_response=raw,
+                    parse_ok=False,
+                    error="model_ir_forbidden_as_assumption_missing_target",
+                )
 
         model_ir = ModelIR(
             sample_id=sample_id,
@@ -1017,4 +1430,17 @@ class ModuleA2ModelIR:
             parse_ok=True,
             error=None,
         )
+        dropped_local_definition_errors = _drop_invalid_local_definitions(model_ir)
+        if dropped_local_definition_errors:
+            model_ir.error = "dropped_invalid_local_definitions:" + ";".join(dropped_local_definition_errors)
+        dropped_modeling_formula_errors = _drop_invalid_modeling_formula_fields(model_ir)
+        if dropped_modeling_formula_errors:
+            prefix = (model_ir.error + ";") if model_ir.error else ""
+            model_ir.error = prefix + "dropped_invalid_modeling_formulas:" + ";".join(
+                dropped_modeling_formula_errors
+            )
+        contract_error = _collect_model_ir_contract_error(model_ir)
+        if contract_error:
+            model_ir.parse_ok = False
+            model_ir.error = contract_error
         return SchemaPlanner(structured_mechlib_context).apply(model_ir)

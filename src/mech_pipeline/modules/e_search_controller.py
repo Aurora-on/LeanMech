@@ -140,7 +140,17 @@ def _lean_ident(value: object, *, fallback: str) -> str:
 
 def _indent_tactic_body(text: str) -> str:
     lines = normalize_lean_text(text or "").strip().splitlines()
-    return "\n".join(f"  {line.strip()}" if line.strip() else "" for line in lines)
+    out: list[str] = []
+    indent_next_nested = False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            out.append("")
+            continue
+        out.append(f"    {stripped}" if indent_next_nested else f"  {stripped}")
+        match = _WHOLE_HAVE_BY_RE.match(stripped)
+        indent_next_nested = bool(match and not match.group("body").strip())
+    return "\n".join(out)
 
 
 def _normalize_have_tactic_block(text: str) -> str:
@@ -151,6 +161,15 @@ def _normalize_have_tactic_block(text: str) -> str:
     for line in lines[1:]:
         normalized.append(f"  {line.strip()}" if line.strip() else "")
     return "\n".join(normalized)
+
+
+def _split_tactic_segments(line: str) -> list[str]:
+    stripped = line.strip()
+    if not stripped:
+        return []
+    if ";" not in stripped:
+        return [stripped]
+    return [part.strip() for part in stripped.split(";") if part.strip()]
 
 
 def _split_whole_have_tactic_lines(tactic_block: str) -> tuple[str, list[str]] | None:
@@ -164,9 +183,100 @@ def _split_whole_have_tactic_lines(tactic_block: str) -> tuple[str, list[str]] |
     body_lines: list[str] = []
     first_body = match.group("body").strip()
     if first_body:
-        body_lines.append(first_body)
-    body_lines.extend(line.strip() for line in lines[1:] if line.strip())
+        body_lines.extend(_split_tactic_segments(first_body))
+    for line in lines[1:]:
+        body_lines.extend(_split_tactic_segments(line))
     return (header, body_lines)
+
+
+def _render_have_block(header: str, tactic_lines: list[str]) -> str:
+    return "\n".join([header, *(f"  {line.strip()}" for line in tactic_lines if line.strip())])
+
+
+def _partition_embedded_have_blocks(header: str, tactic_lines: list[str]) -> list[tuple[str, list[str]]]:
+    blocks: list[tuple[str, list[str]]] = []
+    current_header = header
+    current_lines: list[str] = []
+    for line in tactic_lines:
+        stripped = line.strip()
+        match = _WHOLE_HAVE_BY_RE.match(stripped)
+        if match and current_lines:
+            blocks.append((current_header, current_lines))
+            current_header = match.group("header").strip()
+            current_lines = []
+            first_body = match.group("body").strip()
+            if first_body:
+                current_lines.append(first_body)
+            continue
+        if match and not current_lines and current_header != header:
+            current_header = match.group("header").strip()
+            first_body = match.group("body").strip()
+            current_lines = [first_body] if first_body else []
+            continue
+        current_lines.append(stripped)
+    if current_lines:
+        blocks.append((current_header, current_lines))
+    return blocks
+
+
+def _split_embedded_have_proposals(proposal: ProofActionProposal) -> list[ProofActionProposal]:
+    parsed = _split_whole_have_tactic_lines(proposal.tactic_block)
+    if parsed is None:
+        return [proposal]
+    blocks = _partition_embedded_have_blocks(*parsed)
+    if len(blocks) <= 1:
+        return [proposal]
+    proposals: list[ProofActionProposal] = []
+    for idx, (header, tactic_lines) in enumerate(blocks, start=1):
+        proposals.append(
+            replace(
+                proposal,
+                action_id=proposal.action_id if idx == 1 else f"{proposal.action_id}_split_{idx}",
+                strategy=proposal.strategy if idx == 1 else f"{proposal.strategy}_split_have",
+                tactic_block=_render_have_block(header, tactic_lines),
+                expected_effect=proposal.expected_effect
+                if idx == 1
+                else "split independent `have` block from an overpacked fact-plan action",
+            )
+        )
+    return proposals
+
+
+def _proposals_from_dropped_have_lines(
+    proposal: ProofActionProposal,
+    dropped_lines: list[str],
+) -> list[ProofActionProposal]:
+    blocks: list[tuple[str, list[str]]] = []
+    current_header: str | None = None
+    current_lines: list[str] = []
+    for line in dropped_lines:
+        stripped = line.strip()
+        match = _WHOLE_HAVE_BY_RE.match(stripped)
+        if match:
+            if current_header and current_lines:
+                blocks.append((current_header, current_lines))
+            current_header = match.group("header").strip()
+            current_lines = []
+            first_body = match.group("body").strip()
+            if first_body:
+                current_lines.append(first_body)
+            continue
+        if current_header:
+            current_lines.append(stripped)
+    if current_header and current_lines:
+        blocks.append((current_header, current_lines))
+    actions: list[ProofActionProposal] = []
+    for idx, (header, tactic_lines) in enumerate(blocks, start=1):
+        actions.append(
+            replace(
+                proposal,
+                action_id=f"{proposal.action_id}_dropped_split_{idx}",
+                strategy=f"{proposal.strategy}_split_have",
+                tactic_block=_render_have_block(header, tactic_lines),
+                expected_effect="preserve independent `have` block dropped during tactic_no_goals repair",
+            )
+        )
+    return actions
 
 
 def _tactic_no_goals_repair_proposals(
@@ -184,7 +294,8 @@ def _tactic_no_goals_repair_proposals(
     for prefix_len in range(len(tactic_lines) - 1, 0, -1):
         kept = tactic_lines[:prefix_len]
         dropped = tactic_lines[prefix_len:]
-        tactic_block = "\n".join([header, *(f"  {line}" for line in kept)])
+        tactic_block = _render_have_block(header, kept)
+        pending_actions = _proposals_from_dropped_have_lines(proposal, dropped)
         repairs.append(
             (
                 replace(
@@ -199,10 +310,27 @@ def _tactic_no_goals_repair_proposals(
                     "repair_prefix_len": prefix_len,
                     "repair_original_tactic_count": len(tactic_lines),
                     "repair_dropped_tactics": dropped,
+                    "repair_pending_split_actions": [
+                        _action_payload_stub(action) for action in pending_actions
+                    ],
+                    "_pending_actions": pending_actions,
                 },
             )
         )
     return repairs
+
+
+def _action_payload_stub(proposal: ProofActionProposal) -> dict[str, Any]:
+    return {
+        "action_id": proposal.action_id,
+        "strategy": proposal.strategy,
+        "tactic_block": proposal.tactic_block,
+        "uses_facts": list(proposal.uses_facts),
+        "uses_decls": list(proposal.uses_decls),
+        "expected_effect": proposal.expected_effect,
+        "source": proposal.source,
+        "priority": proposal.priority,
+    }
 
 
 def _single_have_name_claim(tactic_block: str) -> tuple[str, str] | None:
@@ -391,7 +519,10 @@ def _proposals_from_fact_plan_payload(
             continue
         proposal = _proposal_from_fact_plan_item(item, call_index=call_index, idx=idx)
         if proposal is not None:
-            proposals.append(proposal)
+            for split_proposal in _split_embedded_have_proposals(proposal):
+                if len(proposals) >= limit:
+                    break
+                proposals.append(split_proposal)
     close = normalize_lean_text(str(payload.get("close") or "")).strip()
     if close and len(proposals) < limit:
         proposals.append(
@@ -779,6 +910,7 @@ def _attempt_tactic_no_goals_repairs(
         "stop_reason": None,
     }
     for repair, metadata in repairs:
+        pending_actions = list(metadata.pop("_pending_actions", []))
         ok, reasons = validate_action_proposal(repair, dynamic_context)
         if not ok:
             repair_check = _guard_rejection(repair, reasons)
@@ -827,6 +959,7 @@ def _attempt_tactic_no_goals_repairs(
                 "trial_prefix": repair_trial_prefix,
                 "cache_hit": cache_hit,
                 "metadata": metadata,
+                "pending_actions": pending_actions,
             }
             return result
 
@@ -1042,6 +1175,45 @@ def _attempt_claim_level_llm_repair(
             "metadata": metadata,
         }
         return result
+
+    if _is_tactic_no_goals(repair_check):
+        nested_repair = _attempt_tactic_no_goals_repairs(
+            proof_context=proof_context,
+            lean_runner=lean_runner,
+            node=node,
+            proposal=repair,
+            original_check=repair_check,
+            dynamic_context=dynamic_context,
+            timeout_s=timeout_s,
+            probe_cache=probe_cache,
+            seen_probe_prefixes=seen_probe_prefixes,
+            seen_action_blocks=seen_action_blocks,
+            probe_checks=result["probe_checks"],
+            max_probe_checks=max_probe_checks,
+            parent_node_id=parent_node_id,
+        )
+        result["probe_checks"] = int(nested_repair.get("probe_checks", result["probe_checks"]))
+        result["rejected_payloads"].extend(nested_repair.get("rejected_payloads") or [])
+        if nested_repair.get("stop_reason"):
+            result["stop_reason"] = str(nested_repair["stop_reason"])
+            return result
+        accepted_nested = nested_repair.get("accepted")
+        if accepted_nested:
+            nested_metadata = {
+                **metadata,
+                **(accepted_nested.get("metadata") or {}),
+                "claim_repair_no_goals_repaired": True,
+                "claim_repair_action_id": repair.action_id,
+            }
+            result["accepted"] = {
+                "proposal": accepted_nested["proposal"],
+                "check": accepted_nested["check"],
+                "trial_prefix": accepted_nested["trial_prefix"],
+                "cache_hit": accepted_nested["cache_hit"],
+                "metadata": nested_metadata,
+                "pending_actions": accepted_nested.get("pending_actions") or [],
+            }
+            return result
 
     payload = _action_payload(
         proof_context=proof_context,
@@ -1334,7 +1506,10 @@ def run_llm_guided_search(
             deterministic_proposals.extend(
                 propose_side_condition_actions(
                     proof_context,
-                    node.local_facts,
+                    [
+                        *_local_fact_summaries(proof_context, node),
+                        *node.local_fact_claims,
+                    ],
                     known_denominators=node.side_condition_denominators,
                 )
             )
@@ -1670,6 +1845,7 @@ def run_llm_guided_search(
                     payload.setdefault("probe_full_proof_body", trial_prefix)
                     rejected_actions.append(payload)
                     rejected_actions.extend(repair_result.get("rejected_payloads") or [])
+                    plan_remainder_after_action = list(accepted_repair.get("pending_actions") or [])
                     proposal = accepted_repair["proposal"]
                     check = accepted_repair["check"]
                     trial_prefix = accepted_repair["trial_prefix"]
@@ -1709,6 +1885,7 @@ def run_llm_guided_search(
                     payload["covered_obligations"] = list(covered_now)
                     payload["remaining_obligations_after"] = list(remaining_after_action)
                     payload["side_condition_denominator"] = side_condition_denominator
+                    payload["repair_replanned_from_prefix"] = True
                 else:
                     claim_repair_result: dict[str, Any] = {"attempted": False}
                     if (
@@ -1753,6 +1930,7 @@ def run_llm_guided_search(
                         rejected_actions.append(payload)
                         rejected_actions.extend(repair_result.get("rejected_payloads") or [])
                         rejected_actions.extend(claim_repair_result.get("rejected_payloads") or [])
+                        plan_remainder_after_action = []
                         proposal = accepted_claim_repair["proposal"]
                         check = accepted_claim_repair["check"]
                         trial_prefix = accepted_claim_repair["trial_prefix"]
@@ -1789,6 +1967,7 @@ def run_llm_guided_search(
                         payload["covered_obligations"] = list(covered_now)
                         payload["remaining_obligations_after"] = list(remaining_after_action)
                         payload["side_condition_denominator"] = side_condition_denominator
+                        payload["repair_replanned_from_prefix"] = True
                     elif attempted_repair_ids or claim_repair_result.get("attempted"):
                         payload.setdefault("probe_full_proof_body", trial_prefix)
                         rejected_actions.append(payload)

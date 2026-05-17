@@ -128,3 +128,35 @@ def test_two_body_linear_system_adds_structured_algebra_step():
         "m₂g = (m₁ + m₂)a",
         "m₁ + m₂ ≠ 0",
     ]
+
+
+def test_two_body_linear_system_detects_modeling_formulas_without_law_steps():
+    evidence = _base_evidence("gap_assisted_success")
+    evidence["target"] = (
+        "a = (m2 * g) / (m1 + m2)"
+        " ∧ T = (m1 * m2 * g) / (m1 + m2)"
+    )
+    evidence["controlled_sketch_steps"] = []
+    evidence["proof_obligations"] = []
+    evidence["algebra_obligation"] = None
+    evidence["final_answers"] = []
+    evidence["model_interface_instantiations"] = [
+        {"instantiation_id": "mii1", "formal_claim": "T = m1 * a"},
+        {"instantiation_id": "mii2", "formal_claim": "m2 * g - T = m2 * a"},
+    ]
+    evidence["accepted_actions"] = [
+        {
+            "action_id": "augment_physical_positive_hypotheses_1",
+            "added_physical_assumptions": [
+                {"variable": "m1", "expression": "0 < m1.val"},
+                {"variable": "m2", "expression": "0 < m2.val"},
+            ],
+        },
+        {"action_id": "side_condition_1", "new_local_fact_claims": ["m1.val + m2.val ≠ 0"]},
+    ]
+
+    trace = build_solution_trace(evidence)
+    algebra = next(step for step in trace.steps if step.step_id == "algebra_elimination_two_body_linear_1")
+
+    assert algebra.verified is True
+    assert algebra.source_artifacts[0] == "SolutionTrace.steps"

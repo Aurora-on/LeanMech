@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from mech_pipeline.config import PipelineConfig
-from mech_pipeline.modules.e_search_controller import run_llm_guided_search
+from mech_pipeline.modules.e_search_controller import _indent_tactic_body, run_llm_guided_search
 from mech_pipeline.types import ProofActionCheckResult, ProofContext, ProofObligationReplayItem
 
 
@@ -242,6 +242,20 @@ def _context() -> ProofContext:
         local_binders=["h : True"],
         allowed_local_facts=["h"],
         local_hypotheses=["h"],
+    )
+
+
+def test_claim_repair_tactic_body_indents_single_line_nested_have() -> None:
+    body = """nlinarith [given_mass_relation]
+have hmb_ne : m_B.val ≠ 0 := by
+linarith [h_m_B_pos]
+apply (mul_right_cancel₀ hmb_ne)"""
+
+    assert _indent_tactic_body(body) == (
+        "  nlinarith [given_mass_relation]\n"
+        "  have hmb_ne : m_B.val ≠ 0 := by\n"
+        "    linarith [h_m_B_pos]\n"
+        "  apply (mul_right_cancel₀ hmb_ne)"
     )
 
 
@@ -900,7 +914,7 @@ def test_search_controller_accepts_fact_plan_item_with_full_have_tactic() -> Non
     assert trace.accepted_actions[0]["tactic_block"] == "have h_one : True := by\n  exact h"
 
 
-def test_search_controller_repairs_fact_plan_tactic_no_goals_without_dropping_prefix() -> None:
+def test_search_controller_splits_overpacked_fact_plan_have_blocks() -> None:
     cfg = _cfg(max_nodes=6, max_llm_calls=1)
     llm = PayloadFakeLLM(
         {
@@ -909,17 +923,61 @@ def test_search_controller_repairs_fact_plan_tactic_no_goals_without_dropping_pr
                     "name": "h_one",
                     "claim": "True",
                     "from": ["h"],
-                    "tactic": "exact h",
-                },
-                {
-                    "name": "h_final",
-                    "claim": "True",
-                    "from": ["h_one"],
-                    "tactic": "exact h_one\nsimp\nring_nf",
-                },
+                    "tactic": "have h_one : True := by\nexact h\nhave h_two : True = True := by\nexact rfl",
+                }
             ],
-            "close": "exact h_final",
+            "close": "exact h_two",
         }
+    )
+
+    trace = run_llm_guided_search(
+        proof_context=_context(),
+        lean_runner=FakeLeanRunner(closed_token="exact h_two", progress_token="have h_one"),
+        llm_client=llm,
+        cfg=cfg,
+    )
+
+    assert trace.search_status == "success"
+    assert [row["action_id"] for row in trace.accepted_actions] == [
+        "llm_plan_1_1",
+        "llm_plan_1_1_split_2",
+        "llm_plan_1_close",
+    ]
+    assert trace.accepted_actions[1]["strategy"] == "target_fact_plan_have_split_have"
+    assert trace.accepted_actions[1]["tactic_block"] == "have h_two : True = True := by\n  exact rfl"
+
+
+def test_search_controller_repairs_fact_plan_tactic_no_goals_without_dropping_prefix() -> None:
+    cfg = _cfg(max_nodes=8, max_llm_calls=2)
+    llm = SequentialPayloadFakeLLM(
+        [
+            {
+                "fact_plan": [
+                    {
+                        "name": "h_one",
+                        "claim": "True",
+                        "from": ["h"],
+                        "tactic": "exact h",
+                    },
+                    {
+                        "name": "h_final",
+                        "claim": "True",
+                        "from": ["h_one"],
+                        "tactic": "exact h_one; simp; ring_nf",
+                    },
+                ],
+                "close": "exact h_final",
+            },
+            {
+                "proposals": [
+                    {
+                        "strategy": "target_fact_plan_close",
+                        "tactic_block": "exact h_final",
+                        "uses_facts": ["h_final"],
+                    }
+                ]
+            },
+        ]
     )
     runner = NoGoalsRepairLeanRunner()
 
@@ -930,7 +988,7 @@ def test_search_controller_repairs_fact_plan_tactic_no_goals_without_dropping_pr
         cfg=cfg,
     )
 
-    assert llm.calls == 1
+    assert llm.calls == 2
     assert trace.search_status == "success"
     assert [row["strategy"] for row in trace.accepted_actions] == [
         "target_fact_plan_have",
@@ -939,9 +997,10 @@ def test_search_controller_repairs_fact_plan_tactic_no_goals_without_dropping_pr
     ]
     repair = trace.accepted_actions[1]
     assert repair["repair_of"] == "llm_plan_1_2"
+    assert repair["repair_replanned_from_prefix"] is True
     assert repair["tactic_block"] == "have h_final : True := by\n  exact h_one"
     assert repair["new_local_facts"] == ["h_final"]
-    assert trace.accepted_actions[2]["uses_facts"] == []
+    assert trace.accepted_actions[2]["uses_facts"] == ["h_final"]
     assert "have h_one : True := by\n  exact h" in trace.final_proof_body
     assert "have h_final : True := by\n  exact h_one" in trace.final_proof_body
     original_failure = next(row for row in trace.rejected_actions if row["action_id"] == "llm_plan_1_2")
@@ -953,8 +1012,8 @@ def test_search_controller_repairs_fact_plan_tactic_no_goals_without_dropping_pr
     assert rejected_repair["error_type"] == "tactic_no_goals"
 
 
-def test_search_controller_claim_level_repair_uses_error_and_keeps_plan_prefix() -> None:
-    cfg = _cfg(max_nodes=6, max_llm_calls=2)
+def test_search_controller_claim_level_repair_uses_error_and_replans_from_prefix() -> None:
+    cfg = _cfg(max_nodes=8, max_llm_calls=3)
     llm = SequentialPayloadFakeLLM(
         [
             {
@@ -979,6 +1038,15 @@ def test_search_controller_claim_level_repair_uses_error_and_keeps_plan_prefix()
                 "uses_facts": ["h_one"],
                 "uses_decls": [],
             },
+            {
+                "proposals": [
+                    {
+                        "strategy": "target_fact_plan_close",
+                        "tactic_block": "exact h_final",
+                        "uses_facts": ["h_final"],
+                    }
+                ]
+            },
         ]
     )
     runner = ClaimRepairLeanRunner()
@@ -990,7 +1058,7 @@ def test_search_controller_claim_level_repair_uses_error_and_keeps_plan_prefix()
         cfg=cfg,
     )
 
-    assert llm.calls == 2
+    assert llm.calls == 3
     assert trace.search_status == "success"
     assert [row["strategy"] for row in trace.accepted_actions] == [
         "target_fact_plan_have",
@@ -1000,6 +1068,7 @@ def test_search_controller_claim_level_repair_uses_error_and_keeps_plan_prefix()
     repair = trace.accepted_actions[1]
     assert repair["repair_of"] == "llm_plan_1_2"
     assert repair["repair_kind"] == "claim_level_llm_repair"
+    assert repair["repair_replanned_from_prefix"] is True
     assert repair["tactic_block"] == "have h_final : True := by\n  exact h_one"
     assert "have h_final : True := by\n  have h_final" not in trace.final_proof_body
     assert "have h_one : True := by\n  exact h" in trace.final_proof_body
