@@ -111,6 +111,8 @@ def _model_ir(*, include_qualitative: bool = True) -> ModelIR:
             "g": {"type": "acceleration"},
             "a": {"type": "acceleration"},
             "T": {"type": "force"},
+            "Fnet1": {"type": "force"},
+            "Fnet2": {"type": "force"},
         },
         quantity_annotations=[
             QuantityTypeAnnotation("m1", semantic_role="mass", lean_type="Mass", confidence=0.95),
@@ -118,6 +120,8 @@ def _model_ir(*, include_qualitative: bool = True) -> ModelIR:
             QuantityTypeAnnotation("g", semantic_role="gravity", lean_type="Acceleration", confidence=0.95),
             QuantityTypeAnnotation("a", semantic_role="acceleration", lean_type="Acceleration", confidence=0.95),
             QuantityTypeAnnotation("T", semantic_role="tension force", lean_type="Force", confidence=0.95),
+            QuantityTypeAnnotation("Fnet1", semantic_role="net force on glider", lean_type="Force", confidence=0.95),
+            QuantityTypeAnnotation("Fnet2", semantic_role="net force on hanger", lean_type="Force", confidence=0.95),
         ],
         canonical_target=CanonicalTarget(
             target_kind="closed_form",
@@ -134,17 +138,17 @@ def _model_ir(*, include_qualitative: bool = True) -> ModelIR:
                 instance_id="glider",
                 kind="newton_second_law_1d",
                 natural_language="Newton law for glider.",
-                variables={"force": "T", "mass": "m1", "acceleration": "a"},
+                variables={"net_force": "Fnet1", "mass": "m1", "acceleration": "a"},
                 planning_schema_id="law.newton.second.1d",
-                expected_claim="T = m1 * a",
+                expected_claim="Fnet1 = m1 * a",
             ),
             ModelInstance(
                 instance_id="hanger",
                 kind="newton_second_law_1d",
                 natural_language="Newton law for hanging mass.",
-                variables={"force": "T", "mass": "m2", "acceleration": "a"},
+                variables={"net_force": "Fnet2", "mass": "m2", "acceleration": "a"},
                 planning_schema_id="law.newton.second.1d",
-                expected_claim="m2 * g - T = m2 * a",
+                expected_claim="Fnet2 = m2 * a",
             ),
         ],
         target={
@@ -369,10 +373,11 @@ def test_llm_theorem_decl_is_ignored_and_qualitative_binders_are_excluded(tmp_pa
         "h_string_flexible",
     }
     assert "(m1 m2 : Mass)" in candidate.theorem_decl
-    assert "(T : Force)" in candidate.theorem_decl
+    assert "(T Fnet1 Fnet2 : Force)" in candidate.theorem_decl
     assert "(g a : Acceleration)" in candidate.theorem_decl
     assert "a.val = (m2.val * g.val) / (m1.val + m2.val)" in candidate.theorem_decl
-    assert "MechLib.Test.Newton1D T m1 a" in candidate.theorem_decl
+    assert "MechLib.Test.Newton1D Fnet1 m1 a" in candidate.theorem_decl
+    assert "MechLib.Test.Newton1D Fnet2 m2 a" in candidate.theorem_decl
     assert candidate.parse_ok is True
     assert candidate.generation_blocked_reason is None
 
@@ -674,6 +679,50 @@ def test_tautological_model_interface_gap_is_excluded(tmp_path: Path) -> None:
     )
 
 
+def test_duplicate_model_interface_gap_formula_is_deduped(tmp_path: Path) -> None:
+    model_ir = _model_ir_with_interface_gaps()
+    sketch = _sketch()
+    sketch.model_interface_instantiations = [
+        ModelInterfaceInstantiation(
+            instantiation_id="duplicate_glider_net_force",
+            kind="net_force_balance",
+            formal_claim="Fnet1.val = T.val",
+            binding_status="explicit_model_gap",
+            proof_fact_allowed=False,
+        )
+    ]
+    module = ModuleB(
+        StaticClient(
+            json.dumps(
+                {
+                    "candidates": [
+                        {
+                            "candidate_id": "c1",
+                            "theorem_name_hint": "airtrack_duplicate_interface",
+                            "selected_model_instances": ["glider", "hanger"],
+                            "controlled_sketch_steps_used": ["sk_glider", "sk_hanger", "alg_target"],
+                        }
+                    ]
+                }
+            )
+        ),
+        _prompt(tmp_path, "B_generate_statements.txt"),
+        minimal_prompt_path=_prompt(tmp_path, "B_generate_minimal_skeleton.txt"),
+    )
+
+    candidate = module.run(
+        _grounding(),
+        generation_mode="minimal_skeleton",
+        model_ir=model_ir,
+        controlled_sketch=sketch,
+        evidence_bindings=_predicate_bindings(),
+        sketch_audit_result=SketchAuditResult(sample_id="airtrack", audit_pass=True),
+    )[0]
+
+    assert candidate.theorem_decl.count("Fnet1.val = T.val") == 1
+    assert all(row.get("source_id") != "duplicate_glider_net_force" for row in candidate.gap_laws)
+
+
 def test_non_prop_verified_decl_blocks_instead_of_faking_model_predicate(tmp_path: Path) -> None:
     candidate = _run(
         tmp_path,
@@ -873,6 +922,105 @@ def test_extractor_theorem_premise_can_supply_model_predicate(tmp_path: Path) ->
     assert "MechLib.Kinematics.PointMotion.VelocityDerivativeRelation x v" in candidate.theorem_decl
     assert "MechLib.Kinematics.PointMotion.HasDerivAt" not in candidate.theorem_decl
     assert "HasDerivAt" not in candidate.theorem_decl
+
+
+def test_implicit_binder_extractor_theorem_supplies_newton_second_law_predicate(tmp_path: Path) -> None:
+    extractor_statement = (
+        "theorem to_value_equation "
+        "{m : MechLib.SI.Mass} {a : MechLib.SI.Acceleration} {F : MechLib.SI.Force} "
+        "(h : NewtonSecondLaw m a F) : F.val = m.val * a.val"
+    )
+    model_ir = _model_ir_with_interface_gaps()
+    candidate = _run(
+        tmp_path,
+        {
+            "candidates": [
+                {
+                    "candidate_id": "c1",
+                    "theorem_name_hint": "airtrack_newton_predicate",
+                    "selected_model_instances": ["glider", "hanger"],
+                    "controlled_sketch_steps_used": ["sk_glider", "sk_hanger", "alg_target"],
+                }
+            ]
+        },
+        bindings=[
+            EvidenceBinding(
+                binding_id="b_glider",
+                model_instance_id="glider",
+                verified_decl="MechLib.Dynamics.NewtonLaw.NewtonSecondLaw.to_value_equation",
+                decl_statement=extractor_statement,
+                callable_by_llm=True,
+                lean_check_pass=True,
+                proof_fact_allowed=True,
+                binding_status="ok",
+                expected_claim="Fnet1.val = m1.val * a.val",
+            ),
+            EvidenceBinding(
+                binding_id="b_hanger",
+                model_instance_id="hanger",
+                verified_decl="MechLib.Dynamics.NewtonLaw.NewtonSecondLaw.to_value_equation",
+                decl_statement=extractor_statement,
+                callable_by_llm=True,
+                lean_check_pass=True,
+                proof_fact_allowed=True,
+                binding_status="ok",
+                expected_claim="Fnet2.val = m2.val * a.val",
+            ),
+            ],
+            model_ir=model_ir,
+    )
+
+    assert candidate.model_predicate_bindings
+    assert "(glider_law : MechLib.Dynamics.NewtonLaw.NewtonSecondLaw m1 a Fnet1)" in candidate.theorem_decl
+    assert "(hanger_law : MechLib.Dynamics.NewtonLaw.NewtonSecondLaw m2 a Fnet2)" in candidate.theorem_decl
+    assert "NewtonSecondLaw.NewtonSecondLaw" not in candidate.theorem_decl
+    assert "Fnet1.val = m1.val * a.val" not in candidate.theorem_decl
+    assert "Fnet2.val = m2.val * a.val" not in candidate.theorem_decl
+    assert "T.val = m1.val * a.val" not in candidate.theorem_decl
+    assert "m2.val * g.val - T.val = m2.val * a.val" not in candidate.theorem_decl
+
+
+def test_newton_predicate_requires_explicit_net_force_role(tmp_path: Path) -> None:
+    extractor_statement = (
+        "theorem to_value_equation "
+        "{m : MechLib.SI.Mass} {a : MechLib.SI.Acceleration} {F : MechLib.SI.Force} "
+        "(h : NewtonSecondLaw m a F) : F.val = m.val * a.val"
+    )
+    model_ir = _model_ir_with_interface_gaps()
+    model_ir.model_instances[0].variables = {"force": "T", "mass": "m1", "acceleration": "a"}
+    model_ir.model_instances[1].variables = {"force": "T", "mass": "m2", "acceleration": "a"}
+
+    candidate = _run(
+        tmp_path,
+        {
+            "candidates": [
+                {
+                    "candidate_id": "c1",
+                    "theorem_name_hint": "airtrack_missing_net_force_role",
+                    "selected_model_instances": ["glider", "hanger"],
+                    "controlled_sketch_steps_used": ["sk_glider", "sk_hanger", "alg_target"],
+                }
+            ]
+        },
+        bindings=[
+            EvidenceBinding(
+                binding_id="b_glider",
+                model_instance_id="glider",
+                verified_decl="MechLib.Dynamics.NewtonLaw.NewtonSecondLaw.to_value_equation",
+                decl_statement=extractor_statement,
+                callable_by_llm=True,
+                lean_check_pass=True,
+                proof_fact_allowed=True,
+                binding_status="ok",
+                expected_claim="Fnet1.val = m1.val * a.val",
+            )
+        ],
+        model_ir=model_ir,
+    )
+
+    assert candidate.model_predicate_bindings == []
+    assert "NewtonSecondLaw m1 a T" not in candidate.theorem_decl
+    assert any(row.get("source_model_instance") == "glider" for row in candidate.gap_laws)
 
 
 def test_legacy_sketch_steps_are_not_directly_consumed_by_minimal_b(tmp_path: Path) -> None:

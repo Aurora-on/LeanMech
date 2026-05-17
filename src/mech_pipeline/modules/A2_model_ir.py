@@ -38,25 +38,28 @@ Rules:
 3. Do not treat law-application results, derived relations, algebra elimination results, or final answers as givens.
 4. Separate facts into: given_fact, model_instance, local_definition, coordinate_convention, target, derived_relation.
 5. For each model instance, provide kind, natural_language, expected_claim, planning_schema_hint, entities, variables, parameters, and confidence.
-6. Use interface_instantiations for local modeling interfaces such as net force, effective torque, constraint velocity, or sign convention equations.
-7. interface_instantiations must use Lean-like value-level equations, e.g. Fnet = T or Fnet = m * g - T; do not use fake MechLib names.
-8. The target may contain the requested final formula if the problem asks for one, but it must stay in target/forbidden_as_assumption, never in givens.
-9. If unsure, lower confidence and leave planning_schema_hint empty. Do not invent verified declarations.
-10. forbidden_as_assumption must include the target/goal and any derived or algebraic result that should not be assumed.
-11. For every variable, output quantity_annotations using the problem statement, units, and definitions. Do not infer from symbol spelling alone.
-12. Use only existing MechLib.SI quantity types. For angles use PhysAngle, not Angle. If no existing SI type fits, use Real with low confidence and explain why.
-13. If a quantity is a scalar function of time, prefer MechLib's native Real-time fields: MechLib.Mechanics.Kinematics.ScalarTrajectory for position/length, MechLib.Mechanics.Kinematics.ScalarVelocityField for speed, and MechLib.Mechanics.Kinematics.ScalarAccelerationField for acceleration. For other time-dependent quantities, use Real -> <QuantityType>, not Time -> <QuantityType>. Do not put .val in bound-variable names.
-14. Output exactly one canonical_target. It is the only target B may use. It may be a closed-form equation, a pointwise function relation, a derivative/ODE relation, a component relation, or a property; do not force a closed form unless the problem asks for one.
-15. If the problem asks for multiple required outputs, put the primary requested formula in canonical_target.lean_formula and the other required formulas in canonical_target.secondary_formulas. Do not drop requested outputs.
-16. Never use no-information tautologies such as x = x, v t = v t, a.val = a.val, or forall t, f t = f t as target or modeling equations.
-17. For function-valued targets, also fill canonical_target.function_formula_ir. B will trust this structure rather than infer function semantics from strings.
-18. Use target_kind values: closed_form, closed_form_value, relation, component_relation, pointwise_function_relation, derivative_relation, ode_relation, existence_or_property, unknown_or_ambiguous. Use formula_kind values: scalar_relation, pointwise_relation, evaluation_relation, derivative_relation, ode_relation, component_relation, property. If the function target cannot be expressed in Lean-like first-order syntax, set parse_ok=false and explain error.
-19. Do not pack multiple propositions into one field with commas. Use separate givens/local_definitions/model_instances, or use ∧ only when it is intentionally one proposition. If expected_claim is explanatory natural language, keep formal equations in interface_instantiations instead of mixing prose and final derived formulas.
-20. Do not cast numeric Real values into SI quantity types, e.g. never output ((1 : Real) : Speed) or ((1 : Real) : Acceleration). Ordinary algebraic formulas should stay value-level.
-21. For function-valued targets, prefer a Real chart time variable in function_formula_ir, e.g. t0 : Real. Numeric evaluation facts such as v 0 = v0 are allowed only when they are explicit givens/local definitions from the problem; B will normalize them to value-level pointwise form.
-22. Every formula involving a function-valued quantity must be pointwise. For x : MechLib.Mechanics.Kinematics.ScalarTrajectory, write forall t0 : Real, (x t0).val = ...; for M : PhysAngle -> Torque, write forall phi0 : PhysAngle, (M phi0).val = .... Never write x = ..., M = 4 * phi, v_rope = R * omega, or omega * R unless both function quantities are applied to the same bound variable.
-23. Mathlib/MechLib does not provide Real.atan2 in the current pipeline. If a direction angle would require atan2, either express it through component relations such as cos/sin constraints or set canonical_target.parse_ok=false with a clear error. Do not output Real.atan2.
-24. If the problem gives an angle in degrees, make that explicit in quantity_annotations.unit_or_dimension/evidence_text and use radians at value level, e.g. beta.val = 30 * Real.pi / 180, not beta.val = 30.
+6. model_instances[].variables must bind the physical role slots used by the law or model predicate. Do not leave theorem-application object selection to B. For example, Newton's second law must use roles such as {"mass":"m1", "acceleration":"a", "net_force":"Fnet1"}, not {"force":"T"} unless T is explicitly the net/resultant force. If a Newton-second-law instance lacks any of mass/acceleration/net_force, mark the instance low-confidence and explain the missing role instead of relying on B to guess.
+7. Use interface_instantiations for local modeling interfaces such as net force, effective torque, constraint velocity, or sign convention equations.
+8. interface_instantiations must use Lean-like value-level equations, e.g. Fnet = T or Fnet = m * g - T; do not use fake MechLib names. If an interface introduces a symbol such as Fnet, the corresponding model instance variables must reference it under the relevant role, e.g. "net_force": "Fnet".
+9. The target may contain the requested final formula if the problem asks for one, but it must stay in target/forbidden_as_assumption, never in givens.
+10. If unsure, lower confidence and leave planning_schema_hint empty. Do not invent verified declarations.
+11. forbidden_as_assumption must include the target/goal and any derived or algebraic result that should not be assumed.
+12. For every variable, output quantity_annotations using the problem statement, units, and definitions. Do not infer from symbol spelling alone.
+13. Use only existing MechLib.SI quantity types. For angles use PhysAngle, not Angle. If no existing SI type fits, use Real with low confidence and explain why.
+14. If a quantity is a scalar function of time, prefer MechLib's native Real-time fields: MechLib.Mechanics.Kinematics.ScalarTrajectory for position/length, MechLib.Mechanics.Kinematics.ScalarVelocityField for speed, and MechLib.Mechanics.Kinematics.ScalarAccelerationField for acceleration. For other time-dependent quantities, use Real -> <QuantityType>, not Time -> <QuantityType>. Do not put .val in bound-variable names.
+15. Output exactly one canonical_target. It is the only target B may use. It may be a closed-form equation, a pointwise function relation, a derivative/ODE relation, a component relation, or a property; do not force a closed form unless the problem asks for one.
+16. If the problem asks for multiple required outputs, put the primary requested formula in canonical_target.lean_formula and the other required formulas in canonical_target.secondary_formulas. Do not drop requested outputs.
+17. Never use no-information tautologies such as x = x, v t = v t, a.val = a.val, or forall t, f t = f t as target or modeling equations.
+18. For function-valued targets, also fill canonical_target.function_formula_ir. B will trust this structure rather than infer function semantics from strings.
+19. Use target_kind values: closed_form, closed_form_value, relation, component_relation, pointwise_function_relation, derivative_relation, ode_relation, existence_or_property, unknown_or_ambiguous. Use formula_kind values: scalar_relation, pointwise_relation, evaluation_relation, derivative_relation, ode_relation, component_relation, property. If the function target cannot be expressed in Lean-like first-order syntax, set parse_ok=false and explain error.
+20. Do not pack multiple propositions into one field with commas. Use separate givens/local_definitions/model_instances, or use ∧ only when it is intentionally one proposition. If expected_claim is explanatory natural language, keep formal equations in interface_instantiations instead of mixing prose and final derived formulas.
+21. Do not cast numeric Real values into SI quantity types, e.g. never output ((1 : Real) : Speed) or ((1 : Real) : Acceleration). Ordinary algebraic formulas should stay value-level.
+22. For function-valued targets, prefer a Real chart time variable in function_formula_ir, e.g. t0 : Real. Numeric evaluation facts such as v 0 = v0 are allowed only when they are explicit givens/local definitions from the problem; B will normalize them to value-level pointwise form.
+23. Every formula involving a function-valued quantity must be pointwise. For x : MechLib.Mechanics.Kinematics.ScalarTrajectory, write forall t0 : Real, (x t0).val = ...; for M : PhysAngle -> Torque, write forall phi0 : PhysAngle, (M phi0).val = .... Never write x = ..., M = 4 * phi, v_rope = R * omega, or omega * R unless both function quantities are applied to the same bound variable.
+24. Mathlib/MechLib does not provide Real.atan2 in the current pipeline. If a direction angle would require atan2, either express it through component relations such as cos/sin constraints or set canonical_target.parse_ok=false with a clear error. Do not output Real.atan2.
+25. If the problem gives an angle in degrees, make that explicit in quantity_annotations.unit_or_dimension/evidence_text and use radians at value level, e.g. beta.val = 30 * Real.pi / 180, not beta.val = 30.
+26. For function-valued kinematics, create explicit model_instances for derivative bridges when they are needed by the target: velocity-from-position uses roles {"position":"x", "velocity":"v"} and acceleration-from-velocity uses {"velocity":"v", "acceleration":"a"}. These are model instances or interface_instantiations, not final answers.
+27. For target binding, use the exact requested output symbols. If the problem asks for L1 and L2, target_variables must be ["L1","L2"], not an auxiliary L. If it asks for a maximum/minimum/limiting value, bind the extremal symbol such as y_max or m3_max and include the condition tying it to the extremal event. If it asks for relative height/displacement, target the relative quantity, e.g. dy_max = y_max - y0, unless the problem explicitly asks for the absolute coordinate.
 
 Return this JSON shape:
 {
@@ -113,7 +116,7 @@ Return this JSON shape:
       "kind":"...",
       "natural_language":"...",
       "entities":[],
-      "variables":{},
+      "variables":{"mass":"m1", "acceleration":"a", "net_force":"Fnet1"},
       "parameters":{},
       "coordinate_convention":"",
       "planning_schema_hint":"",
@@ -736,6 +739,28 @@ def _target_variables_from_formula(formula: str) -> list[str]:
     return variables
 
 
+def _lhs_target_variables_from_formulas(formulas: list[str]) -> list[str]:
+    variables: list[str] = []
+    seen: set[str] = set()
+    for formula in formulas:
+        for part in re.split(r"\s*(?:∧|\\land)\s*", normalize_lean_text(formula or "")):
+            text = part.strip()
+            if not text or not _has_formula_marker(text):
+                continue
+            if text.startswith(("forall ", "∀", "Exists", "∃")):
+                continue
+            lhs = re.split(r"=|≠|<|>|≤|≥|\\le|\\ge", text, maxsplit=1)[0].strip()
+            match = re.match(r"\(?\s*([A-Za-z_][A-Za-z0-9_']*)(?:\.val)?\s*(?:\)|$)", lhs)
+            if not match:
+                continue
+            symbol = match.group(1)
+            if symbol in {"Real", "Nat", "Int", "Rat"} or symbol in seen:
+                continue
+            seen.add(symbol)
+            variables.append(symbol)
+    return variables
+
+
 def _target_variables_from_payloads(*payloads: object) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
@@ -965,14 +990,29 @@ def _canonical_target_from_payload(
             target_spec,
             target,
         )
+        formula_lhs_variables = _lhs_target_variables_from_formulas([formula, *secondary_formulas])
+        target_variables = [str(item).strip() for item in payload.target_variables if str(item).strip()]
+        for symbol in formula_lhs_variables:
+            if symbol not in target_variables:
+                target_variables.append(symbol)
         tautological_target = bool(formula and is_tautological_equality(formula))
         bad_function_formula = next((item for item in function_formula_ir if not item.parse_ok), None)
         function_target_requires_valid_ir = target_kind in FUNCTION_TARGET_KINDS or any(
             item.formula_kind in {"pointwise_relation", "derivative_relation", "ode_relation"}
             for item in function_formula_ir
         )
+        scalar_parse_gap_recoverable = (
+            not payload.parse_ok
+            and bool(formula)
+            and target_kind not in FUNCTION_TARGET_KINDS
+            and not function_target_requires_valid_ir
+            and any(
+                marker in str(payload.error or "").lower()
+                for marker in ("quantity", "unit", "value-level", "normalization", "casting", "mixed")
+            )
+        )
         parse_ok = bool(
-            payload.parse_ok
+            (payload.parse_ok or scalar_parse_gap_recoverable)
             and formula
             and not tautological_target
             and (bad_function_formula is None or not function_target_requires_valid_ir)
@@ -985,7 +1025,7 @@ def _canonical_target_from_payload(
         return CanonicalTarget(
             target_id=payload.target_id.strip() or "target_1",
             target_kind=target_kind,
-            target_variables=[str(item).strip() for item in payload.target_variables if str(item).strip()],
+            target_variables=target_variables,
             lean_formula=formula,
             secondary_formulas=secondary_formulas,
             function_formula_ir=function_formula_ir,
@@ -1103,6 +1143,68 @@ def _model_instance_from_payload(payload: _ModelInstancePayload, index: int) -> 
         provenance=dict(payload.provenance),
         confidence=float(payload.confidence),
     )
+
+
+NEWTON_SECOND_LAW_MARKERS = (
+    "newton_second_law",
+    "newton second law",
+    "newton's second law",
+    "newtonsecondlaw",
+    "newton1d",
+)
+
+
+def _required_model_roles(instance: ModelInstance) -> set[str]:
+    text = " ".join(
+        str(item or "").lower()
+        for item in (
+            instance.kind,
+            instance.natural_language,
+            instance.expected_claim,
+            instance.planning_schema_id,
+        )
+    )
+    if any(marker in text for marker in NEWTON_SECOND_LAW_MARKERS):
+        return {"mass", "acceleration", "net_force"}
+    return set()
+
+
+MODEL_ROLE_ALIASES = {
+    "mass": {"mass"},
+    "acceleration": {"acceleration", "linear_acceleration", "center_of_mass_acceleration"},
+    "net_force": {"net_force", "resultant_force"},
+}
+
+
+def _has_role(instance: ModelInstance, role: str) -> bool:
+    variables = instance.variables or {}
+    aliases = MODEL_ROLE_ALIASES.get(role, {role})
+    return any(alias in variables and str(variables.get(alias) or "").strip() for alias in aliases)
+
+
+def _annotate_model_instance_role_contracts(model_ir: ModelIR) -> list[str]:
+    errors: list[str] = []
+    for instance in model_ir.model_instances:
+        required = _required_model_roles(instance)
+        if not required:
+            continue
+        missing = sorted(role for role in required if not _has_role(instance, role))
+        if not missing:
+            provenance = dict(instance.provenance or {})
+            provenance.setdefault("role_contract_ok", True)
+            instance.provenance = provenance
+            continue
+        provenance = dict(instance.provenance or {})
+        provenance["role_contract_ok"] = False
+        provenance["required_roles"] = sorted(required)
+        provenance["missing_required_roles"] = missing
+        provenance["role_contract_error"] = (
+            f"model_instance_missing_required_roles:{instance.instance_id}:{','.join(missing)}"
+        )
+        instance.provenance = provenance
+        instance.confidence = min(float(instance.confidence or 0.0), 0.2)
+        errors.append(str(provenance["role_contract_error"]))
+    return errors
 
 
 def _forbidden_item_to_text(item: Any) -> str:
@@ -1439,6 +1541,10 @@ class ModuleA2ModelIR:
             model_ir.error = prefix + "dropped_invalid_modeling_formulas:" + ";".join(
                 dropped_modeling_formula_errors
             )
+        role_contract_errors = _annotate_model_instance_role_contracts(model_ir)
+        if role_contract_errors:
+            prefix = (model_ir.error + ";") if model_ir.error else ""
+            model_ir.error = prefix + "model_instance_role_contract_errors:" + ";".join(role_contract_errors)
         contract_error = _collect_model_ir_contract_error(model_ir)
         if contract_error:
             model_ir.parse_ok = False

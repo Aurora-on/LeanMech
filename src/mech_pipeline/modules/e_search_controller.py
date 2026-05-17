@@ -1845,7 +1845,8 @@ def run_llm_guided_search(
                     payload.setdefault("probe_full_proof_body", trial_prefix)
                     rejected_actions.append(payload)
                     rejected_actions.extend(repair_result.get("rejected_payloads") or [])
-                    plan_remainder_after_action = list(accepted_repair.get("pending_actions") or [])
+                    repair_pending_actions = list(accepted_repair.get("pending_actions") or [])
+                    plan_remainder_after_action = [*repair_pending_actions, *plan_remainder_after_action]
                     proposal = accepted_repair["proposal"]
                     check = accepted_repair["check"]
                     trial_prefix = accepted_repair["trial_prefix"]

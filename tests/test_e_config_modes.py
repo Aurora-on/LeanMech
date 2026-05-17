@@ -63,3 +63,15 @@ def test_auto_routes_legacy_candidate_to_legacy_full_proof() -> None:
         theorem_decl="theorem c1 : True",
     )
     assert select_proof_execution_mode(cfg.proof, candidate) == "legacy_full_proof"
+
+
+def test_skip_mode_routes_to_skip_for_any_candidate() -> None:
+    cfg = PipelineConfig()
+    cfg.proof.mode = "skip"
+    candidate = TheoremSkeletonCandidate(
+        sample_id="s1",
+        candidate_id="c1",
+        lean_header="import MechLib",
+        theorem_decl="theorem c1 : True",
+    )
+    assert select_proof_execution_mode(cfg.proof, candidate) == "skip"

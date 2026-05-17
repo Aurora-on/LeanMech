@@ -277,6 +277,66 @@ def test_model_ir_builder_does_not_poison_scalar_target_with_bad_function_ir(tmp
     assert model_ir.canonical_target.function_formula_ir[0].parse_ok is False
 
 
+def test_model_ir_builder_recovers_scalar_target_parse_gap_and_lhs_variables(tmp_path: Path) -> None:
+    payload = json.loads(_valid_payload())
+    payload["canonical_target"] = {
+        "target_id": "target_1",
+        "target_kind": "closed_form",
+        "target_variables": ["L"],
+        "lean_formula": "L1 = g * Real.sin alpha.val",
+        "secondary_formulas": ["L2 = g * Real.cos alpha.val"],
+        "function_formula_ir": [],
+        "requires_closed_form": True,
+        "source_text": "Find the two stable positions L1 and L2.",
+        "confidence": 0.83,
+        "parse_ok": False,
+        "error": "value-level access and mixed quantity arithmetic may require normalization/casting",
+    }
+    payload["forbidden_as_assumption"] = ["target positions", "L1 = g * Real.sin alpha.val"]
+    module = ModuleA2ModelIR(StaticModelIRClient(json.dumps(payload)), _prompt(tmp_path))
+
+    model_ir = module.run(
+        sample_id="l1-l2-target",
+        problem_text="Find L1 and L2.",
+        problem_ir={"unknown_target": {"symbol": "L1", "description": "stable positions"}},
+        structured_mechlib_context=None,
+    )
+
+    assert model_ir.parse_ok is True
+    assert model_ir.canonical_target is not None
+    assert model_ir.canonical_target.parse_ok is True
+    assert {"L1", "L2"}.issubset(set(model_ir.canonical_target.target_variables))
+
+
+def test_model_ir_builder_marks_newton_missing_required_role_without_guessing(tmp_path: Path) -> None:
+    payload = json.loads(_valid_payload())
+    payload["model_instances"] = [
+        {
+            "instance_id": "mi_newton",
+            "kind": "newton_second_law_1d",
+            "natural_language": "Use Newton's second law for the glider.",
+            "variables": {"mass": "m1", "acceleration": "a", "force": "T"},
+            "expected_claim": "T = m1 * a",
+            "confidence": 0.95,
+        }
+    ]
+    module = ModuleA2ModelIR(StaticModelIRClient(json.dumps(payload)), _prompt(tmp_path))
+
+    model_ir = module.run(
+        sample_id="newton-missing-net-force",
+        problem_text="A force T acts on mass m1. Find acceleration a.",
+        problem_ir={"unknown_target": {"symbol": "a", "description": "acceleration"}},
+        structured_mechlib_context=None,
+    )
+
+    assert model_ir.parse_ok is True
+    assert model_ir.error is not None
+    assert "model_instance_missing_required_roles:mi_newton:net_force" in model_ir.error
+    provenance = model_ir.model_instances[0].provenance
+    assert provenance["role_contract_ok"] is False
+    assert provenance["missing_required_roles"] == ["net_force"]
+
+
 def test_model_ir_builder_lifts_target_spec_secondary_goal(tmp_path: Path) -> None:
     payload = json.loads(_valid_payload())
     payload["canonical_target"] = {

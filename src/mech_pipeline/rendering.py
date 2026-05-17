@@ -387,17 +387,25 @@ def _render_problem_lean_file(
 ) -> str:
     sample_name = str(sample.meta.get("name") or sample.sample_id)
     header = normalize_lean_text(str((candidate_row or {}).get("lean_header") or "import MechLib")).strip()
+    proof_ok = bool((proof_row or {}).get("proof_success"))
+    proof_body = _prepare_proof_body(str((attempt_row or {}).get("proof_body") or ""))
     theorem_decl = ""
-    if candidate_row and candidate_row.get("theorem_decl"):
+    proof_search_trace = (attempt_row or {}).get("proof_search_trace")
+    if (
+        proof_ok
+        and proof_body
+        and isinstance(proof_search_trace, dict)
+        and proof_search_trace.get("augmented_theorem_decl")
+    ):
+        theorem_decl = str(proof_search_trace["augmented_theorem_decl"])
+    elif candidate_row and candidate_row.get("theorem_decl"):
         theorem_decl = str(candidate_row["theorem_decl"])
     elif semantic_row and semantic_row.get("selected_theorem_decl"):
         theorem_decl = str(semantic_row["selected_theorem_decl"])
     decl = _lean_declaration_only(theorem_decl)
 
-    proof_ok = bool((proof_row or {}).get("proof_success"))
     attempts_used = _as_int((proof_row or {}).get("attempts_used"), 0)
     final_error = str((proof_row or {}).get("error_type") or (summary.final_error_type if summary else "") or "").strip()
-    proof_body = _prepare_proof_body(str((attempt_row or {}).get("proof_body") or ""))
     selected_candidate_id = str(
         (proof_row or {}).get("selected_candidate_id")
         or (semantic_row or {}).get("selected_candidate_id")

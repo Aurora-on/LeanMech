@@ -588,6 +588,12 @@ class SketchAuditor:
         }
         registered_hypothesis_names.update(step.produces for step in steps if step.produces)
         registered_hypothesis_names.update(step.step_id for step in steps if step.step_id)
+        if model_ir is not None:
+            registered_hypothesis_names.update(
+                str(instance.instance_id)
+                for instance in getattr(model_ir, "model_instances", []) or []
+                if str(getattr(instance, "instance_id", "") or "").strip()
+            )
         verified_binding_count = sum(
             1 for binding in evidence_bindings if binding.binding_status == "ok" and binding.proof_fact_allowed
         )

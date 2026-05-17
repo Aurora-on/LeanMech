@@ -112,6 +112,7 @@ class KnowledgeConfig:
     alias_map_path: str = DEFAULT_MECHLIB_ALIAS_MAP
     alignment_index_path: str = DEFAULT_MECHLIB_ALIGNMENT_INDEX
     lean_check_decls: bool = True
+    lean_check_timeout_s: int | None = 120
     summary_injection_mode: str = "domain_full"
     always_include_core_tags: list[str] = field(default_factory=lambda: ["SI", "Units"])
 
@@ -364,8 +365,10 @@ def validate_config(cfg: PipelineConfig) -> None:
         raise ValueError("statement.max_sketch_steps must be > 0")
     if cfg.proof.max_attempts <= 0:
         raise ValueError("proof.max_attempts must be > 0")
-    if cfg.proof.mode not in {"auto", "legacy_full_proof", "llm_guided_search"}:
-        raise ValueError("proof.mode must be one of {'auto', 'legacy_full_proof', 'llm_guided_search'}")
+    if cfg.knowledge.lean_check_timeout_s is not None and cfg.knowledge.lean_check_timeout_s <= 0:
+        raise ValueError("knowledge.lean_check_timeout_s must be > 0 when set")
+    if cfg.proof.mode not in {"auto", "legacy_full_proof", "llm_guided_search", "skip"}:
+        raise ValueError("proof.mode must be one of {'auto', 'legacy_full_proof', 'llm_guided_search', 'skip'}")
     search = cfg.proof.llm_guided_search
     if search.max_nodes <= 0:
         raise ValueError("proof.llm_guided_search.max_nodes must be > 0")
@@ -426,6 +429,8 @@ def validate_config(cfg: PipelineConfig) -> None:
 
 def select_proof_execution_mode(proof: ProofConfig, candidate: object | None) -> str:
     """Resolve the proof backend mode without changing legacy ModuleE behavior."""
+    if proof.mode == "skip":
+        return "skip"
     if proof.mode == "legacy_full_proof":
         return "legacy_full_proof"
     if proof.mode == "llm_guided_search":

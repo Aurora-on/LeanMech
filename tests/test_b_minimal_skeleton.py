@@ -80,6 +80,8 @@ def _model_ir() -> ModelIR:
             "a": {"type": "acceleration"},
             "T1": {"type": "force"},
             "T2": {"type": "force"},
+            "Fnet1": {"type": "force"},
+            "Fnet2": {"type": "force"},
             "R": {"type": "length"},
             "I": {"type": "moment_of_inertia"},
             "alpha": {"type": "angular_acceleration"},
@@ -91,6 +93,8 @@ def _model_ir() -> ModelIR:
             QuantityTypeAnnotation("a", semantic_role="acceleration", lean_type="Acceleration", confidence=0.95),
             QuantityTypeAnnotation("T1", semantic_role="tension force", lean_type="Force", confidence=0.95),
             QuantityTypeAnnotation("T2", semantic_role="tension force", lean_type="Force", confidence=0.95),
+            QuantityTypeAnnotation("Fnet1", semantic_role="net force on m1", lean_type="Force", confidence=0.95),
+            QuantityTypeAnnotation("Fnet2", semantic_role="net force on m2", lean_type="Force", confidence=0.95),
             QuantityTypeAnnotation("R", semantic_role="radius", lean_type="Length", confidence=0.95),
             QuantityTypeAnnotation("I", semantic_role="moment of inertia", lean_type="MomentOfInertia", confidence=0.95),
             QuantityTypeAnnotation("alpha", semantic_role="angular acceleration", lean_type="AngularAcceleration", confidence=0.95),
@@ -118,17 +122,17 @@ def _model_ir() -> ModelIR:
                 instance_id="mi_m1",
                 kind="newton_second_law_1d",
                 natural_language="Newton law for mass m1.",
-                variables={"force": "T1", "mass": "m1", "acceleration": "a"},
+                variables={"net_force": "Fnet1", "mass": "m1", "acceleration": "a"},
                 planning_schema_id="law.newton.second.1d",
-                expected_claim="T1 - m1 * g = m1 * a",
+                expected_claim="Fnet1 = m1 * a",
             ),
             ModelInstance(
                 instance_id="mi_m2",
                 kind="newton_second_law_1d",
                 natural_language="Newton law for mass m2.",
-                variables={"force": "T2", "mass": "m2", "acceleration": "a"},
+                variables={"net_force": "Fnet2", "mass": "m2", "acceleration": "a"},
                 planning_schema_id="law.newton.second.1d",
-                expected_claim="m2 * g - T2 = m2 * a",
+                expected_claim="Fnet2 = m2 * a",
             ),
             ModelInstance(
                 instance_id="mi_rot",
@@ -218,6 +222,7 @@ def _bindings() -> list[EvidenceBinding]:
             lean_check_pass=True,
             proof_fact_allowed=True,
             binding_status="ok",
+            slot_order=["net_force", "mass", "acceleration"],
             expected_claim="T1 - m1 * g = m1 * a",
         ),
         EvidenceBinding(
@@ -231,6 +236,7 @@ def _bindings() -> list[EvidenceBinding]:
             lean_check_pass=True,
             proof_fact_allowed=True,
             binding_status="ok",
+            slot_order=["net_force", "mass", "acceleration"],
             expected_claim="m2 * g - T2 = m2 * a",
         ),
         EvidenceBinding(
@@ -404,11 +410,11 @@ def test_b_minimal_skeleton_outputs_theorem_skeleton_candidate(tmp_path: Path) -
     assert "import MechLib.Atwood.Rotation" not in candidate.lean_header
     assert "atwood_minimal (m1 m2 g T1 T2 R I alpha a : Real)" not in candidate.theorem_decl
     assert "(m1 m2 : Mass)" in candidate.theorem_decl
-    assert "(T1 T2 : Force)" in candidate.theorem_decl
+    assert "(T1 T2 Fnet1 Fnet2 : Force)" in candidate.theorem_decl
     assert "(g a : Acceleration)" in candidate.theorem_decl
     assert "alpha.val = a.val / R.val" in candidate.theorem_decl
     assert "(h_m1_pos : 0 < m1.val)" in candidate.theorem_decl
-    assert "MechLib.Atwood.newton_m1 T1 m1 a" in candidate.theorem_decl
+    assert "MechLib.Atwood.newton_m1 Fnet1 m1 a" in candidate.theorem_decl
     assert candidate.verified_decls == ["MechLib.Atwood.newton_m1", "MechLib.Atwood.newton_m2"]
     assert any(step.expected_claim == "T1 - m1 * g = m1 * a" for step in candidate.proof_obligations)
     assert any(step.expected_claim == "m2 * g - T2 = m2 * a" for step in candidate.proof_obligations)
@@ -485,12 +491,12 @@ def test_b_minimal_skeleton_checked_predicate_can_enter_compile_path(tmp_path: P
     assert candidate.fully_mechlib_verified is True
     assert "massless_string" not in candidate.theorem_decl
     assert candidate.ignored_llm_theorem_decl
-    assert "MechLib.Atwood.newton_m1 T1 m1 a" in candidate.theorem_decl
+    assert "MechLib.Atwood.newton_m1 Fnet1 m1 a" in candidate.theorem_decl
     assert candidate.assumptions == [
         "0 < m1.val",
         "0 < m2.val",
-        "MechLib.Atwood.newton_m1 T1 m1 a",
-        "MechLib.Atwood.newton_m2 T2 m2 a",
+        "MechLib.Atwood.newton_m1 Fnet1 m1 a",
+        "MechLib.Atwood.newton_m2 Fnet2 m2 a",
     ]
 
 

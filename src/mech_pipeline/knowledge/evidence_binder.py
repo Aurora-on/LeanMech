@@ -261,6 +261,7 @@ class EvidenceBinder:
         top_k: int = 8,
         lean_runner: Any | None = None,
         lean_check_decls: bool = True,
+        lean_check_timeout_s: int | None = 120,
         run_dir: Path | None = None,
         excluded_decl_names: set[str] | list[str] | None = None,
         lean_check_cache: LeanDeclCheckCache | None = None,
@@ -268,6 +269,7 @@ class EvidenceBinder:
         self.top_k = top_k
         self.lean_runner = lean_runner
         self.lean_check_decls = lean_check_decls
+        self.lean_check_timeout_s = lean_check_timeout_s
         self.run_dir = Path(run_dir).resolve() if run_dir is not None else None
         self._lean_check_cache: dict[str, bool] = {}
         self.shared_lean_check_cache = lean_check_cache
@@ -404,12 +406,20 @@ class EvidenceBinder:
             ensure_dir(tmp_dir)
             tmp_file = tmp_dir / f"{safe_stem(fq_name)}.lean"
             tmp_file.write_text(code, encoding="utf-8")
-            ok, _stdout, _stderr = self.lean_runner._run_lean(root_dir=root, rel_file=tmp_file)
+            ok, _stdout, _stderr = self.lean_runner._run_lean(
+                root_dir=root,
+                rel_file=tmp_file,
+                timeout_s=self.lean_check_timeout_s,
+            )
         else:
             with tempfile.TemporaryDirectory(prefix="mech_evidence_check_") as tmp:
                 tmp_file = Path(tmp) / f"{safe_stem(fq_name)}.lean"
                 tmp_file.write_text(code, encoding="utf-8")
-                ok, _stdout, _stderr = self.lean_runner._run_lean(root_dir=root, rel_file=tmp_file)
+                ok, _stdout, _stderr = self.lean_runner._run_lean(
+                    root_dir=root,
+                    rel_file=tmp_file,
+                    timeout_s=self.lean_check_timeout_s,
+                )
         return bool(ok)
 
     def _lean_root(self) -> Path | None:

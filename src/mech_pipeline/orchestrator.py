@@ -243,6 +243,7 @@ def process_sample(
                     top_k=cfg.knowledge.evidence_top_k,
                     lean_runner=getattr(module_c, "lean_runner", None),
                     lean_check_decls=cfg.knowledge.lean_check_decls,
+                    lean_check_timeout_s=cfg.knowledge.lean_check_timeout_s,
                     run_dir=run_dir,
                     excluded_decl_names=_excluded_decls_from_feedback(revision_feedback),
                     lean_check_cache=lean_check_cache,
@@ -532,6 +533,7 @@ def process_sample(
                 top_k=cfg.knowledge.evidence_top_k,
                 lean_runner=getattr(module_c, "lean_runner", None),
                 lean_check_decls=cfg.knowledge.lean_check_decls,
+                lean_check_timeout_s=cfg.knowledge.lean_check_timeout_s,
                 run_dir=run_dir,
                 lean_check_cache=lean_check_cache,
             ).bind(
@@ -753,7 +755,24 @@ def process_sample(
         selected_candidate = next((c for c in candidates if c.candidate_id == semantic.selected_candidate_id), None)
 
     e_context = mechlib_context if "E" in inject_set else "(none)"
-    if not semantic.semantic_pass:
+    if cfg.proof.mode == "skip":
+        proof_attempts = []
+        proof_check = ProofCheckResult(
+            sample_id=grounding.sample_id,
+            proof_success=False,
+            attempts_used=0,
+            selected_candidate_id=semantic.selected_candidate_id,
+            error_type="proof_skipped_by_config",
+            final_log_path=None,
+            backend_used=semantic.selected_backend,
+            round_index=final_round_index,
+            sub_error_type="proof_skipped_by_config",
+            failure_tags=["proof_skipped_by_config"],
+            failure_summary="Proof stage skipped because proof.mode=skip.",
+            failure_details={"semantic_pass": semantic.semantic_pass},
+            proof_mode="skip",
+        )
+    elif not semantic.semantic_pass:
         proof_attempts = []
         proof_check = ProofCheckResult(
             sample_id=grounding.sample_id,

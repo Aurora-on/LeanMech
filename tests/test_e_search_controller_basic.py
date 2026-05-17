@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from mech_pipeline.adapters.lean_runner import classify_proof_probe_result
 from mech_pipeline.config import PipelineConfig
 from mech_pipeline.modules.e_search_controller import _indent_tactic_body, run_llm_guided_search
 from mech_pipeline.types import ProofActionCheckResult, ProofContext, ProofObligationReplayItem
@@ -218,6 +219,24 @@ class ClaimRepairLeanRunner(FakeLeanRunner):
             theorem_decl=theorem_decl,
             proof_prefix=proof_prefix,
             timeout_s=timeout_s,
+        )
+
+
+class ErrorCategoryWithGoalsLeanRunner(FakeLeanRunner):
+    def probe_proof_prefix(self, *, lean_header, theorem_decl, proof_prefix, timeout_s=None):
+        _ = (lean_header, theorem_decl, timeout_s)
+        self.probes.append(proof_prefix)
+        return classify_proof_probe_result(
+            ok=False,
+            stdout="",
+            stderr="""
+/tmp/pipeline_proof_probe.lean:31:19: error(lean.unknownIdentifier): Unknown identifier `missing_h`
+/tmp/pipeline_proof_probe.lean:29:53: error: unsolved goals
+h : True
+⊢ True
+""",
+            tactic_block=proof_prefix,
+            probe_full_proof_body=proof_prefix,
         )
 
 
@@ -787,6 +806,36 @@ def test_search_controller_does_not_credit_rejected_action_facts_or_obligations(
     assert rejected["remaining_obligations_after"] == ["obl_newton"]
 
 
+def test_search_controller_does_not_create_fact_from_error_category_probe() -> None:
+    llm = FakeLLM(
+        [
+            {
+                "strategy": "introduce_intermediate_have",
+                "tactic_block": "have h_bad : True := by\n  exact missing_h",
+                "uses_facts": [],
+                "uses_decls": [],
+            }
+        ]
+    )
+    runner = ErrorCategoryWithGoalsLeanRunner()
+
+    trace = run_llm_guided_search(
+        proof_context=_context(),
+        lean_runner=runner,
+        llm_client=llm,
+        cfg=_cfg(max_nodes=2, max_llm_calls=1),
+    )
+
+    assert trace.accepted_actions == []
+    assert len(trace.rejected_actions) == 1
+    rejected = trace.rejected_actions[0]
+    assert rejected["status"] == "invalid"
+    assert rejected["error_type"] == "symbol_hallucination"
+    assert rejected["proposed_local_facts"] == ["h_bad"]
+    assert rejected["new_local_facts"] == []
+    assert rejected["new_local_fact_claims"] == []
+
+
 def test_search_controller_blocks_failed_preflight_and_runs_target_fact_plan() -> None:
     cfg = _cfg(max_nodes=4, max_llm_calls=1)
     cfg.proof.llm_guided_search.deterministic_obligation_replay_first = True
@@ -948,7 +997,7 @@ def test_search_controller_splits_overpacked_fact_plan_have_blocks() -> None:
 
 
 def test_search_controller_repairs_fact_plan_tactic_no_goals_without_dropping_prefix() -> None:
-    cfg = _cfg(max_nodes=8, max_llm_calls=2)
+    cfg = _cfg(max_nodes=8, max_llm_calls=1)
     llm = SequentialPayloadFakeLLM(
         [
             {
@@ -968,15 +1017,6 @@ def test_search_controller_repairs_fact_plan_tactic_no_goals_without_dropping_pr
                 ],
                 "close": "exact h_final",
             },
-            {
-                "proposals": [
-                    {
-                        "strategy": "target_fact_plan_close",
-                        "tactic_block": "exact h_final",
-                        "uses_facts": ["h_final"],
-                    }
-                ]
-            },
         ]
     )
     runner = NoGoalsRepairLeanRunner()
@@ -988,7 +1028,7 @@ def test_search_controller_repairs_fact_plan_tactic_no_goals_without_dropping_pr
         cfg=cfg,
     )
 
-    assert llm.calls == 2
+    assert llm.calls == 1
     assert trace.search_status == "success"
     assert [row["strategy"] for row in trace.accepted_actions] == [
         "target_fact_plan_have",
@@ -1000,7 +1040,8 @@ def test_search_controller_repairs_fact_plan_tactic_no_goals_without_dropping_pr
     assert repair["repair_replanned_from_prefix"] is True
     assert repair["tactic_block"] == "have h_final : True := by\n  exact h_one"
     assert repair["new_local_facts"] == ["h_final"]
-    assert trace.accepted_actions[2]["uses_facts"] == ["h_final"]
+    assert trace.accepted_actions[2]["action_id"] == "llm_plan_1_close"
+    assert trace.accepted_actions[2]["tactic_block"] == "exact h_final"
     assert "have h_one : True := by\n  exact h" in trace.final_proof_body
     assert "have h_final : True := by\n  exact h_one" in trace.final_proof_body
     original_failure = next(row for row in trace.rejected_actions if row["action_id"] == "llm_plan_1_2")

@@ -226,6 +226,17 @@ def test_sketch_audit_fails_unknown_required_hypothesis() -> None:
     assert "unknown_required_hypotheses" in result.failure_tags
 
 
+def test_sketch_audit_allows_required_model_instance_id() -> None:
+    step = _ok_step()
+    step.required_hypotheses = ["mi1"]
+    sketch = ControlledSketch(sample_id="s1", status="ok", proof_steps=[step], parse_ok=True)
+
+    result = _audit(_model_ir(), sketch)
+
+    assert result.audit_pass is True
+    assert "unknown_required_hypotheses" not in result.failure_tags
+
+
 def test_sketch_audit_fails_non_target_algebra_obligation() -> None:
     sketch = ControlledSketch(
         sample_id="s1",

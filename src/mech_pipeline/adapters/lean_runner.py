@@ -14,8 +14,9 @@ from mech_pipeline.utils import ensure_dir, normalize_lean_text, safe_stem, trun
 
 _SUBPROCESS_TEXT_ENCODING = "utf-8"
 _SUBPROCESS_TEXT_ERRORS = "replace"
-_LEAN_ERROR_LOC_RE = re.compile(r":(?P<line>\d+):(?P<col>\d+):\s*error:\s*(?P<msg>[^\n]+)")
-_LEAN_ERROR_MSG_RE = re.compile(r":\d+:\d+:\s*error:\s*(?P<msg>[^\n]+)")
+_LEAN_ERROR_TOKEN_RE = re.compile(r"error(?:\([^)]*\))?:")
+_LEAN_ERROR_LOC_RE = re.compile(r":(?P<line>\d+):(?P<col>\d+):\s*error(?:\([^)]*\))?:\s*(?P<msg>[^\n]+)")
+_LEAN_ERROR_MSG_RE = re.compile(r":\d+:\d+:\s*error(?:\([^)]*\))?:\s*(?P<msg>[^\n]+)")
 _MECHLIB_HEADER_LINES = (
     "import Mathlib",
     "import MechLib",
@@ -192,7 +193,7 @@ def classify_compile_sub_error(error_type: str | None, stderr: str) -> str | Non
         return "timeout_or_tooling_block"
     if error_type == "invalid_lean_syntax":
         return "invalid_decl_shape"
-    if any(token in text for token in ["unknown namespace", "unknown package", "unknown module prefix"]) and "error:" in text:
+    if any(token in text for token in ["unknown namespace", "unknown package", "unknown module prefix"]) and _LEAN_ERROR_TOKEN_RE.search(stderr or ""):
         return "namespace_or_import_issue"
     if "unknown constant" in text or "unknown identifier" in text:
         return "symbol_hallucination"
@@ -225,12 +226,12 @@ def _probe_goals_excerpt(text: str, limit: int = 800) -> str | None:
 def _lean_error_messages(text: str) -> list[str]:
     normalized = normalize_lean_text(text)
     messages = [match.group("msg").strip() for match in _LEAN_ERROR_MSG_RE.finditer(normalized)]
-    if not messages and "error:" in normalized.lower():
+    if not messages and _LEAN_ERROR_TOKEN_RE.search(normalized):
         for raw in normalized.splitlines():
             line = raw.strip()
-            lowered = line.lower()
-            if "error:" in lowered:
-                messages.append(line.split("error:", 1)[1].strip())
+            match = _LEAN_ERROR_TOKEN_RE.search(line)
+            if match:
+                messages.append(line[match.end() :].strip())
     return messages
 
 
@@ -333,7 +334,7 @@ def classify_proof_probe_result(
                 probe_full_proof_body=probe_full_proof_body,
             )
 
-    if ok and "error:" not in lowered:
+    if ok and not _LEAN_ERROR_TOKEN_RE.search(merged):
         return ProofActionCheckResult(
             action_id="probe",
             strategy="probe_proof_prefix",

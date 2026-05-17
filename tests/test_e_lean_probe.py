@@ -89,6 +89,29 @@ m1 m2 : Mass
     assert "Application type mismatch" in result.stderr_excerpt
 
 
+def test_probe_result_rejects_error_category_even_with_unsolved_goals() -> None:
+    stderr = """
+/tmp/pipeline_proof_probe.lean:31:19: error(lean.unknownIdentifier): Unknown identifier `t0`
+/tmp/pipeline_proof_probe.lean:29:53: error: unsolved goals
+a : Acceleration
+⊢ True
+"""
+
+    result = classify_proof_probe_result(
+        ok=False,
+        stdout="",
+        stderr=stderr,
+        tactic_block="have h_bad : True := by\n  exact t0",
+    )
+
+    assert result.status == "invalid"
+    assert result.error_type == "symbol_hallucination"
+    assert result.goals_excerpt is None
+    assert result.error_message == "Unknown identifier `t0`"
+    assert result.stderr_excerpt
+    assert "error(lean.unknownIdentifier)" in result.stderr_excerpt
+
+
 def test_probe_result_classifies_no_goals_with_location_and_debug_body() -> None:
     stderr = """
 /tmp/pipeline_proof_probe.lean:21:59: error: unsolved goals

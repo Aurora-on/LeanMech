@@ -26,14 +26,16 @@ class FakePrivateLeanRunner:
 
     def __init__(self) -> None:
         self.paths: list[str] = []
+        self.timeouts_seen: list[int | None] = []
 
     def _backend_root(self, backend: str) -> Path:
         _ = backend
         return Path.cwd()
 
-    def _run_lean(self, *, root_dir: Path, rel_file: Path):
+    def _run_lean(self, *, root_dir: Path, rel_file: Path, timeout_s: int | None = None):
         _ = root_dir
         self.paths.append(str(rel_file))
+        self.timeouts_seen.append(timeout_s)
         return True, "", ""
 
 
@@ -216,6 +218,26 @@ def test_evidence_binder_uses_absolute_evidence_check_path(tmp_path: Path) -> No
     assert bindings[0].binding_status == "ok"
     assert runner.paths
     assert Path(runner.paths[0]).is_absolute()
+    assert runner.timeouts_seen == [120]
+
+
+def test_evidence_binder_allows_custom_lean_check_timeout(tmp_path: Path) -> None:
+    runner = FakePrivateLeanRunner()
+
+    bindings = EvidenceBinder(
+        top_k=1,
+        lean_runner=runner,
+        lean_check_decls=True,
+        lean_check_timeout_s=240,
+        run_dir=tmp_path / "run",
+    ).bind(
+        [_constant_speed_instance()],
+        _context_with_decl(),
+        problem_text="constant speed displacement",
+    )
+
+    assert bindings[0].binding_status == "ok"
+    assert runner.timeouts_seen == [240]
 
 
 def test_evidence_binder_rejects_not_callable_or_not_proof_allowed_decl() -> None:
