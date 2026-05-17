@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from mech_pipeline.modules.B_statement_gen import (
+    _has_unsupported_tuple_formula,
+    _quantity_infos,
+    _target_formula,
     _is_allowed_lean_target,
     _typed_formula_from_text,
     render_function_formula_ir,
 )
+from mech_pipeline.types import CanonicalTarget, FunctionFormulaIR, ModelIR, QuantityTypeAnnotation
 
 
 def test_render_pointwise_real_domain_typed_codomain() -> None:
@@ -344,3 +348,101 @@ def test_typed_formula_inserts_space_after_qualified_real_function() -> None:
 
     assert "Real.cos (" in formula
     assert "Real.cos(" not in formula
+
+
+def test_tuple_detection_handles_nested_numeric_cast_tuple() -> None:
+    assert _has_unsupported_tuple_formula("a = (((1 : Real) / 2), ((3 : Real) / 10))") is True
+
+
+def test_function_quantity_scalar_projection_is_blocked() -> None:
+    quantity_infos = [
+        {"source_name": "Fnet", "name": "Fnet", "lean_type": "Force"},
+        {"source_name": "m", "name": "m", "lean_type": "Mass"},
+        {"source_name": "k", "name": "k", "lean_type": "SpringConstant"},
+        {
+            "source_name": "y",
+            "name": "y",
+            "lean_type": "MechLib.Mechanics.Kinematics.ScalarTrajectory",
+        },
+    ]
+    trace: list[dict[str, object]] = []
+
+    formula = _typed_formula_from_text(
+        "Fnet = m * g - k * y.val",
+        quantity_infos,
+        trace_sink=trace,
+        trace_source="regression:y_scalar_projection",
+    )
+
+    assert "y.val" in formula
+    assert trace[-1]["blocked_reason"] == "function_quantity_scalar_projection"
+
+
+def test_canonical_function_target_type_overrides_scalar_annotation() -> None:
+    model_ir = ModelIR(
+        sample_id="angular_momentum_function",
+        variables={"L_Oz": "z component of angular momentum"},
+        quantity_annotations=[
+            QuantityTypeAnnotation(symbol="L_Oz", lean_type="AngularMomentum", confidence=0.98)
+        ],
+        canonical_target=CanonicalTarget(
+            target_kind="pointwise_function_relation",
+            target_variables=["L_Oz"],
+            lean_formula="forall t0 : Real, (L_Oz t0).val = 0",
+            function_formula_ir=[
+                FunctionFormulaIR(
+                    formula_kind="pointwise_relation",
+                    function_symbol="L_Oz",
+                    function_type="Real -> AngularMomentum",
+                    bound_variables=[{"name": "t0", "lean_type": "Real"}],
+                    lhs="(L_Oz t0).val",
+                    relation="=",
+                    rhs="0",
+                    parse_ok=True,
+                )
+            ],
+            parse_ok=True,
+        ),
+        parse_ok=True,
+    )
+
+    infos = _quantity_infos(model_ir)
+    l_oz = next(info for info in infos if info["name"] == "L_Oz")
+    formula, error = _target_formula(
+        model_ir=model_ir,
+        controlled_sketch=None,
+        quantity_infos=infos,
+    )
+
+    assert l_oz["lean_type"] == "Real -> AngularMomentum"
+    assert error is None
+    assert formula == "forall t0 : Real, (L_Oz t0).val = 0"
+
+
+def test_target_conjunction_parenthesizes_conditional_conclusion() -> None:
+    model_ir = ModelIR(
+        sample_id="conditional_target",
+        variables={"F2": "force magnitude", "gamma": "angle"},
+        quantity_annotations=[
+            QuantityTypeAnnotation(symbol="F2", lean_type="Force", confidence=0.99),
+            QuantityTypeAnnotation(symbol="gamma", lean_type="PhysAngle", confidence=0.99),
+        ],
+        canonical_target=CanonicalTarget(
+            target_kind="relation",
+            target_variables=["F2", "gamma"],
+            lean_formula="F2 = 10",
+            secondary_formulas=["F2 > 0 -> gamma = Real.pi / 3"],
+            parse_ok=True,
+        ),
+        parse_ok=True,
+    )
+
+    formula, error = _target_formula(
+        model_ir=model_ir,
+        controlled_sketch=None,
+        quantity_infos=_quantity_infos(model_ir),
+    )
+
+    assert error is None
+    assert "F2.val = 10" in formula
+    assert "∧\n  (F2.val > 0 -> gamma.val = Real.pi / 3)" in formula

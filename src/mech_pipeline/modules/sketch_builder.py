@@ -17,7 +17,7 @@ from mech_pipeline.prompt_views import (
     compact_problem_ir,
     compact_structured_context,
 )
-from mech_pipeline.quantity_types import SUPPORTED_SI_QUANTITY_TYPES, is_function_quantity_lean_type
+from mech_pipeline.quantity_types import SUPPORTED_SI_QUANTITY_TYPES, function_quantity_parts, is_function_quantity_lean_type
 from mech_pipeline.response_parser import ResponseParseError, parse_json_model
 from mech_pipeline.types import (
     AlgebraObligation,
@@ -78,6 +78,7 @@ Hard rules:
 15. Do not pack multiple propositions into one formal_claim with commas. Use separate proof_steps or a single intentional ∧ proposition.
 16. Do not cast numeric Real values into SI quantity types, e.g. never output ((1 : Real) : Speed). Use value-level Real formulas for algebraic obligations.
 17. Prefer pointwise formulas with a bound Real chart variable for function-valued quantities. Numeric applications such as v 0 are allowed only when they refer to explicit evaluation givens already present in ModelIR; do not invent them as derived proof steps.
+18. If the target needs a velocity function from a position trajectory or an acceleration function from a velocity field, include that kinematic derivative bridge as a model_interface_instantiation unless ModelIR already contains it. These derivative bridges are explicit modeling interfaces, not verified proof steps unless EvidenceBindings explicitly support them.
 
 Return this JSON shape:
 {
@@ -107,7 +108,17 @@ Return this JSON shape:
     "allowed_solvers": ["ring", "linarith", "nlinarith"]
   },
   "blocked_law_steps": [],
-  "model_interface_instantiations": []
+  "model_interface_instantiations": [
+    {
+      "instantiation_id": "kin_velocity_x_v",
+      "kind": "kinematic_velocity_derivative_bridge",
+      "formal_claim": "forall t0 : Real, (v t0).val = deriv (fun u : Real => (x u).val) t0",
+      "source_model_instance": null,
+      "interface_name": "velocity_from_position",
+      "binding_status": "explicit_model_gap",
+      "proof_fact_allowed": false
+    }
+  ]
 }
 
 Problem text:
@@ -553,6 +564,188 @@ def _instance_planning_schemas(model_ir: ModelIR) -> dict[str, str]:
     }
 
 
+def _function_quantity_role(row: dict[str, Any]) -> str | None:
+    symbol = str(row.get("symbol") or "").strip()
+    lean_type = str(row.get("lean_type") or "").strip()
+    semantic = str(row.get("semantic_role") or row.get("unit_or_dimension") or "").lower()
+    parts = function_quantity_parts(lean_type)
+    codomain = parts[1] if parts else ""
+    if codomain == "Length" or any(token in semantic for token in ("position", "trajectory", "displacement")):
+        return "position"
+    if codomain == "Speed" or any(token in semantic for token in ("velocity", "speed")):
+        return "velocity"
+    if codomain == "Acceleration" or "acceleration" in semantic:
+        return "acceleration"
+    if symbol and is_function_quantity_lean_type(lean_type):
+        return "function"
+    return None
+
+
+def _axis_key(symbol: str, role: str) -> str:
+    value = str(symbol or "").strip()
+    low = value.lower()
+    if not value:
+        return "scalar"
+    if low in {"x", "y", "z"}:
+        return low if role == "position" else "scalar"
+    for sep in ("_", "-"):
+        if sep in low:
+            tail = low.rsplit(sep, 1)[-1]
+            if tail in {"x", "y", "z", "r", "theta"}:
+                return tail
+    if role == "velocity" and low.startswith("v") and len(low) <= 3:
+        suffix = low[1:]
+        return suffix if suffix in {"x", "y", "z", "r"} else "scalar"
+    if role == "acceleration" and low.startswith("a") and len(low) <= 3:
+        suffix = low[1:]
+        return suffix if suffix in {"x", "y", "z", "r"} else "scalar"
+    return "scalar"
+
+
+def _pair_kinematic_functions(
+    sources: list[dict[str, Any]],
+    targets: list[dict[str, Any]],
+    *,
+    source_role: str,
+    target_role: str,
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    used_targets: set[str] = set()
+    targets_by_axis: dict[str, list[dict[str, Any]]] = {}
+    for target in targets:
+        targets_by_axis.setdefault(_axis_key(str(target.get("symbol") or ""), target_role), []).append(target)
+    for source in sources:
+        source_symbol = str(source.get("symbol") or "").strip()
+        axis = _axis_key(source_symbol, source_role)
+        candidates = targets_by_axis.get(axis, [])
+        if len(candidates) != 1 and len(sources) == 1 and len(targets) == 1:
+            candidates = targets
+        if len(candidates) != 1:
+            continue
+        target = candidates[0]
+        target_symbol = str(target.get("symbol") or "").strip()
+        if not source_symbol or not target_symbol or target_symbol in used_targets:
+            continue
+        used_targets.add(target_symbol)
+        pairs.append((source, target))
+    return pairs
+
+
+def _kinematic_bridge_context_text(model_ir: ModelIR) -> str:
+    parts: list[str] = []
+    canonical = getattr(model_ir, "canonical_target", None)
+    if canonical is not None:
+        payload = canonical.to_dict() if hasattr(canonical, "to_dict") else dict(canonical)
+        parts.append(str(payload.get("lean_formula") or ""))
+        parts.extend(str(item or "") for item in payload.get("secondary_formulas", []) or [])
+        for row in payload.get("function_formula_ir", []) or []:
+            if isinstance(row, dict):
+                parts.extend(
+                    str(row.get(key) or "")
+                    for key in ("function_symbol", "lhs", "rhs", "lean_formula", "source_text")
+                )
+    for instance in getattr(model_ir, "model_instances", []) or []:
+        parts.extend(
+            str(item or "")
+            for item in (
+                getattr(instance, "kind", ""),
+                getattr(instance, "natural_language", ""),
+                getattr(instance, "expected_claim", ""),
+                getattr(instance, "planning_schema_id", ""),
+            )
+        )
+    return "\n".join(parts)
+
+
+def _mentions_symbol(text: str, symbol: str) -> bool:
+    return bool(symbol and re.search(rf"(?<![A-Za-z0-9_']){re.escape(symbol)}(?![A-Za-z0-9_'])", text))
+
+
+def _synthesized_kinematic_interface_instantiations(model_ir: ModelIR) -> list[ModelInterfaceInstantiation]:
+    rows = [
+        row.to_dict() if hasattr(row, "to_dict") else dict(row)
+        for row in getattr(model_ir, "quantity_annotations", []) or []
+        if isinstance(row.to_dict() if hasattr(row, "to_dict") else row, dict)
+    ]
+    by_role: dict[str, list[dict[str, Any]]] = {"position": [], "velocity": [], "acceleration": []}
+    for row in rows:
+        symbol = str(row.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        role = _function_quantity_role(row)
+        if role in by_role:
+            by_role[role].append(row)
+
+    existing_claims: set[str] = set()
+    for item in getattr(model_ir, "interface_instantiations", []) or []:
+        if isinstance(item, ModelInterfaceInstantiation):
+            existing_claims.add(re.sub(r"\s+", "", item.formal_claim or ""))
+    for instance in getattr(model_ir, "model_instances", []) or []:
+        for item in getattr(instance, "interface_instantiations", []) or []:
+            if isinstance(item, ModelInterfaceInstantiation):
+                existing_claims.add(re.sub(r"\s+", "", item.formal_claim or ""))
+
+    out: list[ModelInterfaceInstantiation] = []
+    context_text = _kinematic_bridge_context_text(model_ir)
+
+    def add_bridge(kind: str, interface_name: str, lhs_symbol: str, rhs_symbol: str) -> None:
+        if not (_mentions_symbol(context_text, lhs_symbol) or "deriv" in context_text):
+            return
+        deriv_var = next(
+            candidate
+            for candidate in ("u", "tau", "s0", "t")
+            if candidate not in {lhs_symbol, rhs_symbol, "t0"}
+        )
+        formal_claim = (
+            f"forall t0 : Real, ({lhs_symbol} t0).val = "
+            f"deriv (fun {deriv_var} : Real => ({rhs_symbol} {deriv_var}).val) t0"
+        )
+        key = re.sub(r"\s+", "", formal_claim)
+        if key in existing_claims:
+            return
+        existing_claims.add(key)
+        out.append(
+            ModelInterfaceInstantiation(
+                instantiation_id=f"{kind}_{rhs_symbol}_{lhs_symbol}",
+                kind=kind,
+                formal_claim=formal_claim,
+                source_model_instance=None,
+                interface_name=interface_name,
+                source_type="model_ir",
+                modeling_basis=["quantity_annotations", "function_kinematics"],
+                proof_fact_allowed=False,
+                binding_status="explicit_model_gap",
+                notes="Synthesized kinematic derivative bridge from ModelIR function quantity roles.",
+            )
+        )
+
+    for position, velocity in _pair_kinematic_functions(
+        by_role["position"],
+        by_role["velocity"],
+        source_role="position",
+        target_role="velocity",
+    ):
+        add_bridge(
+            "kinematic_velocity_derivative_bridge",
+            "velocity_from_position",
+            str(velocity["symbol"]),
+            str(position["symbol"]),
+        )
+    for velocity, acceleration in _pair_kinematic_functions(
+        by_role["velocity"],
+        by_role["acceleration"],
+        source_role="velocity",
+        target_role="acceleration",
+    ):
+        add_bridge(
+            "kinematic_acceleration_derivative_bridge",
+            "acceleration_from_velocity",
+            str(acceleration["symbol"]),
+            str(velocity["symbol"]),
+        )
+    return out
+
+
 class SketchCanonicalizer:
     def __init__(
         self,
@@ -639,6 +832,8 @@ class SketchCanonicalizer:
                 if isinstance(item, ModelInterfaceInstantiation) and not item.source_model_instance:
                     item.source_model_instance = instance.instance_id
                 add(item if isinstance(item, ModelInterfaceInstantiation) else None)
+        for item in _synthesized_kinematic_interface_instantiations(self.model_ir):
+            add(item)
         for index, item in enumerate(payload.model_interface_instantiations, start=1):
             add(_interface_instantiation_from_payload(item, index))
         return out

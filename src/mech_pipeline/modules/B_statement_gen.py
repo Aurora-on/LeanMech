@@ -1487,12 +1487,20 @@ def _quantity_infos(
         return []
     infos: list[dict[str, Any]] = []
     seen: set[str] = set()
+    index_by_name: dict[str, int] = {}
 
     def add_info(info: dict[str, Any]) -> None:
         lean_name = str(info["name"])
         if not lean_name or lean_name in seen:
+            if lean_name in index_by_name:
+                existing = infos[index_by_name[lean_name]]
+                existing_type = str(existing.get("lean_type") or "")
+                new_type = str(info.get("lean_type") or "")
+                if is_function_quantity_lean_type(new_type) and not is_function_quantity_lean_type(existing_type):
+                    infos[index_by_name[lean_name]] = info
             return
         seen.add(lean_name)
+        index_by_name[lean_name] = len(infos)
         infos.append(info)
 
     variables = model_ir.variables if isinstance(model_ir.variables, dict) else {}
@@ -1542,6 +1550,32 @@ def _quantity_infos(
                 "type_supported": supported,
                 "type_source": type_source,
                 "type_confidence": confidence,
+                "requested_lean_type": requested_type,
+            }
+        )
+    canonical = getattr(model_ir, "canonical_target", None)
+    canonical_payload = _dataclass_payload(canonical)
+    for row in canonical_payload.get("function_formula_ir") or []:
+        payload = _dataclass_payload(row)
+        symbol = str(payload.get("function_symbol") or _function_symbol_from_lhs(payload.get("lhs"))).strip()
+        requested_type = str(payload.get("function_type") or "").strip()
+        if not symbol or not requested_type:
+            continue
+        lean_type, supported, status = normalize_quantity_lean_type(requested_type)
+        if not supported or not is_function_quantity_lean_type(lean_type):
+            continue
+        lean_name = lean_ident(_normalize_unicode_identifiers(symbol), prefix="q")
+        add_info(
+            {
+                "name": lean_name,
+                "source_name": symbol,
+                "lean_type": lean_type,
+                "source": payload,
+                "typed_quantity": True,
+                "type_status": status,
+                "type_supported": True,
+                "type_source": "canonical_target.function_formula_ir",
+                "type_confidence": 1.0,
                 "requested_lean_type": requested_type,
             }
         )
@@ -2135,6 +2169,8 @@ def _formula_blocked_reason(formula: str, quantity_infos: list[dict[str, Any]]) 
         return "derivative_field_not_supported"
     if "?" in formula:
         return "placeholder_formula"
+    if _has_function_scalar_projection(formula, quantity_infos):
+        return "function_quantity_scalar_projection"
     if _has_unsupported_tuple_formula(formula):
         return "tuple_valued_formula"
     if _has_unregistered_formula_symbol(formula, quantity_infos):
@@ -2280,6 +2316,13 @@ def _has_unsupported_tuple_formula(text: object) -> bool:
     value = normalize_lean_text(str(text or "")).strip()
     if not value:
         return False
+    if re.match(r"^\s*(?:forall|∀|Exists|∃)\b", value):
+        return False
+    relation = _split_relation_formula(value)
+    if relation is not None:
+        lhs, _rel, rhs = relation
+        if len(_split_top_level_commas(lhs)) > 1 or len(_split_top_level_commas(rhs)) > 1:
+            return True
     # The minimal skeleton has no audited vector/pair quantity binder yet.
     # Tuple-valued facts should be canonicalized upstream into scalar component
     # relations before they enter theorem hypotheses or goals.
@@ -2411,12 +2454,45 @@ def _safe_given_binders(
     return accepted, typed_rows, excluded
 
 
+def _model_interface_claim_covered_by_verified_predicate(
+    *,
+    item: ModelInterfaceInstantiation,
+    typed_claim: str,
+    model_predicate_by_instance: dict[str, dict[str, Any]],
+) -> bool:
+    source_model_instance = str(item.source_model_instance or "").strip()
+    if not source_model_instance:
+        return False
+    predicate_row = model_predicate_by_instance.get(source_model_instance)
+    if not predicate_row:
+        return False
+    predicate_name = str(predicate_row.get("model_predicate") or "")
+    arguments = [str(arg or "").strip() for arg in predicate_row.get("arguments", [])]
+    param_types = [str(arg or "").strip() for arg in predicate_row.get("param_types", [])]
+    if "NewtonSecondLaw" not in predicate_name or len(arguments) != len(param_types):
+        return False
+    try:
+        mass_symbol = arguments[param_types.index("Mass")]
+        acceleration_symbol = arguments[param_types.index("Acceleration")]
+    except ValueError:
+        return False
+    compact_claim = _norm_compact(typed_claim)
+    mass_accel = _norm_compact(f"{mass_symbol}.val * {acceleration_symbol}.val")
+    if not mass_accel or mass_accel not in compact_claim:
+        return False
+    # Once a checked NewtonSecondLaw predicate is present, any explicit
+    # mass-times-acceleration equation for the same model instance is a replay
+    # result of the extractor theorem, not a separate modeling hypothesis.
+    return True
+
+
 def _model_interface_hypotheses(
     *,
     model_ir: ModelIR | None,
     controlled_sketch: ControlledSketch | None,
     quantity_infos: list[dict[str, Any]],
     selected_model_instances: set[str],
+    model_predicates: list[dict[str, Any]] | None = None,
     extra_instantiations: list[ModelInterfaceInstantiation] | None = None,
     include_explicit_gaps: bool = True,
     trace_sink: list[dict[str, Any]] | None = None,
@@ -2432,6 +2508,11 @@ def _model_interface_hypotheses(
     typed_rows: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
     seen: set[str] = set()
+    model_predicate_by_instance = {
+        str(row.get("model_instance_id") or "").strip(): row
+        for row in (model_predicates or [])
+        if str(row.get("model_instance_id") or "").strip()
+    }
     for index, item in enumerate(instantiations, start=1):
         if (
             selected_model_instances
@@ -2448,7 +2529,13 @@ def _model_interface_hypotheses(
         )
         hyp_name = lean_ident(f"h_{item.instantiation_id}", prefix="h")
         reason: str | None = None
-        if item.proof_fact_allowed and not item.verified_constructor:
+        if _model_interface_claim_covered_by_verified_predicate(
+            item=item,
+            typed_claim=typed_claim,
+            model_predicate_by_instance=model_predicate_by_instance,
+        ):
+            reason = "covered_by_verified_model_predicate"
+        elif item.proof_fact_allowed and not item.verified_constructor:
             reason = "proof_fact_allowed_without_verified_constructor"
         elif "MechLib." in typed_claim and not item.verified_constructor:
             reason = "unverified_mechlib_reference"
@@ -2480,7 +2567,7 @@ def _model_interface_hypotheses(
                 }
             )
             continue
-        key = f"{hyp_name}:{typed_claim}"
+        key = _norm_compact(typed_claim)
         if key in seen:
             continue
         seen.add(key)
@@ -2573,6 +2660,10 @@ def _decl_returns_model_predicate(statement: str) -> bool:
 def _predicate_fq_from_short_name(binding_fq_name: str, predicate_name: str) -> str:
     if "." in predicate_name:
         return predicate_name
+    parts = [part for part in str(binding_fq_name or "").split(".") if part]
+    if predicate_name in parts:
+        idx = len(parts) - 1 - list(reversed(parts)).index(predicate_name)
+        return ".".join(parts[: idx + 1])
     namespace = str(binding_fq_name or "").rsplit(".", 1)[0]
     return f"{namespace}.{predicate_name}" if namespace else predicate_name
 
@@ -2600,7 +2691,7 @@ def _model_predicate_from_decl_statement(binding: EvidenceBinding) -> tuple[str,
 def _decl_binder_rows(statement: str) -> list[tuple[list[str], str]]:
     rows: list[tuple[list[str], str]] = []
     for match in re.finditer(
-        r"\(\s*([A-Za-z_][A-Za-z0-9_']*(?:\s+[A-Za-z_][A-Za-z0-9_']*)*)\s*:\s*([^)]+)\)",
+        r"[\(\{]\s*([A-Za-z_][A-Za-z0-9_']*(?:\s+[A-Za-z_][A-Za-z0-9_']*)*)\s*:\s*([^\)\}]+)[\)\}]",
         statement,
     ):
         names = [name for name in match.group(1).split() if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_']*", name)]
@@ -2696,41 +2787,78 @@ def _role_type_hint(role: object) -> str:
     return _type_from_hint(role)
 
 
-ROLE_ALIASES_BY_PARAM_NAME: dict[str, list[str]] = {
-    "f": ["net_force", "resultant_force", "force", "tension"],
-    "force": ["net_force", "resultant_force", "force", "tension"],
-    "fnet": ["net_force", "resultant_force", "force"],
-    "fext": ["external_force", "net_force", "resultant_force", "force"],
-    "f_ext": ["external_force", "net_force", "resultant_force", "force"],
-    "m": ["mass"],
+CANONICAL_MODEL_ROLE_ALIASES: dict[str, list[str]] = {
+    "net_force": ["net_force", "resultant_force"],
+    "external_force": ["external_force"],
     "mass": ["mass"],
-    "a": ["acceleration", "angular_acceleration"],
-    "accel": ["acceleration"],
-    "acceleration": ["acceleration"],
-    "rddot": ["acceleration", "center_of_mass_acceleration"],
-    "alpha": ["angular_acceleration", "acceleration"],
-    "i": ["moment_of_inertia", "inertia"],
-    "j": ["moment_of_inertia", "inertia"],
-    "r": ["radius", "length", "position"],
-    "l": ["length", "radius"],
-    "t": ["time"],
-    "time": ["time"],
-    "x": ["position", "displacement", "trajectory"],
-    "v": ["velocity", "speed"],
-    "omega": ["angular_velocity"],
-    "theta": ["angle", "angular_position"],
+    "acceleration": ["acceleration", "linear_acceleration", "center_of_mass_acceleration"],
+    "position": ["position", "trajectory", "displacement"],
+    "velocity": ["velocity", "speed"],
+    "angular_acceleration": ["angular_acceleration"],
+    "angular_velocity": ["angular_velocity"],
+    "net_torque": ["net_torque", "resultant_torque", "torque"],
+    "moment_of_inertia": ["moment_of_inertia", "inertia"],
 }
 
 
-def _binding_slot_order(binding: EvidenceBinding, param_names: list[str]) -> list[str] | None:
+def _short_predicate_name(predicate_fq_name: str) -> str:
+    return str(predicate_fq_name or "").rsplit(".", 1)[-1]
+
+
+def _strict_slots_for_known_predicate(predicate_fq_name: str, param_types: list[str]) -> list[str] | None:
+    short = _short_predicate_name(predicate_fq_name)
+    normalized_types = [normalize_quantity_lean_type(item)[0] for item in param_types]
+    if short in {"NewtonSecondLaw", "Newton1D"}:
+        role_by_type = {
+            "Mass": "mass",
+            "Acceleration": "acceleration",
+            "Force": "net_force",
+        }
+        if set(normalized_types) >= {"Mass", "Acceleration", "Force"} and len(normalized_types) == 3:
+            return [role_by_type.get(item, "") for item in normalized_types]
+    if short in {"VelocityDerivativeRelation"}:
+        role_by_type = {
+            "MechLib.Mechanics.Kinematics.ScalarTrajectory": "position",
+            "MechLib.Mechanics.Kinematics.ScalarVelocityField": "velocity",
+        }
+        if all(item in role_by_type for item in normalized_types):
+            return [role_by_type[item] for item in normalized_types]
+    if short in {"AccelerationDerivativeRelation"}:
+        role_by_type = {
+            "MechLib.Mechanics.Kinematics.ScalarVelocityField": "velocity",
+            "MechLib.Mechanics.Kinematics.ScalarAccelerationField": "acceleration",
+        }
+        if all(item in role_by_type for item in normalized_types):
+            return [role_by_type[item] for item in normalized_types]
+    if "FixedAxis" in short or "Rotation" in short or "Rotational" in short:
+        role_by_type = {
+            "Torque": "net_torque",
+            "MomentOfInertia": "moment_of_inertia",
+            "AngularAcceleration": "angular_acceleration",
+        }
+        if set(normalized_types) >= {"Torque", "MomentOfInertia", "AngularAcceleration"}:
+            slots = [role_by_type.get(item, "") for item in normalized_types]
+            if all(slots):
+                return slots
+    return None
+
+
+def _binding_slot_order(
+    binding: EvidenceBinding,
+    *,
+    predicate_fq_name: str,
+    param_types: list[str],
+    param_names: list[str],
+) -> list[str] | None:
     explicit = getattr(binding, "slot_order", None)
     if isinstance(explicit, list) and explicit and all(str(item).strip() for item in explicit):
         return [str(item).strip() for item in explicit]
-    for name in param_names:
-        key = str(name or "").strip().lower()
-        if key not in ROLE_ALIASES_BY_PARAM_NAME:
-            return None
-    return [str(name).strip() for name in param_names]
+    strict = _strict_slots_for_known_predicate(predicate_fq_name, param_types)
+    if strict is not None and len(strict) == len(param_names):
+        return strict
+    # Unknown predicates are intentionally not instantiated from parameter
+    # names or types. A2/EvidenceBinding must provide a concrete slot_order.
+    return None
 
 
 def _symbol_for_slot(
@@ -2741,13 +2869,8 @@ def _symbol_for_slot(
     info_by_symbol: dict[str, dict[str, Any]],
 ) -> str | None:
     variables = instance.variables or {}
-    role_candidates = [str(slot or "").strip()]
-    role_candidates.extend(ROLE_ALIASES_BY_PARAM_NAME.get(str(slot or "").strip().lower(), []))
-    # For declarations whose parameter name is generic `F`, prefer the
-    # semantically registered net/resultant force if present, then explicit
-    # force/tension roles.  This is still role based; it does not scan by type.
-    if str(slot or "").strip().lower() in {"f", "force"}:
-        role_candidates = ["net_force", "resultant_force", "force", "tension"]
+    canonical_slot = str(slot or "").strip().lower()
+    role_candidates = CANONICAL_MODEL_ROLE_ALIASES.get(canonical_slot, [str(slot or "").strip()])
     seen_roles: set[str] = set()
     for role in role_candidates:
         if not role or role in seen_roles:
@@ -2813,19 +2936,6 @@ def _instance_roles(instance: ModelInstance) -> set[str]:
     return {role.lower() for role in roles}
 
 
-def _force_argument_is_safe_for_predicate(instance: ModelInstance, predicate_fq_name: str) -> bool:
-    if "NewtonSecondLaw" not in predicate_fq_name and "Newton1D" not in predicate_fq_name:
-        return True
-    roles = _instance_roles(instance)
-    if any("net" in role or "resultant" in role for role in roles):
-        return True
-    force_like_roles = {role for role in roles if any(key in role for key in ("force", "tension", "weight"))}
-    gravity_like = any("gravity" in role or "weight" in role for role in roles)
-    if gravity_like and force_like_roles:
-        return False
-    return bool(force_like_roles)
-
-
 def _predicate_application_for_instance(
     *,
     instance: ModelInstance,
@@ -2839,11 +2949,14 @@ def _predicate_application_for_instance(
     predicate_fq_name, param_types, param_names = predicate_info
     if not param_types:
         return None
-    if "Force" in param_types and not _force_argument_is_safe_for_predicate(instance, predicate_fq_name):
-        return None
     if len(param_names) != len(param_types):
         return None
-    slot_order = _binding_slot_order(binding, param_names)
+    slot_order = _binding_slot_order(
+        binding,
+        predicate_fq_name=predicate_fq_name,
+        param_types=param_types,
+        param_names=param_names,
+    )
     if slot_order is None or len(slot_order) != len(param_types):
         return None
     used_symbols: list[str] = []
@@ -3033,6 +3146,27 @@ def _contains_function_quantity_application(text: object, quantity_infos: list[d
     return False
 
 
+def _has_function_scalar_projection(text: object, quantity_infos: list[dict[str, Any]]) -> bool:
+    """Reject bare `x.val` when x is a function-valued physical quantity.
+
+    A function-valued quantity must be used pointwise, e.g. `(x t).val`.
+    Leaving `x.val` in a theorem binder produces invalid Lean and hides an
+    upstream modeling error.
+    """
+    value = normalize_lean_text(str(text or "")).strip()
+    if not value:
+        return False
+    for info in quantity_infos:
+        if not is_function_quantity_lean_type(str(info.get("lean_type") or "")):
+            continue
+        for name in {str(info.get("name") or ""), str(info.get("source_name") or "")}:
+            if not name or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_']*", name):
+                continue
+            if re.search(rf"(?<![A-Za-z0-9_.]){re.escape(name)}\.val\b", value):
+                return True
+    return False
+
+
 def _function_symbol_from_lhs(lhs: object) -> str:
     text = normalize_lean_text(str(lhs or "")).strip()
     patterns = [
@@ -3142,7 +3276,7 @@ def _vector_scalar_proxy_formula(
             if key and key not in seen:
                 seen.add(key)
                 formulas.append(part)
-    return " ∧\n  ".join(formulas) if formulas else "True"
+    return _join_target_formulas(formulas) if formulas else "True"
 
 
 def _is_function_equality_text(text: object) -> bool:
@@ -3171,6 +3305,57 @@ def _split_top_level_conjunctions(text: str) -> list[str]:
     if tail:
         parts.append(tail)
     return parts or [text.strip()]
+
+
+def _is_wrapped_expression(text: object) -> bool:
+    value = normalize_lean_text(str(text or "")).strip()
+    if not (value.startswith("(") and value.endswith(")")):
+        return False
+    depth = 0
+    for index, ch in enumerate(value):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0 and index != len(value) - 1:
+                return False
+    return depth == 0
+
+
+def _has_top_level_implication(text: object) -> bool:
+    value = normalize_lean_text(str(text or "")).strip()
+    depth = 0
+    index = 0
+    while index < len(value):
+        ch = value[index]
+        if ch in "([{":
+            depth += 1
+            index += 1
+            continue
+        if ch in ")]}" and depth > 0:
+            depth -= 1
+            index += 1
+            continue
+        if depth == 0 and (value.startswith("->", index) or ch == "→"):
+            return True
+        index += 1
+    return False
+
+
+def _needs_target_conjunction_parens(formula: object) -> bool:
+    value = normalize_lean_text(str(formula or "")).strip()
+    if not value or _is_wrapped_expression(value):
+        return False
+    return bool(re.match(r"^\s*(?:forall|∀|Exists|∃)\b", value) or _has_top_level_implication(value))
+
+
+def _join_target_formulas(formulas: list[str]) -> str:
+    if len(formulas) <= 1:
+        return formulas[0] if formulas else "False"
+    return " ∧\n  ".join(
+        f"({formula})" if _needs_target_conjunction_parens(formula) else formula
+        for formula in formulas
+    )
 
 
 def _strip_wrapping_parens(text: object) -> str:
@@ -3651,7 +3836,7 @@ def _target_formula(
                     quantity_infos=quantity_infos,
                 )
             if formulas:
-                return " ∧\n  ".join(formulas), "canonical_target_parse_gap_fallback"
+                return _join_target_formulas(formulas), "canonical_target_parse_gap_fallback"
         return "False", error_text
     function_formula_rows = [
         _dataclass_payload(item)
@@ -3693,11 +3878,6 @@ def _target_formula(
                 seen_ir.add(key)
                 formulas.append(formula)
         if formulas:
-            if len(formulas) > 1:
-                formulas = [
-                    f"({formula})" if re.match(r"^\s*(?:forall|∀|Exists|∃)\b", formula) else formula
-                    for formula in formulas
-                ]
             secondary = payload.get("secondary_formulas")
             if isinstance(secondary, list):
                 for raw_secondary in secondary:
@@ -3748,7 +3928,7 @@ def _target_formula(
                 quantity_infos=quantity_infos,
             )
             if formulas:
-                return " ∧\n  ".join(formulas), None
+                return _join_target_formulas(formulas), None
             return "False", "target_equivalent_to_hypothesis"
         return "False", "invalid_function_formula_ir"
     formulas: list[str] = []
@@ -3789,12 +3969,7 @@ def _target_formula(
         )
         if not formulas:
             return "False", "target_equivalent_to_hypothesis"
-        if len(formulas) > 1:
-            formulas = [
-                f"({formula})" if re.match(r"^\s*(?:forall|∀|Exists|∃)\b", formula) else formula
-                for formula in formulas
-            ]
-        return " ∧\n  ".join(formulas), None
+        return _join_target_formulas(formulas), None
     return "False", "invalid_canonical_target_formula"
 
 
@@ -3957,6 +4132,8 @@ def _has_unregistered_formula_symbol(text: object, quantity_infos: list[dict[str
     # SI quantity values are Real values, not functions. Forms like x.val(t)
     # come from opaque natural-language modeling and cannot be audited here.
     if re.search(r"\.val\s*\(", value):
+        return True
+    if _has_function_scalar_projection(value, quantity_infos):
         return True
     declared = {str(info.get("name") or "") for info in quantity_infos}
     declared.update(str(info.get("source_name") or "") for info in quantity_infos)
@@ -5498,6 +5675,7 @@ class ModuleB:
                 controlled_sketch=effective_sketch,
                 quantity_infos=quantity_infos,
                 selected_model_instances=selected_model_instances,
+                model_predicates=model_predicates,
                 extra_instantiations=expected_claim_instantiations,
                 include_explicit_gaps=include_explicit_gaps,
                 trace_sink=formula_normalization_trace,

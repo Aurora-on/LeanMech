@@ -23,6 +23,7 @@ Hard rules:
 15. Do not pack multiple propositions into one formal_claim with commas. Use separate proof_steps or a single intentional ∧ proposition.
 16. Do not cast numeric Real values into SI quantity types, e.g. never output ((1 : Real) : Speed). Use value-level Real formulas for algebraic obligations.
 17. Prefer pointwise formulas with a bound Real chart variable for function-valued quantities. Numeric applications such as v 0 are allowed only when they refer to explicit evaluation givens already present in ModelIR; do not invent them as derived proof steps.
+18. If the target needs a velocity function from a position trajectory or an acceleration function from a velocity field, include that kinematic derivative bridge as a model_interface_instantiation unless ModelIR already contains it. These derivative bridges are explicit modeling interfaces, not verified proof steps unless EvidenceBindings explicitly support them.
 
 Return this JSON shape:
 {
@@ -52,7 +53,17 @@ Return this JSON shape:
     "allowed_solvers": ["ring", "linarith", "nlinarith"]
   },
   "blocked_law_steps": [],
-  "model_interface_instantiations": []
+  "model_interface_instantiations": [
+    {
+      "instantiation_id": "kin_velocity_x_v",
+      "kind": "kinematic_velocity_derivative_bridge",
+      "formal_claim": "forall t0 : Real, (v t0).val = deriv (fun u : Real => (x u).val) t0",
+      "source_model_instance": null,
+      "interface_name": "velocity_from_position",
+      "binding_status": "explicit_model_gap",
+      "proof_fact_allowed": false
+    }
+  ]
 }
 
 Problem text:

@@ -6,8 +6,21 @@ from pathlib import Path
 from mech_pipeline.cli import main
 from mech_pipeline.knowledge.mechlib_structured import StructuredMechLibContext
 from mech_pipeline.model.base import ModelClient
-from mech_pipeline.modules.sketch_builder import ModuleControlledSketch, controlled_sketch_stage_row
-from mech_pipeline.types import EvidenceBinding, HypothesisProvenance, ModelIR, ModelInstance, ModelResponse
+from mech_pipeline.modules.sketch_builder import (
+    ModuleControlledSketch,
+    _synthesized_kinematic_interface_instantiations,
+    controlled_sketch_stage_row,
+)
+from mech_pipeline.types import (
+    CanonicalTarget,
+    EvidenceBinding,
+    FunctionFormulaIR,
+    HypothesisProvenance,
+    ModelIR,
+    ModelInstance,
+    ModelResponse,
+    QuantityTypeAnnotation,
+)
 
 
 class StaticSketchClient(ModelClient):
@@ -534,6 +547,81 @@ def test_controlled_sketch_accepts_explanatory_gap_step_objects(tmp_path: Path) 
     assert sketch.blocked_law_steps[0].expected_claim == "s = v * t"
     assert sketch.blocked_law_steps[0].binding_status == "gap_schema_only"
     assert sketch.blocked_law_steps[0].proof_fact_allowed is False
+
+
+def test_controlled_sketch_synthesizes_function_kinematic_derivative_interfaces(tmp_path: Path) -> None:
+    payload = json.dumps({"status": "ok", "proof_steps": [], "blocked_law_steps": []})
+    module = ModuleControlledSketch(StaticSketchClient(payload), _prompt(tmp_path))
+    model_ir = ModelIR(
+        sample_id="function-kinematics",
+        quantity_annotations=[
+            QuantityTypeAnnotation("x", semantic_role="position over time", lean_type="Time -> Length", confidence=0.95),
+            QuantityTypeAnnotation("v", semantic_role="velocity over time", lean_type="Time -> Speed", confidence=0.95),
+            QuantityTypeAnnotation("a", semantic_role="acceleration over time", lean_type="Time -> Acceleration", confidence=0.95),
+        ],
+        canonical_target=CanonicalTarget(
+            target_kind="pointwise_function_relation",
+            target_variables=["a"],
+            lean_formula="forall t0 : Real, (a t0).val = deriv (fun s : Real => (v s).val) t0",
+            parse_ok=True,
+        ),
+        model_instances=[
+            ModelInstance(
+                instance_id="mi_motion",
+                kind="function_kinematics",
+                natural_language="Use kinematic derivative bridges.",
+                expected_claim="v = deriv x and a = deriv v",
+                confidence=0.8,
+            )
+        ],
+        parse_ok=True,
+    )
+
+    sketch = module.run(
+        sample_id="function-kinematics",
+        problem_text="Given x(t), find velocity and acceleration.",
+        problem_ir={},
+        model_ir=model_ir,
+        evidence_bindings=[],
+        structured_mechlib_context=_context(),
+    )
+
+    claims = {row.formal_claim for row in sketch.model_interface_instantiations}
+    assert "forall t0 : Real, (v t0).val = deriv (fun u : Real => (x u).val) t0" in claims
+    assert "forall t0 : Real, (a t0).val = deriv (fun u : Real => (v u).val) t0" in claims
+    assert all(row.binding_status == "explicit_model_gap" for row in sketch.model_interface_instantiations)
+    assert all(row.proof_fact_allowed is False for row in sketch.model_interface_instantiations)
+
+
+def test_synthesized_kinematic_bridge_does_not_shadow_trajectory_symbol() -> None:
+    model_ir = ModelIR(
+        sample_id="arc-length-shadow",
+        quantity_annotations=[
+            QuantityTypeAnnotation("s", semantic_role="arc length trajectory", lean_type="Time -> Length", confidence=0.95),
+            QuantityTypeAnnotation("v", semantic_role="speed field", lean_type="Time -> Speed", confidence=0.95),
+        ],
+        canonical_target=CanonicalTarget(
+            target_kind="pointwise_function_relation",
+            target_variables=["v"],
+            lean_formula="forall t0 : Real, (v t0).val = deriv (fun u : Real => (s u).val) t0",
+            parse_ok=True,
+        ),
+        model_instances=[
+            ModelInstance(
+                instance_id="mi_arc_length",
+                kind="function_kinematics",
+                natural_language="Use v = ds/dt.",
+                expected_claim="v is the derivative of s",
+            )
+        ],
+        parse_ok=True,
+    )
+
+    rows = _synthesized_kinematic_interface_instantiations(model_ir)
+    claims = [row.formal_claim for row in rows]
+
+    assert any("(v t0).val = deriv (fun u : Real => (s u).val) t0" in claim for claim in claims)
+    assert all("(s s).val" not in claim for claim in claims)
 
 
 def test_minimal_skeleton_cli_writes_sketch_and_audit_jsonl(tmp_path: Path) -> None:
