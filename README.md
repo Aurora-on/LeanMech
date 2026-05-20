@@ -527,17 +527,16 @@ solution_renderer:
 - `configs/smoke_minimal_skeleton.yaml`
 - `configs/smoke_minimal_skeleton_gap.yaml`
 
-近期 12 题评测集：
+Lean4Phys mechanics 101 题主集合：
 
-- `fixtures/bench_testset_v1_selected12.json`
-- `configs/minimal_testset_v1_selected12.yaml`
+- `fixtures/bench_mechanics101.json`
+- `configs/minimal_mechanics101.yaml`
 
 该配置使用 `gpt-5.4` 和 minimal skeleton。注意：在 `proof.mode=auto` 且 selected candidate 为 minimal skeleton 时，E 会进入 `llm_guided_search`。默认搜索预算较大，真实并发评测可能长时间停留在 `pipeline_proof_probe_*.lean`。不要为了绕开该问题静默改成 legacy proof；如果只想评估 D 前流程或限预算测试新 E，应显式创建单独配置并在报告中说明。
 
 近期 v2 mixed 评测集：
 
 - `fixtures/bench_testset_v2_mixed.json`
-- `fixtures/bench_testset_v2_mixed_selection.json`
 - `configs/minimal_testset_v2_mixed.yaml`
 - `configs/minimal_testset_v2_mixed_no_feedback.yaml`
 - `configs/legacy_testset_v2_mixed_gpt54.yaml`

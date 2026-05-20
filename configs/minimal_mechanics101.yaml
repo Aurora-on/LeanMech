@@ -1,6 +1,6 @@
 dataset:
   source: lean4phys
-  limit: 12
+  limit: 101
   category: Mechanics
   sample_policy: index_head
   seed: 42
@@ -8,7 +8,7 @@ dataset:
     root: "../archive"
     mode: text_only
   lean4phys:
-    bench_path: "fixtures/bench_testset_v1_selected12.json"
+    bench_path: "fixtures/bench_mechanics101.json"
     category: "mechanics"
     level: null
   single_image_only_for_mvp: true
@@ -96,7 +96,7 @@ prompts:
 output:
   output_dir: outputs/latest
   runs_dir: runs
-  tag: minimal-testset-v1-selected12
+  tag: minimal-mechanics101
 
 runtime:
   sample_concurrency: 5
