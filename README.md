@@ -89,7 +89,7 @@ sample
 
 minimal skeleton 的结构化前半段只在 minimal skeleton 模式启用。当前 `proof.mode=auto` 且 selected candidate 为 minimal skeleton 时，E 阶段默认进入 `llm_guided_search`：LLM 只提出局部 proof action、策略和中间 `have`，每个 action 由 Lean probe 检查，最终 proof success 仍以 Lean replay 成功为准。旧 E 保留为 `legacy_full_proof` 显式模式或 fallback 对照，不应被静默当作新 E 的替代。E 之后的 `SolutionRenderer` 不重新解题，只把 proof/check/trace/audit 结果保守渲染为可读解题流程。
 
-当前交接状态见 [docs/handoff_minimal_pipeline_token_optimization_20260513.md](/Users/weizhixin/AI4Mechanics/LeanMech/docs/handoff_minimal_pipeline_token_optimization_20260513.md)。该文档记录了最近一次 token 优化、12 题真实评测中止原因、新 E proof search 长尾问题，以及后续建议。
+当前仓库不再保留历史 `docs/` 与 `reports/` 归档目录；开发入口以本 README、`runs/` 中的可复现运行档案，以及 E 阶段落盘的 proof trace / dependency audit 为准。
 
 ## 核心数据结构
 
@@ -300,7 +300,7 @@ LLM 可以选择策略、提出局部 `have`、rewrite 或 algebra tactic block�
 - LLM fallback 只做局部 action synthesis，每个 action 仍经过 ActionGuard、Lean probe 和 final replay。
 - `tactic_no_goals` 只在 `have ... := by ...` 形态上做局部截短 repair，保留已接受 prefix、local facts 和 fact-plan remainder。
 
-详细设计见 [docs/e_llm_guided_certified_prover.md](/Users/weizhixin/AI4Mechanics/LeanMech/docs/e_llm_guided_certified_prover.md)。
+E 阶段的当前工程契约以本节、`src/mech_pipeline/modules/e_search_controller.py`、`src/mech_pipeline/lean_runner.py` 和相关回归测试为准。
 
 ### SolutionRenderer
 
@@ -527,13 +527,6 @@ solution_renderer:
 - `configs/smoke_minimal_skeleton.yaml`
 - `configs/smoke_minimal_skeleton_gap.yaml`
 
-近期固定回归集：
-
-- `tmp/random10_plus_mechanics73_20260509_181342.json`
-- `tmp/minimal_random10_plus_mechanics73_20260509_181342.yaml`
-
-该集合包含 `Mechanics73`。比较 minimal mode 改动时，应优先复用这组样本，避免每次重新抽样导致结果不可比。
-
 近期 12 题评测集：
 
 - `fixtures/bench_testset_v1_selected12.json`
@@ -546,19 +539,12 @@ solution_renderer:
 - `fixtures/bench_testset_v2_mixed.json`
 - `fixtures/bench_testset_v2_mixed_selection.json`
 - `configs/minimal_testset_v2_mixed.yaml`
-- `tmp/minimal_testset_v2_mixed_legacy_proof.yaml`
+- `configs/minimal_testset_v2_mixed_no_feedback.yaml`
+- `configs/legacy_testset_v2_mixed_gpt54.yaml`
 
-`dataset.source: mixed_v2` 由 `src/mech_pipeline/adapters/mixed_v2.py` 加载，当前用于组合 Lean4Phys mechanics 样本与 archive text-only 样本。`configs/minimal_testset_v2_mixed.yaml` 使用 minimal skeleton + `proof.mode=auto`，即默认进入新 E；`tmp/minimal_testset_v2_mixed_legacy_proof.yaml` 显式设置 `proof.mode: legacy_full_proof`，只用于旧证明阶段对照或诊断，不能代表新 E 搜索能力。
+`dataset.source: mixed_v2` 由 `src/mech_pipeline/adapters/mixed_v2.py` 加载，当前用于组合 Lean4Phys mechanics 样本与 archive text-only 样本。`configs/minimal_testset_v2_mixed.yaml` 使用 minimal skeleton + `proof.mode=auto`，即默认进入新 E；`configs/minimal_testset_v2_mixed_no_feedback.yaml` 用于 D 前无反馈对照；`configs/legacy_testset_v2_mixed_gpt54.yaml` 显式设置 `proof.mode: legacy_full_proof`，只用于旧证明阶段对照或诊断，不能代表新 E 搜索能力。
 
-近期 E 阶段与后续渲染报告：
-
-- `reports/E_STAGE_MECHANICS73_PREFLIGHT_GUARD_REPORT_20260514.md`
-- `reports/E_STAGE_MECHANICS73_LLM_OBLIGATION_FALLBACK_REPORT_20260514.md`
-- `reports/E_STAGE_MECHANICS73_INTERACTION_TRACE_20260514.md`
-- `reports/E_STAGE_MECHANICS73_TACTIC_NO_GOALS_REPAIR_20260514.md`
-- `reports/E_STAGE_MECHANICS73_SOLUTION_RENDERER_REALAPI_REPORT_20260515.md`
-- `reports/minimal_v2_mechlib_update_error_by_sample_20260515.md`
-- `reports/mechlib_missing_decls_from_v2_runs_20260515.md`
+保留的 fixture 只覆盖主要评测集合；一次性实验样本、历史报告包和临时回归选择应放在 `runs/`、`outputs/` 或本地 `tmp/`，默认不提交到仓库。
 
 ## Lean / MechLib / Mathlib
 
@@ -614,11 +600,9 @@ python -m mech_pipeline.cli run \
 ```text
 LeanMech/
 ├─ configs/                  YAML 配置与 smoke 配置
-├─ docs/                     设计说明与 pipeline 文档
 ├─ fixtures/                 本地测试夹具
 ├─ outputs/latest/           最近一次运行轻量镜像
 ├─ prompts/                  各阶段 prompt
-├─ reports/                  实验报告与审计报告
 ├─ runs/                     完整运行档案
 ├─ src/mech_pipeline/
 │  ├─ adapters/              Lean、Lean4Phys 与 mixed_v2 数据源适配器
@@ -645,22 +629,19 @@ LeanMech/
 ## 建议阅读顺序
 
 1. `README.md`
-2. `docs/minimal_skeleton_pipeline.md`
-3. `docs/solution_renderer.md`
-4. `src/mech_pipeline/types.py`
-5. `src/mech_pipeline/config.py`
-6. `src/mech_pipeline/orchestrator.py`
-7. `docs/e_llm_guided_certified_prover.md`
-8. `src/mech_pipeline/modules/A2_model_ir.py`
-9. `src/mech_pipeline/modules/sketch_builder.py`
-10. `src/mech_pipeline/modules/sketch_audit.py`
-11. `src/mech_pipeline/modules/B_statement_gen.py`
-12. `src/mech_pipeline/modules/e_proof_context.py`
-13. `src/mech_pipeline/modules/e_search_controller.py`
-14. `src/mech_pipeline/modules/e_obligation_replayer.py`
-15. `src/mech_pipeline/modules/solution_renderer.py`
-16. `src/mech_pipeline/knowledge/evidence_binder.py`
-17. `outputs/latest/` 或最近的 `runs/<run>/`
+2. `src/mech_pipeline/types.py`
+3. `src/mech_pipeline/config.py`
+4. `src/mech_pipeline/orchestrator.py`
+5. `src/mech_pipeline/modules/A2_model_ir.py`
+6. `src/mech_pipeline/modules/sketch_builder.py`
+7. `src/mech_pipeline/modules/sketch_audit.py`
+8. `src/mech_pipeline/modules/B_statement_gen.py`
+9. `src/mech_pipeline/modules/e_proof_context.py`
+10. `src/mech_pipeline/modules/e_search_controller.py`
+11. `src/mech_pipeline/modules/e_obligation_replayer.py`
+12. `src/mech_pipeline/modules/solution_renderer.py`
+13. `src/mech_pipeline/knowledge/evidence_binder.py`
+14. `outputs/latest/` 或最近的 `runs/<run>/`
 
 ## 当前边界
 
