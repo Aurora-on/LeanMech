@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from mech_pipeline.modules.B_statement_gen import (
+    _has_scalarized_force_vector_sum,
     _has_unsupported_tuple_formula,
     _quantity_infos,
     _target_formula,
@@ -8,7 +9,7 @@ from mech_pipeline.modules.B_statement_gen import (
     _typed_formula_from_text,
     render_function_formula_ir,
 )
-from mech_pipeline.types import CanonicalTarget, FunctionFormulaIR, ModelIR, QuantityTypeAnnotation
+from mech_pipeline.types import CanonicalTarget, FunctionFormulaIR, HypothesisProvenance, ModelIR, QuantityTypeAnnotation
 
 
 def test_render_pointwise_real_domain_typed_codomain() -> None:
@@ -446,3 +447,74 @@ def test_target_conjunction_parenthesizes_conditional_conclusion() -> None:
     assert error is None
     assert "F2.val = 10" in formula
     assert "∧\n  (F2.val > 0 -> gamma.val = Real.pi / 3)" in formula
+
+
+def test_target_component_relations_covering_target_variables_are_not_minimized_away() -> None:
+    model_ir = ModelIR(
+        sample_id="force_angle_target",
+        variables={"F1": {}, "F2": {}, "P": {}, "theta": {}, "gamma": {}},
+        quantity_annotations=[
+            QuantityTypeAnnotation(symbol="F1", lean_type="Force", confidence=0.99),
+            QuantityTypeAnnotation(symbol="F2", lean_type="Force", confidence=0.99),
+            QuantityTypeAnnotation(symbol="P", lean_type="Force", confidence=0.99),
+            QuantityTypeAnnotation(symbol="theta", lean_type="PhysAngle", confidence=0.99),
+            QuantityTypeAnnotation(symbol="gamma", lean_type="PhysAngle", confidence=0.99),
+        ],
+        local_definitions=[
+            HypothesisProvenance(
+                name="h_tangent",
+                lean="F2.val * Real.cos gamma.val = F1.val * Real.cos theta.val",
+                role="local_definition",
+                source_type="model_ir",
+                allowed_in_hypotheses=True,
+            ),
+            HypothesisProvenance(
+                name="h_normal",
+                lean="F2.val * Real.sin gamma.val = P.val - F1.val * Real.sin theta.val",
+                role="local_definition",
+                source_type="model_ir",
+                allowed_in_hypotheses=True,
+            ),
+        ],
+        canonical_target=CanonicalTarget(
+            target_kind="relation",
+            target_variables=["F2", "gamma"],
+            lean_formula=(
+                "F2.val * Real.cos gamma.val = F1.val * Real.cos theta.val ∧ "
+                "F2.val * Real.sin gamma.val = P.val - F1.val * Real.sin theta.val"
+            ),
+            secondary_formulas=[
+                "F2.val = Real.sqrt ((F1.val * Real.cos theta.val)^2 + (P.val - F1.val * Real.sin theta.val)^2)"
+            ],
+            parse_ok=True,
+        ),
+        parse_ok=True,
+    )
+
+    formula, error = _target_formula(
+        model_ir=model_ir,
+        controlled_sketch=None,
+        quantity_infos=_quantity_infos(model_ir),
+    )
+
+    assert error is None
+    assert "F2.val * Real.cos gamma.val = F1.val * Real.cos theta.val" in formula
+    assert "F2.val * Real.sin gamma.val = P.val - F1.val * Real.sin theta.val" in formula
+
+
+def test_scalarized_force_vector_sum_is_blocked() -> None:
+    quantity_infos = [
+        {"source_name": "F1", "name": "F1", "lean_type": "Force"},
+        {"source_name": "F2", "name": "F2", "lean_type": "Force"},
+        {"source_name": "P", "name": "P", "lean_type": "Force"},
+        {"source_name": "Fx_net", "name": "Fx_net", "lean_type": "Force"},
+    ]
+
+    assert _has_scalarized_force_vector_sum("F1.val + F2.val + P.val = 0", quantity_infos) is True
+    assert (
+        _has_scalarized_force_vector_sum(
+            "Fx_net.val = F1.val * Real.cos theta.val - F2.val * Real.cos gamma.val",
+            quantity_infos,
+        )
+        is False
+    )

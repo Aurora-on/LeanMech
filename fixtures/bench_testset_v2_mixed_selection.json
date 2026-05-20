@@ -1,8 +1,8 @@
 {
   "name": "bench_testset_v2_mixed",
   "source_markdown": "/Users/weizhixin/Library/Mobile Documents/iCloud~md~obsidian/Documents/测试集v1.md",
-  "count_total": 33,
-  "count_lean4phys": 11,
+  "count_total": 31,
+  "count_lean4phys": 10,
   "count_archive_part1": 16,
   "notes": [
     "Domain headings in the source markdown were ignored.",
@@ -90,21 +90,13 @@
     {
       "order": 10,
       "source_kind": "lean4phys",
-      "source_ref": "competition_mechanics_Ch1_Q11",
-      "level": "competition_hard",
-      "category": "mechanics",
-      "informal_preview": "EXAMPLE Ch1_Q11 Q: Particles $A$ and $B$ start simultaneously from points $A$ and $B$, respectively. Particle $A$ moves with constant velocity $\\boldsymbol{v}_1$ along line $AB$, and particle $B$ moves with constant velo"
-    },
-    {
-      "order": 11,
-      "source_kind": "lean4phys",
       "source_ref": "competition_mechanics_Ch3_Q1",
       "level": "competition_hard",
       "category": "mechanics",
       "informal_preview": "EXAMPLE Ch3_Q1 Q: Two masses, $m_1$ and $m_2$, hang vertically from the lower end of a spring with stiffness $k$. After reaching equilibrium, $m_2$ is suddenly removed. Prove that the maximum velocity of $m_1$ after $m_2"
     },
     {
-      "order": 12,
+      "order": 11,
       "source_kind": "archive_part1",
       "source_ref": "2-3",
       "checked_path": "archive/output_checked_part1/2-3.md",
@@ -117,7 +109,7 @@
       "contains_solution_marker_after_redaction": false
     },
     {
-      "order": 13,
+      "order": 12,
       "source_kind": "archive_part1",
       "source_ref": "9-1",
       "checked_path": "archive/output_checked_part1/9-1.md",
@@ -130,7 +122,7 @@
       "contains_solution_marker_after_redaction": false
     },
     {
-      "order": 14,
+      "order": 13,
       "source_kind": "archive_part1",
       "source_ref": "9-11",
       "checked_path": "archive/output_checked_part1/9-11.md",
@@ -141,7 +133,7 @@
       "contains_solution_marker_after_redaction": false
     },
     {
-      "order": 15,
+      "order": 14,
       "source_kind": "archive_part1",
       "source_ref": "5-10",
       "checked_path": "archive/output_checked_part1/5-10.md",
@@ -152,7 +144,7 @@
       "contains_solution_marker_after_redaction": false
     },
     {
-      "order": 16,
+      "order": 15,
       "source_kind": "archive_part1",
       "source_ref": "6-6",
       "checked_path": "archive/output_checked_part1/6-6.md",
@@ -165,7 +157,7 @@
       "contains_solution_marker_after_redaction": false
     },
     {
-      "order": 17,
+      "order": 16,
       "source_kind": "archive_part1",
       "source_ref": "7-1",
       "checked_path": "archive/output_checked_part1/7-1.md",
@@ -176,7 +168,7 @@
       "contains_solution_marker_after_redaction": false
     },
     {
-      "order": 18,
+      "order": 17,
       "source_kind": "archive_part1",
       "source_ref": "10-2",
       "checked_path": "archive/output_checked_part1/10-2.md",
@@ -187,7 +179,7 @@
       "contains_solution_marker_after_redaction": false
     },
     {
-      "order": 19,
+      "order": 18,
       "source_kind": "archive_part1",
       "source_ref": "10-4",
       "checked_path": "archive/output_checked_part1/10-4.md",
@@ -200,7 +192,7 @@
       "contains_solution_marker_after_redaction": false
     },
     {
-      "order": 20,
+      "order": 19,
       "source_kind": "archive_part1",
       "source_ref": "10-8",
       "checked_path": "archive/output_checked_part1/10-8.md",
@@ -211,7 +203,7 @@
       "contains_solution_marker_after_redaction": false
     },
     {
-      "order": 21,
+      "order": 20,
       "source_kind": "archive_part1",
       "source_ref": "11-1",
       "checked_path": "archive/output_checked_part1/11-1.md",
@@ -222,7 +214,7 @@
       "contains_solution_marker_after_redaction": false
     },
     {
-      "order": 22,
+      "order": 21,
       "source_kind": "archive_part1",
       "source_ref": "11-4",
       "checked_path": "archive/output_checked_part1/11-4.md",
@@ -235,7 +227,7 @@
       "contains_solution_marker_after_redaction": false
     },
     {
-      "order": 23,
+      "order": 22,
       "source_kind": "archive_part1",
       "source_ref": "11-9",
       "checked_path": "archive/output_checked_part1/11-9.md",
@@ -248,7 +240,7 @@
       "contains_solution_marker_after_redaction": false
     },
     {
-      "order": 24,
+      "order": 23,
       "source_kind": "archive_part1",
       "source_ref": "11-23",
       "checked_path": "archive/output_checked_part1/11-23.md",
@@ -261,7 +253,7 @@
       "contains_solution_marker_after_redaction": false
     },
     {
-      "order": 25,
+      "order": 24,
       "source_kind": "archive_part1",
       "source_ref": "12-1",
       "checked_path": "archive/output_checked_part1/12-1.md",
@@ -274,7 +266,7 @@
       "contains_solution_marker_after_redaction": false
     },
     {
-      "order": 26,
+      "order": 25,
       "source_kind": "archive_part1",
       "source_ref": "12-7",
       "checked_path": "archive/output_checked_part1/12-7.md",
@@ -287,7 +279,7 @@
       "contains_solution_marker_after_redaction": false
     },
     {
-      "order": 27,
+      "order": 26,
       "source_kind": "archive_part1",
       "source_ref": "13-3",
       "checked_path": "archive/output_checked_part1/13-3.md",
@@ -300,7 +292,7 @@
       "contains_solution_marker_after_redaction": false
     },
     {
-      "order": 28,
+      "order": 27,
       "source_kind": "archive_part2",
       "source_ref": "1-9",
       "checked_path": "archive/output_checked_part2/1-9.md",
@@ -313,7 +305,7 @@
       "contains_solution_marker_after_redaction": false
     },
     {
-      "order": 29,
+      "order": 28,
       "source_kind": "archive_part2",
       "source_ref": "1-16",
       "checked_path": "archive/output_checked_part2/1-16.md",
@@ -326,7 +318,7 @@
       "contains_solution_marker_after_redaction": false
     },
     {
-      "order": 30,
+      "order": 29,
       "source_kind": "archive_part2",
       "source_ref": "4-2",
       "checked_path": "archive/output_checked_part2/4-2.md",
@@ -339,7 +331,7 @@
       "contains_solution_marker_after_redaction": false
     },
     {
-      "order": 31,
+      "order": 30,
       "source_kind": "archive_part2",
       "source_ref": "4-5",
       "checked_path": "archive/output_checked_part2/4-5.md",
@@ -352,20 +344,7 @@
       "contains_solution_marker_after_redaction": false
     },
     {
-      "order": 32,
-      "source_kind": "archive_part2",
-      "source_ref": "5-8",
-      "checked_path": "archive/output_checked_part2/5-8.md",
-      "image_paths": [
-        "images/33b0e424f0ec4d88c56143eb850b09daecffda049d9243b864e481e9c2154061.jpg"
-      ],
-      "run_mode": "image_text",
-      "redacted_preview": "5-8陀螺以等角速度 $\\omega_{\\parallel}$ 绕轴 $O B$ 转动，而轴 $O B$ 等速地画出一圆锥，如图所示。如陀螺的中心轴 $O B$ 绕轴OS每分钟转数为 $n,\\angle B O S=\\theta($ （常量），求陀螺的角速度 $\\omega$ 和角加速 $\\alpha$  \n\n![](images/33b0e424f0ec4d88c56143eb850b09daecffda049d9243b864e481e9c2154061.jpg)  \n题5-8图",
-      "contains_image_description_after_redaction": false,
-      "contains_solution_marker_after_redaction": false
-    },
-    {
-      "order": 33,
+      "order": 31,
       "source_kind": "archive_part2",
       "source_ref": "6-6",
       "checked_path": "archive/output_checked_part2/6-6.md",
@@ -378,5 +357,5 @@
       "contains_solution_marker_after_redaction": false
     }
   ],
-  "count_archive_part2": 6
+  "count_archive_part2": 5
 }

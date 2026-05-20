@@ -70,6 +70,7 @@ PREPROOF_STAGE_ROW_FILES = (
 )
 
 _REDACTED = "***REDACTED***"
+LOCKED_PREPROOF_EXCLUDES_FILE = "locked_preproof_excludes.json"
 
 
 class PreproofSampleResult(TypedDict):
@@ -259,6 +260,7 @@ class PreproofBundle:
         preproof_dir: Path,
         *,
         requested_sample_ids: list[str] | None = None,
+        excluded_sample_ids: list[str] | None = None,
         limit: int | None = None,
     ) -> "PreproofBundle":
         if not preproof_dir.exists():
@@ -279,6 +281,9 @@ class PreproofBundle:
         if requested_sample_ids:
             requested = set(requested_sample_ids)
             sample_ids = [sid for sid in sample_ids if sid in requested]
+        if excluded_sample_ids:
+            excluded = set(excluded_sample_ids)
+            sample_ids = [sid for sid in sample_ids if sid not in excluded]
         if limit is not None:
             sample_ids = sample_ids[:limit]
         if not sample_ids:
@@ -314,6 +319,33 @@ class PreproofBundle:
         rows["compile_checks.jsonl"] = list(self.selected_compile_rows)
         rows["semantic_rank.jsonl"] = list(self.selected_semantic_rows)
         return rows
+
+
+def read_locked_preproof_excludes(preproof_dir: Path) -> list[str]:
+    path = preproof_dir / LOCKED_PREPROOF_EXCLUDES_FILE
+    if not path.exists():
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(payload, list):
+        values = payload
+    elif isinstance(payload, dict):
+        values = (
+            payload.get("locked_sample_ids")
+            or payload.get("excluded_sample_ids")
+            or payload.get("sample_ids")
+            or []
+        )
+    else:
+        values = []
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        sample_id = str(value or "").strip()
+        if not sample_id or sample_id in seen:
+            continue
+        seen.add(sample_id)
+        out.append(sample_id)
+    return out
 
 
 def _build_lean_runner(cfg: PipelineConfig) -> LeanRunner:
@@ -728,12 +760,21 @@ def run_preproof_eval(
         cfg.output.runs_dir = str(runs_dir)
     validate_config(cfg)
 
-    bundle = PreproofBundle.load(preproof_dir, requested_sample_ids=sample_ids, limit=limit)
+    locked_excludes = read_locked_preproof_excludes(preproof_dir)
+    bundle = PreproofBundle.load(
+        preproof_dir,
+        requested_sample_ids=sample_ids,
+        excluded_sample_ids=locked_excludes,
+        limit=limit,
+    )
     run_dir = create_run_dir(Path(cfg.output.runs_dir), cfg.output.tag)
     latest_dir = Path(cfg.output.output_dir)
     emit_console_line(f"run_dir={run_dir}")
     emit_console_line(f"latest_dir={latest_dir}")
     emit_console_line(f"preproof_dir={preproof_dir}")
+    if locked_excludes:
+        emit_console_line(f"preproof_locked_excludes={len(locked_excludes)}")
+        emit_console_line("preproof_locked_exclude_sample_ids=" + ",".join(locked_excludes))
     emit_console_line(f"preproof_samples={len(bundle.sample_ids)}")
 
     preflight_runner = _build_lean_runner(cfg)
@@ -808,7 +849,11 @@ def run_preproof_eval(
         metrics=metrics,
         run_dir=run_dir,
         sample_concurrency=execution["sample_concurrency"],
-        run_metadata={**preflight_details, "preproof_dir": preproof_dir.as_posix()},
+        run_metadata={
+            **preflight_details,
+            "preproof_dir": preproof_dir.as_posix(),
+            "locked_preproof_excludes": locked_excludes,
+        },
     )
     lean_export_files = build_lean_export_files(
         cfg=cfg,
@@ -825,6 +870,8 @@ def run_preproof_eval(
                 "preproof_dir": preproof_dir.as_posix(),
                 "sample_ids": bundle.sample_ids,
                 "sample_count": len(bundle.sample_ids),
+                "locked_excluded_sample_ids": locked_excludes,
+                "locked_excluded_sample_count": len(locked_excludes),
                 "dry_run": dry_run,
                 "stage_boundary": "A-D restored from preproof snapshot; E and solution rendering executed in this run.",
             },
@@ -845,6 +892,8 @@ def run_preproof_eval(
             "preproof_eval": {
                 "preproof_dir": preproof_dir.as_posix(),
                 "sample_count": len(bundle.sample_ids),
+                "locked_excluded_sample_ids": locked_excludes,
+                "locked_excluded_sample_count": len(locked_excludes),
                 "stage_boundary": "A-D restored from preproof snapshot; E and downstream stages executed only here.",
                 "dry_run": dry_run,
             },

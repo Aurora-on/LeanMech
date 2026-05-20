@@ -6,7 +6,7 @@ dataset:
   seed: 42
   local_archive:
     root: "../archive"
-    mode: image_text
+    mode: text_only
   lean4phys:
     bench_path: "fixtures/bench_testset_v2_mixed.json"
     category: "mechanics"
@@ -60,33 +60,44 @@ knowledge:
 statement:
   library_target: "mechlib"
   with_mechlib_context: true
-  feedback_loop_enabled: true
-  max_revision_rounds: 1
-  generation_mode: legacy_candidate
+  feedback_loop_enabled: false
+  max_revision_rounds: 0
+  minimal_feedback_scope: none
+  generation_mode: minimal_skeleton
+  allow_explicit_gap_laws: true
+  forbid_derived_equation_hypotheses: true
+  require_hypothesis_provenance: true
+  require_evidence_binding: true
+  max_model_ir_candidates: 2
+  max_sketch_steps: 12
+  b_minimal_llm_enabled: false
+  b_minimal_llm_on_retry: false
+  compact_minimal_prompts: true
 
 semantic:
   pass_threshold: 0.7
 
 proof:
-  mode: legacy_full_proof
-  max_attempts: 2
-
-solution_renderer:
-  enabled: false
+  mode: skip
+  max_attempts: 1
 
 prompts:
   dir: prompts
   a_extract_ir: A_extract_ir.txt
+  a2_model_ir: A2_model_ir.txt
+  controlled_sketch: controlled_sketch.txt
   b_generate_statements: B_generate_statements.txt
+  b_generate_minimal_skeleton: B_generate_minimal_skeleton.txt
   b_revise_statements: B_revise_statements.txt
   d_semantic_rank: D_semantic_rank.txt
+  e_plan_proof: E_plan_proof.txt
   e_generate_proof: E_generate_proof.txt
   e_repair_proof: E_repair_proof.txt
 
 output:
   output_dir: outputs/latest
   runs_dir: runs
-  tag: legacy-testset-v2-mixed-gpt54
+  tag: minimal-testset-v2-mixed-no-feedback
 
 runtime:
   sample_concurrency: 5

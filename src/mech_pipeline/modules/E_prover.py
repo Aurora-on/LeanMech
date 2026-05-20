@@ -224,7 +224,7 @@ def _build_proof_failure_summary(error_type: str | None, stderr_digest: str) -> 
 
 
 def _action_rows_from_trace(trace: ProofSearchTrace) -> list[dict[str, object]]:
-    return [*trace.accepted_actions, *trace.rejected_actions]
+    return [*trace.augmentation_checks, *trace.accepted_actions, *trace.rejected_actions]
 
 
 def _audit_context_with_blocked_obligations(

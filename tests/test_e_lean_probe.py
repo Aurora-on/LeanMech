@@ -46,6 +46,7 @@ def test_probe_proof_prefix_progress_for_unsolved_goals() -> None:
     assert result.error_type == "unsolved_goals"
     assert result.goals_excerpt
     assert "unsolved goals" in result.goals_excerpt.lower()
+    assert result.unsolved_goal_count == 1
 
 
 def test_probe_proof_prefix_invalid_for_unknown_identifier() -> None:
@@ -85,6 +86,7 @@ m1 m2 : Mass
     assert result.status == "invalid"
     assert result.error_type == "type_mismatch"
     assert result.goals_excerpt is None
+    assert result.unsolved_goal_count == 1
     assert result.stderr_excerpt
     assert "Application type mismatch" in result.stderr_excerpt
 
@@ -107,6 +109,7 @@ a : Acceleration
     assert result.status == "invalid"
     assert result.error_type == "symbol_hallucination"
     assert result.goals_excerpt is None
+    assert result.unsolved_goal_count == 1
     assert result.error_message == "Unknown identifier `t0`"
     assert result.stderr_excerpt
     assert "error(lean.unknownIdentifier)" in result.stderr_excerpt
@@ -138,6 +141,32 @@ m1 m2 : Mass
     assert "No goals to be solved" in result.error_snippet
     assert result.probe_full_proof_body == proof_body
     assert result.goals_excerpt is None
+    assert result.unsolved_goal_count == 1
+
+
+def test_probe_result_counts_multiple_pure_unsolved_goals() -> None:
+    stderr = """
+/tmp/pipeline_proof_probe.lean:40:20: error: unsolved goals
+p q r : Prop
+hp : p
+⊢ q
+/tmp/pipeline_proof_probe.lean:39:39: error: unsolved goals
+p q r : Prop
+hp : p
+h : q
+⊢ r
+"""
+
+    result = classify_proof_probe_result(
+        ok=False,
+        stdout="",
+        stderr=stderr,
+        tactic_block="have h : q := by\n  skip",
+    )
+
+    assert result.status == "progress"
+    assert result.error_type == "unsolved_goals"
+    assert result.unsolved_goal_count == 2
 
 
 def test_probe_proof_prefix_rejects_sorry_without_running_as_progress() -> None:

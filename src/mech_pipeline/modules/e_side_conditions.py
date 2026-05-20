@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from fractions import Fraction
 
 from mech_pipeline.types import ProofActionProposal, ProofContext
 
@@ -16,6 +17,16 @@ _POS_GT_RE = re.compile(
     r"(?P<name>[A-Za-z_][A-Za-z0-9_']*)\s*:\s*(?P<term>[^,\]\n;]+)\s*>\s*0"
 )
 _HAVE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_']*$")
+_VALUE_EQ_RE = re.compile(
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_']*)\s*:\s*"
+    r"(?P<term>[A-Za-z_][A-Za-z0-9_']*\.val)\s*=\s*(?P<value>[^,\]\n;]+)"
+)
+_NE_ZERO_RE = re.compile(
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_']*)\s*:\s*"
+    r"(?P<term>[^,\]\n;]+?)\s*≠\s*0\b"
+)
+_BARE_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_']*$")
+_NONZERO_NUMERIC_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
 
 
 @dataclass(frozen=True)
@@ -69,6 +80,17 @@ def _sum_terms(expr: str) -> list[str]:
     return [part for part in parts if part]
 
 
+def _product_factors(expr: str) -> list[str]:
+    return [_normalize_term(part) for part in expr.split("*") if _normalize_term(part)]
+
+
+def _is_ignorable_nonzero_factor(factor: str) -> bool:
+    cleaned = _clean_numeric_literal(factor)
+    if cleaned and _NONZERO_NUMERIC_RE.fullmatch(cleaned):
+        return cleaned not in {"0", "+0", "-0"}
+    return factor == "Real.pi"
+
+
 def _required_positive_terms(expr: str) -> list[str]:
     """Return `.val` terms whose positivity is enough for supported denominators."""
     normalized = _normalize_term(expr)
@@ -77,6 +99,15 @@ def _required_positive_terms(expr: str) -> list[str]:
     terms = [match.group(0) for match in _VAL_TERM_RE.finditer(normalized)]
     if terms:
         return list(dict.fromkeys(terms))
+    factors = _product_factors(normalized)
+    if len(factors) > 1:
+        variable_factors = [
+            factor
+            for factor in factors
+            if not _is_ignorable_nonzero_factor(factor)
+        ]
+        if variable_factors:
+            return list(dict.fromkeys(variable_factors))
     sum_terms = _sum_terms(normalized)
     return sum_terms if sum_terms else [normalized]
 
@@ -89,6 +120,65 @@ def _positive_fact_map(current_facts: list[str]) -> dict[str, str]:
             if match:
                 name = match.group("name").strip()
                 term = _normalize_term(match.group("term"))
+                mapping.setdefault(term, name)
+        for term, name, value in _constant_value_equalities(fact):
+            if value > 0:
+                mapping.setdefault(term, name)
+    return mapping
+
+
+def _clean_numeric_literal(text: str) -> str:
+    value = re.sub(r":\s*Real\b", "", text)
+    value = value.replace("(", " ").replace(")", " ")
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _parse_numeric_literal(text: str) -> Fraction | None:
+    value = _clean_numeric_literal(text)
+    if not value:
+        return None
+    if re.fullmatch(r"[+-]?\d+", value):
+        return Fraction(int(value), 1)
+    if re.fullmatch(r"[+-]?\d+\s*/\s*[+-]?\d+", value):
+        left, right = value.split("/", 1)
+        denominator = int(right.strip())
+        if denominator == 0:
+            return None
+        return Fraction(int(left.strip()), denominator)
+    return None
+
+
+def _constant_value_equalities(fact: str) -> list[tuple[str, str, Fraction]]:
+    out: list[tuple[str, str, Fraction]] = []
+    for match in _VALUE_EQ_RE.finditer(fact):
+        numeric = _parse_numeric_literal(match.group("value"))
+        if numeric is None:
+            continue
+        out.append((_normalize_term(match.group("term")), match.group("name").strip(), numeric))
+    return out
+
+
+def _nonzero_fact_map(current_facts: list[str]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for fact in current_facts:
+        for match in _NE_ZERO_RE.finditer(fact):
+            term = _normalize_term(match.group("term"))
+            name = match.group("name").strip()
+            if term:
+                mapping.setdefault(term, name)
+        for term, name, value in _constant_value_equalities(fact):
+            if value != 0:
+                mapping.setdefault(term, name)
+    return mapping
+
+
+def _direct_nonzero_fact_map(current_facts: list[str]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for fact in current_facts:
+        for match in _NE_ZERO_RE.finditer(fact):
+            term = _normalize_term(match.group("term"))
+            name = match.group("name").strip()
+            if term:
                 mapping.setdefault(term, name)
     return mapping
 
@@ -121,11 +211,19 @@ def _side_condition_proposal(
     denominator: str,
     fact_names: list[str],
     have_name: str,
+    nonzero_product_proof: str | None = None,
 ) -> ProofActionProposal:
+    if nonzero_product_proof:
+        tactic_block = f"have {have_name} : {denominator} ≠ 0 := by\n  exact {nonzero_product_proof}"
+    else:
+        tactic_terms = [*fact_names]
+        if "Real.pi" in denominator:
+            tactic_terms.insert(0, "Real.pi_pos")
+        tactic_block = f"have {have_name} : {denominator} ≠ 0 := by\n  nlinarith [{', '.join(tactic_terms)}]"
     return ProofActionProposal(
         action_id=f"side_condition_{idx}",
         strategy="prove_side_condition",
-        tactic_block=f"have {have_name} : {denominator} ≠ 0 := by\n  nlinarith [{', '.join(fact_names)}]",
+        tactic_block=tactic_block,
         uses_facts=fact_names,
         uses_decls=[],
         expected_effect=f"prove denominator nonzero: {denominator}",
@@ -139,20 +237,65 @@ def _missing_side_condition_proposal(
     idx: int,
     denominator: str,
     missing_terms: list[str],
+    unavailable: bool = False,
 ) -> ProofActionProposal:
+    strategy = "missing_side_condition_unavailable" if unavailable else "missing_side_condition"
+    prefix = "missing_side_condition_unavailable" if unavailable else "missing_side_condition"
     return ProofActionProposal(
         action_id=f"missing_side_condition_{idx}",
-        strategy="missing_side_condition",
+        strategy=strategy,
         tactic_block="",
         uses_facts=[],
         uses_decls=[],
         expected_effect=(
-            f"missing_side_condition: denominator {denominator} requires positivity facts for "
+            f"{prefix}: denominator {denominator} requires positivity/nonzero facts for "
             + ", ".join(missing_terms)
         ),
         source="deterministic",
         priority=0.0,
     )
+
+
+def _is_unsupported_missing_denominator(denominator: str, missing_terms: list[str]) -> bool:
+    normalized = _normalize_term(denominator)
+    if "-" in normalized:
+        return True
+    if "Real.cos" in normalized or "Real.sin" in normalized or "Real.sqrt" in normalized:
+        return True
+    return any(term == normalized and not _VAL_TERM_RE.fullmatch(term) for term in missing_terms)
+
+
+def _factor_nonzero_proof(factor: str, nonzero_facts: dict[str, str]) -> str | None:
+    cleaned = _clean_numeric_literal(factor)
+    if cleaned and _NONZERO_NUMERIC_RE.fullmatch(cleaned) and cleaned not in {"0", "+0", "-0"}:
+        return "by norm_num"
+    if factor == "Real.pi":
+        return "Real.pi_ne_zero"
+    return nonzero_facts.get(factor)
+
+
+def _combine_mul_ne_zero(proofs: list[str]) -> str | None:
+    if not proofs:
+        return None
+    combined = proofs[0]
+    for proof in proofs[1:]:
+        combined = f"mul_ne_zero ({combined}) {proof}"
+    return combined
+
+
+def _nonzero_product_proof(denominator: str, terms: list[str], nonzero_facts: dict[str, str]) -> str | None:
+    if not terms or any(term not in nonzero_facts for term in terms):
+        return None
+    factors = _product_factors(denominator)
+    if len(factors) <= 1:
+        return nonzero_facts.get(_normalize_term(denominator))
+    proofs: list[str] = []
+    for factor in factors:
+        proof = _factor_nonzero_proof(factor, nonzero_facts)
+        if proof is None:
+            return None
+        proofs.append(proof)
+    return _combine_mul_ne_zero(proofs)
 
 
 def propose_side_condition_actions(
@@ -179,30 +322,36 @@ def propose_side_condition_actions(
         return []
 
     known = {normalize_side_condition_expression(denom) for denom in known_denominators or []}
-    pos_facts = _positive_fact_map([*current_facts, *_context_positive_facts(proof_context)])
+    fact_sources = [*current_facts, *_context_positive_facts(proof_context)]
+    pos_facts = _positive_fact_map(fact_sources)
+    nonzero_facts = _nonzero_fact_map(fact_sources)
+    direct_nonzero_facts = _direct_nonzero_fact_map(fact_sources)
     used_names = set(current_facts) | set(proof_context.allowed_local_facts) | set(proof_context.local_hypotheses)
     proposals: list[ProofActionProposal] = []
     for idx, denom in enumerate(denoms, start=1):
         if normalize_side_condition_expression(denom) in known:
             continue
         terms = _required_positive_terms(denom)
-        missing = [term for term in terms if term not in pos_facts]
+        missing = [term for term in terms if term not in pos_facts and term not in nonzero_facts]
         if missing:
             proposals.append(
                 _missing_side_condition_proposal(
                     idx=idx,
                     denominator=denom,
                     missing_terms=missing,
+                    unavailable=_is_unsupported_missing_denominator(denom, missing),
                 )
             )
             continue
-        fact_names = [pos_facts[term] for term in terms]
+        fact_names = [pos_facts.get(term) or nonzero_facts[term] for term in terms]
+        nonzero_product_proof = _nonzero_product_proof(denom, terms, direct_nonzero_facts)
         proposals.append(
             _side_condition_proposal(
                 idx=idx,
                 denominator=denom,
                 fact_names=fact_names,
                 have_name=_safe_have_name(denom, used_names),
+                nonzero_product_proof=nonzero_product_proof,
             )
         )
     return proposals

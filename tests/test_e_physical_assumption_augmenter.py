@@ -71,7 +71,7 @@ def test_mass_denominator_adds_positive_hypothesis_and_compiles_augmented_theore
         require_compile=True,
     )
 
-    assert result.check.status == "progress"
+    assert result.check.status == "context_augmented"
     assert "(h_m_pos : 0 < m.val)" in result.context.theorem_decl
     assert result.context.added_physical_assumptions[0]["source"] == "e_physical_assumption_augmentation"
     assert runner.compile_calls == [result.context.theorem_decl]
@@ -96,7 +96,7 @@ def test_augmented_theorem_split_ignores_type_ascription_in_target() -> None:
         require_compile=False,
     )
 
-    assert result.check.status == "progress"
+    assert result.check.status == "context_augmented"
     assert "(h_g_pos : 0 < g.val) : theta.val = (1 : Real) * g.val / g.val" in result.context.theorem_decl
     assert "Real) * g.val" not in result.context.theorem_decl.split(" : ", 1)[0]
 
@@ -136,6 +136,32 @@ def test_sum_denominator_adds_two_positive_hypotheses() -> None:
     assert "(h_m2_pos : 0 < m2.val)" in result.context.theorem_decl
 
 
+def test_existing_positive_hypothesis_is_not_reported_as_progress() -> None:
+    context = ProofContext(
+        sample_id="s1",
+        candidate_id="c1",
+        theorem_decl="theorem c1 (m : Mass) (h_m_pos : 0 < m.val) : True",
+        lean_header="import MechLib",
+        local_binders=["m : Mass", "h_m_pos : 0 < m.val"],
+        local_hypotheses=["h_m_pos"],
+        allowed_local_facts=["h_m_pos"],
+        typed_binders=[{"symbol": "m", "lean_type": "Mass"}],
+    )
+
+    result = augment_context_for_missing_side_condition(
+        context=context,
+        proposal=_proposal("m.val"),
+        positive_types=POSITIVE_TYPES,
+        max_added=8,
+        lean_runner=None,
+        require_compile=False,
+    )
+
+    assert result.check.status == "invalid"
+    assert result.check.error_type == "physical_positive_assumptions_already_present"
+    assert result.context.theorem_decl == context.theorem_decl
+
+
 def test_real_variable_is_not_augmented() -> None:
     context = ProofContext(
         sample_id="s1",
@@ -157,6 +183,30 @@ def test_real_variable_is_not_augmented() -> None:
     assert result.check.status == "invalid"
     assert result.check.error_type == "missing_term_not_typed_physical_quantity"
     assert result.context.theorem_decl == context.theorem_decl
+
+
+def test_dimensionless_denominator_can_be_augmented_when_config_allows_type() -> None:
+    context = ProofContext(
+        sample_id="s1",
+        candidate_id="c1",
+        theorem_decl="theorem c1 (mu : Dimensionless) : a.val = b.val / mu.val",
+        lean_header="import MechLib",
+        target_formula="a.val = b.val / mu.val",
+        local_binders=["mu : Dimensionless"],
+        typed_binders=[{"symbol": "mu", "lean_type": "Dimensionless"}],
+    )
+
+    result = augment_context_for_missing_side_condition(
+        context=context,
+        proposal=_proposal("mu.val"),
+        positive_types=[*POSITIVE_TYPES, "Dimensionless"],
+        max_added=8,
+        lean_runner=None,
+        require_compile=False,
+    )
+
+    assert result.check.status == "context_augmented"
+    assert "(h_mu_pos : 0 < mu.val)" in result.context.theorem_decl
 
 
 def test_existing_name_conflict_gets_fresh_name() -> None:

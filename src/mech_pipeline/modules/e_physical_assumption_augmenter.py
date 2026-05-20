@@ -14,7 +14,7 @@ _BINDER_RE = re.compile(r"\(([^()]*)\)")
 _POS_LT_RE = re.compile(r"(?P<name>[A-Za-z_][A-Za-z0-9_']*)\s*:\s*0\s*<\s*(?P<term>[^,\]\n;]+)")
 _POS_GT_RE = re.compile(r"(?P<name>[A-Za-z_][A-Za-z0-9_']*)\s*:\s*(?P<term>[^,\]\n;]+)\s*>\s*0")
 _MISSING_DENOM_RE = re.compile(
-    r"denominator\s+(?P<denom>.*?)\s+requires positivity facts for\s+(?P<missing>.*)$",
+    r"denominator\s+(?P<denom>.*?)\s+requires positivity(?:/nonzero)? facts for\s+(?P<missing>.*)$",
     re.IGNORECASE,
 )
 
@@ -312,8 +312,8 @@ def augment_context_for_missing_side_condition(
                 action_id="augment_physical_positive_hypotheses",
                 strategy="augment_physical_positive_hypotheses",
                 tactic_block="",
-                status="progress",
-                error_type=None,
+                status="invalid",
+                error_type="physical_positive_assumptions_already_present",
                 error_message="required positive hypotheses already exist",
                 stderr_excerpt=None,
             ),
@@ -389,7 +389,7 @@ def augment_context_for_missing_side_condition(
             action_id="augment_physical_positive_hypotheses",
             strategy="augment_physical_positive_hypotheses",
             tactic_block="",
-            status="progress",
+            status="context_augmented",
             error_type=None,
             error_message=f"added {len(additions)} typed physical positivity assumption(s)",
             stderr_excerpt=None,

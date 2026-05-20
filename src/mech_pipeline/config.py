@@ -184,6 +184,11 @@ class LLMGuidedSearchConfig:
             "Torque",
             "AngularMomentum",
             "MomentOfInertia",
+            "Dimensionless",
+            "SpringConstant",
+            "PhysAngle",
+            "AngularVelocity",
+            "AngularAcceleration",
             "Frequency",
         ]
     )

@@ -9,7 +9,7 @@ When `search_mode` is `obligation_guided_search`, you may use only:
 - listed proof obligations,
 - listed verified declarations,
 - listed algebra strategy cards,
-- standard tactics: simp, simp_all, rw, have, exact, apply, field_simp, ring_nf, linarith, nlinarith.
+- standard tactics: intro, intros, rcases, cases, constructor, rfl, simp, simp_all, rw, have, exact, apply, field_simp, ring_nf, linarith, nlinarith.
 
 When `search_mode` is `target_proof_from_available_facts`:
 - the required proof obligations are either already handled or blocked by preflight;
@@ -17,20 +17,33 @@ When `search_mode` is `target_proof_from_available_facts`:
 - do not try to use blocked declarations or any unlisted declaration;
 - prove the theorem target from available local facts and accepted proof-prefix facts;
 - prefer a short target-proof fact plan with algebraic `have` facts plus a final closing tactic.
+- prefer equation-chain synthesis when several equations must be combined: propose one
+  closed intermediate algebraic `have` at a time, then continue from the updated Lean
+  context after that action is accepted.
+- if `target_component_status` is present, generate `have` facts only for missing components;
+  do not return `constructor`, `rcases`, `split`, `sorry`, or a manual `close` for conjunction targets.
+- if `proof_target_classification` is `log_exp_solve`, first derive a log equation using
+  `Real.log_exp`; do not try pure `nlinarith` before that.
+- if `proof_target_classification` is `sqrt_square_solve`, first use an already available
+  matching sqrt formula with `exact`/`simpa`; do not start with `nlinarith`.
 
 Do not:
-- introduce new assumptions,
+- assume or postulate new facts; `intro`/`rcases` may only decompose the current Lean goal or an already introduced local fact,
 - modify the theorem statement,
 - use sorry/admit/axiom,
 - use declarations outside whitelist,
 - use schema/problem metadata as proof facts.
-- do not use constructor or split goals in the linear prefix search; close conjunctions with exact ⟨..., ...⟩ only when all components are already available.
+- do not use top-level constructor or split goals in the linear prefix search; constructor/cases are allowed inside a local `have ... := by` block only when the block closes all generated subgoals.
 - if extractor preflight blocked an obligation, do not keep trying that extractor shape.
+- for function-valued quantities, write value projections only after function application: if `f : Real -> Quantity`, use `(f t).val`; never write `f.val t`, `f.val(t)`, or `(f.val t).val`.
 
 Available strategy cards:
 - derive_law_equation
 - derive_model_equation
 - prove_side_condition
+- equation_chain_synthesis
+- log_exp_solve
+- sqrt_square_solve
 - algebra_solve
 - rewrite_forward
 - rewrite_backward

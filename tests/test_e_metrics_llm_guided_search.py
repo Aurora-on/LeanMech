@@ -157,7 +157,7 @@ def test_llm_guided_search_metrics_count_physical_assumption_augmentation() -> N
                 "sample_id": "s1",
                 "source": "deterministic",
                 "accepted": True,
-                "status": "progress",
+                "status": "context_augmented",
                 "strategy": "augment_physical_positive_hypotheses",
                 "compile_pass": True,
             }

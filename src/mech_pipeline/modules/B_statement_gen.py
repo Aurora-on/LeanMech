@@ -2173,6 +2173,8 @@ def _formula_blocked_reason(formula: str, quantity_infos: list[dict[str, Any]]) 
         return "function_quantity_scalar_projection"
     if _has_unsupported_tuple_formula(formula):
         return "tuple_valued_formula"
+    if _has_scalarized_force_vector_sum(formula, quantity_infos):
+        return "scalarized_force_vector_sum"
     if _has_unregistered_formula_symbol(formula, quantity_infos):
         return "unregistered_formula_symbol"
     if re.search(r"\([^)]+[+\-*/][^)]+\)\.val\b", formula):
@@ -2543,6 +2545,8 @@ def _model_interface_hypotheses(
             reason = "tautological_model_interface"
         elif _has_unsupported_tuple_formula(typed_claim):
             reason = "tuple_valued_model_interface"
+        elif _has_scalarized_force_vector_sum(typed_claim, quantity_infos):
+            reason = "scalarized_force_vector_sum"
         elif _is_function_equality_text(typed_claim):
             reason = "function_equality_requires_function_formula_ir"
         elif _has_invalid_function_value_shape(typed_claim):
@@ -3167,6 +3171,52 @@ def _has_function_scalar_projection(text: object, quantity_infos: list[dict[str,
     return False
 
 
+def _is_zero_formula_side(text: object) -> bool:
+    return _norm_compact(text) in {"0", "(0:Real)", "((0:Real))"}
+
+
+def _has_scalarized_force_vector_sum(text: object, quantity_infos: list[dict[str, Any]]) -> bool:
+    """Reject bare sums of force magnitudes used as vector equilibrium.
+
+    Relations such as `F1.val + F2.val + P.val = 0` are not auditable scalar
+    component equations: they add force magnitudes without signs, projections,
+    or a declared component axis.  Component balances with trig factors or net
+    component variables still pass through this gate.
+    """
+    value = normalize_lean_text(str(text or "")).strip()
+    relation = _split_relation_formula(value)
+    if relation is None:
+        return False
+    lhs, rel, rhs = relation
+    if rel != "=":
+        return False
+    candidate_side = ""
+    if _is_zero_formula_side(rhs):
+        candidate_side = lhs
+    elif _is_zero_formula_side(lhs):
+        candidate_side = rhs
+    if not candidate_side:
+        return False
+    side = _strip_wrapping_parens(candidate_side)
+    if any(token in side for token in ("-", "*", "/", "^", "Real.", "sin", "cos", "tan")):
+        return False
+    parts = [part.strip() for part in side.split("+") if part.strip()]
+    if len(parts) < 3:
+        return False
+    info_by_symbol = _quantity_info_map(quantity_infos)
+    force_terms = 0
+    for part in parts:
+        match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_']*)\.val", part)
+        if match is None:
+            return False
+        symbol = match.group(1)
+        info = info_by_symbol.get(symbol)
+        if str((info or {}).get("lean_type") or "") != "Force":
+            return False
+        force_terms += 1
+    return force_terms >= 3
+
+
 def _function_symbol_from_lhs(lhs: object) -> str:
     text = normalize_lean_text(str(lhs or "")).strip()
     patterns = [
@@ -3756,8 +3806,23 @@ def _finalize_target_formulas(
     model_ir: ModelIR | None,
     controlled_sketch: ControlledSketch | None,
     quantity_infos: list[dict[str, Any]],
+    target_variables: list[str] | None = None,
 ) -> list[str]:
     hypothesis_norms = _target_equivalent_hypothesis_norms(model_ir, controlled_sketch, quantity_infos)
+    target_names = {
+        lean_ident(_normalize_unicode_identifiers(str(item or "").strip()), prefix="q")
+        for item in (target_variables or [])
+        if str(item or "").strip()
+    }
+    target_names.update(str(item or "").strip() for item in (target_variables or []) if str(item or "").strip())
+
+    def covers_target_variable(text: str) -> bool:
+        return any(
+            re.search(rf"(?<![A-Za-z0-9_']){re.escape(name)}(?:\\.val)?(?![A-Za-z0-9_'])", text)
+            for name in target_names
+            if name
+        )
+
     out: list[str] = []
     deduped: list[str] = []
     seen: set[str] = set()
@@ -3772,7 +3837,7 @@ def _finalize_target_formulas(
                 continue
             seen_deduped.add(norm)
             deduped.append(text)
-            if norm in hypothesis_norms:
+            if norm in hypothesis_norms and not covers_target_variable(text):
                 continue
             if norm in seen:
                 continue
@@ -3793,6 +3858,11 @@ def _target_formula(
     if canonical is None:
         return "False", "missing_canonical_target"
     payload = _dataclass_payload(canonical)
+    target_variables = [
+        str(item or "").strip()
+        for item in (payload.get("target_variables") or [])
+        if str(item or "").strip()
+    ]
     raw_formulas = [normalize_lean_text(str(payload.get("lean_formula") or "")).strip()]
     secondary = payload.get("secondary_formulas")
     if isinstance(secondary, list):
@@ -3834,6 +3904,7 @@ def _target_formula(
                     model_ir=model_ir,
                     controlled_sketch=controlled_sketch,
                     quantity_infos=quantity_infos,
+                    target_variables=target_variables,
                 )
             if formulas:
                 return _join_target_formulas(formulas), "canonical_target_parse_gap_fallback"
@@ -3926,6 +3997,7 @@ def _target_formula(
                 model_ir=model_ir,
                 controlled_sketch=controlled_sketch,
                 quantity_infos=quantity_infos,
+                target_variables=target_variables,
             )
             if formulas:
                 return _join_target_formulas(formulas), None
@@ -3966,6 +4038,7 @@ def _target_formula(
             model_ir=model_ir,
             controlled_sketch=controlled_sketch,
             quantity_infos=quantity_infos,
+            target_variables=target_variables,
         )
         if not formulas:
             return "False", "target_equivalent_to_hypothesis"

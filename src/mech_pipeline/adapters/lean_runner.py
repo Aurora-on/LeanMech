@@ -17,6 +17,7 @@ _SUBPROCESS_TEXT_ERRORS = "replace"
 _LEAN_ERROR_TOKEN_RE = re.compile(r"error(?:\([^)]*\))?:")
 _LEAN_ERROR_LOC_RE = re.compile(r":(?P<line>\d+):(?P<col>\d+):\s*error(?:\([^)]*\))?:\s*(?P<msg>[^\n]+)")
 _LEAN_ERROR_MSG_RE = re.compile(r":\d+:\d+:\s*error(?:\([^)]*\))?:\s*(?P<msg>[^\n]+)")
+_UNSOLVED_GOALS_ERROR_RE = re.compile(r"error(?:\([^)]*\))?:\s*unsolved goals\b", re.IGNORECASE)
 _MECHLIB_HEADER_LINES = (
     "import Mathlib",
     "import MechLib",
@@ -214,7 +215,7 @@ def _merged_output(stdout: str, stderr: str) -> str:
     return normalize_lean_text("\n".join(part for part in [stderr, stdout] if part).strip())
 
 
-def _probe_goals_excerpt(text: str, limit: int = 800) -> str | None:
+def _probe_goals_excerpt(text: str, limit: int = 4000) -> str | None:
     normalized = normalize_lean_text(text)
     lower = normalized.lower()
     idx = lower.find("unsolved goals")
@@ -240,6 +241,14 @@ def _has_non_goal_probe_error(text: str) -> bool:
     return any(msg.strip().lower() != "unsolved goals" for msg in messages)
 
 
+def _unsolved_goal_error_count(text: str) -> int:
+    normalized = normalize_lean_text(text)
+    count = len(_UNSOLVED_GOALS_ERROR_RE.findall(normalized))
+    if count:
+        return count
+    return normalized.lower().count("unsolved goals")
+
+
 def classify_proof_probe_result(
     *,
     ok: bool,
@@ -252,6 +261,7 @@ def classify_proof_probe_result(
     lowered = merged.lower()
     details = extract_lean_error_details(stdout, stderr)
     stderr_excerpt = _stderr_excerpt(stdout, stderr, limit=800) or None
+    unsolved_goal_count = _unsolved_goal_error_count(merged)
 
     if "[pipeline_timeout]" in lowered or "[pipeline_exception]" in lowered:
         return ProofActionCheckResult(
@@ -269,6 +279,7 @@ def classify_proof_probe_result(
             error_col=details["error_col"],
             error_snippet=details["error_snippet"],
             probe_full_proof_body=probe_full_proof_body,
+            unsolved_goal_count=unsolved_goal_count,
         )
 
     if _has_non_goal_probe_error(merged):
@@ -286,6 +297,7 @@ def classify_proof_probe_result(
             error_col=details["error_col"],
             error_snippet=details["error_snippet"],
             probe_full_proof_body=probe_full_proof_body,
+            unsolved_goal_count=unsolved_goal_count,
         )
 
     if "unsolved goals" in lowered:
@@ -301,6 +313,8 @@ def classify_proof_probe_result(
             error_line=details["error_line"],
             error_col=details["error_col"],
             error_snippet=details["error_snippet"],
+            probe_full_proof_body=probe_full_proof_body,
+            unsolved_goal_count=unsolved_goal_count,
         )
 
     invalid_patterns = [
@@ -332,6 +346,7 @@ def classify_proof_probe_result(
                 error_col=details["error_col"],
                 error_snippet=details["error_snippet"],
                 probe_full_proof_body=probe_full_proof_body,
+                unsolved_goal_count=unsolved_goal_count,
             )
 
     if ok and not _LEAN_ERROR_TOKEN_RE.search(merged):
@@ -344,6 +359,8 @@ def classify_proof_probe_result(
             error_message=None,
             stderr_excerpt=stderr_excerpt,
             goals_excerpt=None,
+            probe_full_proof_body=probe_full_proof_body,
+            unsolved_goal_count=unsolved_goal_count,
         )
 
     return ProofActionCheckResult(
@@ -359,6 +376,7 @@ def classify_proof_probe_result(
         error_col=details["error_col"],
         error_snippet=details["error_snippet"],
         probe_full_proof_body=probe_full_proof_body,
+        unsolved_goal_count=unsolved_goal_count,
     )
 
 

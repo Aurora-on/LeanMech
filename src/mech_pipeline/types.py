@@ -637,6 +637,7 @@ class ProofActionCheckResult:
     error_col: int | None = None
     error_snippet: str | None = None
     probe_full_proof_body: str | None = None
+    unsolved_goal_count: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

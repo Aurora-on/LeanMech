@@ -10,11 +10,17 @@ ALLOWED_TACTIC_HEADS = {
     "have",
     "exact",
     "apply",
+    "intro",
+    "intros",
+    "rcases",
+    "cases",
+    "rfl",
     "rw",
     "simp",
     "simp_all",
     "simpa",
     "constructor",
+    "calc",
     "field_simp",
     "ring",
     "ring_nf",
@@ -23,6 +29,9 @@ ALLOWED_TACTIC_HEADS = {
     "norm_num",
     "positivity",
     "aesop",
+    "congrArg",
+    "mul_ne_zero",
+    "Real.log_exp",
 }
 FORBIDDEN_TOKENS = {
     "sorry": "forbidden_sorry",
@@ -31,6 +40,11 @@ FORBIDDEN_TOKENS = {
     "set_option": "forbidden_set_option",
 }
 METADATA_TOKEN_RE = re.compile(r"(^|\s)(law|problem|concept)\.", re.IGNORECASE)
+BAD_FUNCTION_VALUE_PATTERNS = (
+    r"\b{symbol}\.val\s+\(?[A-Za-z0-9_:.+\-*/ ]+\)?",
+    r"\b{symbol}\.val\s*\(",
+    r"\({symbol}\.val\s+[^)]*\)\.val",
+)
 
 
 def _line_head(line: str) -> str:
@@ -55,6 +69,31 @@ def _mechlib_decl_refs(text: str) -> list[str]:
     return sorted(set(re.findall(r"\bMechLib(?:\.[A-Za-z_][A-Za-z0-9_']*)+", text)))
 
 
+def _function_valued_symbols(proof_context: ProofContext) -> list[str]:
+    symbols: list[str] = []
+    for chunk in proof_context.local_binders:
+        cleaned = normalize_lean_text(str(chunk or "")).strip()
+        if ":" not in cleaned:
+            continue
+        names_part, type_part = cleaned.split(":", 1)
+        type_text = type_part.strip()
+        if ("->" not in type_text and "→" not in type_text) or type_text.startswith(("forall ", "∀")):
+            continue
+        for name in re.findall(r"\b[A-Za-z_][A-Za-z0-9_']*\b", names_part):
+            if name not in symbols:
+                symbols.append(name)
+    return symbols
+
+
+def _bad_function_value_application(text: str, proof_context: ProofContext) -> bool:
+    for symbol in _function_valued_symbols(proof_context):
+        escaped = re.escape(symbol)
+        for pattern in BAD_FUNCTION_VALUE_PATTERNS:
+            if re.search(pattern.format(symbol=escaped), text):
+                return True
+    return False
+
+
 def _looks_like_natural_language(line: str) -> bool:
     stripped = line.strip()
     if not stripped:
@@ -63,6 +102,8 @@ def _looks_like_natural_language(line: str) -> bool:
     if head in ALLOWED_TACTIC_HEADS or head in {"by", "·"}:
         return False
     if stripped.startswith(("_ =", "|", "<;>", "·")):
+        return False
+    if ":=" in stripped and "=" in stripped:
         return False
     return True
 
@@ -112,7 +153,9 @@ def validate_action_proposal(
             reasons.append("unknown_or_unproved_local_fact")
             break
 
-    if re.search(r"\b(assume|intro|introduce|postulate)\b", tactic_block):
+    if re.search(r"\b(assume|introduce|postulate)\b", tactic_block):
         reasons.append("introduces_new_assumption")
+    if _bad_function_value_application(tactic_block, proof_context):
+        reasons.append("invalid_function_quantity_value_application")
 
     return (not reasons, sorted(set(reasons)))

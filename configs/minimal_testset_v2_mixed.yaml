@@ -1,6 +1,6 @@
 dataset:
   source: mixed_v2
-  limit: 33
+  limit: 31
   category: Mechanics
   sample_policy: index_head
   seed: 42

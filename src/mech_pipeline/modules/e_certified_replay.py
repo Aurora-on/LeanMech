@@ -120,9 +120,10 @@ def run_deterministic_obligation_replay_with_probe(
     context: ProofContext,
     lean_runner: LeanRunner,
     timeout_s: int | None = None,
+    proof_prefix: str = "",
 ) -> CertifiedReplayRun:
     replayer = ProofObligationReplayer(action_checker=probe_action_checker(lean_runner, timeout_s=timeout_s))
-    replay_result = replayer.replay(context)
+    replay_result = replayer.replay(context, proof_prefix=proof_prefix)
     proposal_by_id = _proposal_map(replay_result)
     accepted_ids = _accepted_action_ids(replay_result)
     action_rows = [

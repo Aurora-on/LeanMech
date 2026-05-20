@@ -405,7 +405,7 @@ def _llm_guided_e_metrics(
     augmentation_success = sum(
         1
         for row in augmentation_actions
-        if bool(row.get("accepted")) and str(row.get("status") or "") in {"progress", "closed"}
+        if bool(row.get("accepted")) and str(row.get("status") or "") in {"context_augmented", "progress", "closed"}
     )
     augmentation_compile_success = sum(
         1

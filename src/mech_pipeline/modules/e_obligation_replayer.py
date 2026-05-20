@@ -18,7 +18,11 @@ REPLAY_FAILURE_TAGS = {
     "extractor_decl_mismatch",
     "formal_claim_shape_mismatch",
     "from_hypothesis_missing",
+    "from_hypothesis_not_in_theorem",
     "missing_proof_friendly_extractor",
+    "non_extractor_decl",
+    "extractor_hypothesis_type_mismatch",
+    "extractor_requires_additional_premises",
 }
 EXTRACTOR_PREFLIGHT_FAILURES = {
     "symbol_hallucination",

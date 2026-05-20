@@ -4,8 +4,13 @@ import json
 
 from mech_pipeline.adapters.lean_runner import classify_proof_probe_result
 from mech_pipeline.config import PipelineConfig
-from mech_pipeline.modules.e_search_controller import _indent_tactic_body, run_llm_guided_search
-from mech_pipeline.types import ProofActionCheckResult, ProofContext, ProofObligationReplayItem
+from mech_pipeline.modules.e_search_controller import (
+    _component_close_proposal,
+    _indent_tactic_body,
+    _target_components,
+    run_llm_guided_search,
+)
+from mech_pipeline.types import ProofActionCheckResult, ProofContext, ProofObligationReplayItem, ProofSearchNode
 
 
 class FakeLLM:
@@ -240,6 +245,232 @@ h : True
         )
 
 
+class StructuralPreludeLeanRunner(FakeLeanRunner):
+    def probe_proof_prefix(self, *, lean_header, theorem_decl, proof_prefix, timeout_s=None):
+        _ = (lean_header, theorem_decl)
+        self.probes.append(proof_prefix)
+        self.timeouts.append(timeout_s)
+        if proof_prefix.strip() == "intro t0":
+            return ProofActionCheckResult(
+                action_id="probe",
+                strategy="probe_proof_prefix",
+                tactic_block=proof_prefix,
+                status="progress",
+                goals_excerpt="unsolved goals\nt0 : Real\n⊢ t0 = t0",
+            )
+        if "exact hvel t0" in proof_prefix:
+            return ProofActionCheckResult(
+                action_id="probe",
+                strategy="probe_proof_prefix",
+                tactic_block=proof_prefix,
+                status="closed" if proof_prefix.strip().startswith("intro t0") else "invalid",
+                error_type=None if proof_prefix.strip().startswith("intro t0") else "symbol_hallucination",
+                error_message=None if proof_prefix.strip().startswith("intro t0") else "Unknown identifier `t0`",
+            )
+        return super().probe_proof_prefix(
+            lean_header=lean_header,
+            theorem_decl=theorem_decl,
+            proof_prefix=proof_prefix,
+            timeout_s=timeout_s,
+        )
+
+
+class StructuralDomainLeanRunner(FakeLeanRunner):
+    def probe_proof_prefix(self, *, lean_header, theorem_decl, proof_prefix, timeout_s=None):
+        _ = (lean_header, theorem_decl)
+        self.probes.append(proof_prefix)
+        self.timeouts.append(timeout_s)
+        prelude = "intro hdom\nrcases hdom with ⟨h0, h1⟩"
+        if proof_prefix.strip() == prelude:
+            return ProofActionCheckResult(
+                action_id="probe",
+                strategy="probe_proof_prefix",
+                tactic_block=proof_prefix,
+                status="progress",
+                goals_excerpt="unsolved goals\nh0 : 0 <= t0\nh1 : t0 <= 4\n⊢ True",
+            )
+        if "exact trivial" in proof_prefix and prelude in proof_prefix:
+            return ProofActionCheckResult(
+                action_id="probe",
+                strategy="probe_proof_prefix",
+                tactic_block=proof_prefix,
+                status="closed",
+            )
+        return super().probe_proof_prefix(
+            lean_header=lean_header,
+            theorem_decl=theorem_decl,
+            proof_prefix=proof_prefix,
+            timeout_s=timeout_s,
+        )
+
+
+class UniversalInstantiationLeanRunner(FakeLeanRunner):
+    def probe_proof_prefix(self, *, lean_header, theorem_decl, proof_prefix, timeout_s=None):
+        _ = (lean_header, theorem_decl)
+        self.probes.append(proof_prefix)
+        self.timeouts.append(timeout_s)
+        prelude = "intro t0\nintro hdom\nrcases hdom with ⟨h0, h1⟩"
+        if proof_prefix.strip() == prelude:
+            return ProofActionCheckResult(
+                action_id="probe",
+                strategy="probe_proof_prefix",
+                tactic_block=proof_prefix,
+                status="progress",
+                goals_excerpt="unsolved goals\nt0 : Real\nh0 : 0 <= t0\nh1 : t0 <= 4\n⊢ (v t0).val = 6 * t0 - 2",
+            )
+        if "exact h_inst_hvel" in proof_prefix:
+            return ProofActionCheckResult(
+                action_id="probe",
+                strategy="probe_proof_prefix",
+                tactic_block=proof_prefix,
+                status="closed",
+            )
+        if "have h_inst_hvel" in proof_prefix:
+            return ProofActionCheckResult(
+                action_id="probe",
+                strategy="probe_proof_prefix",
+                tactic_block=proof_prefix,
+                status="progress",
+                goals_excerpt="unsolved goals\nh_inst_hvel : (v t0).val = 6 * t0 - 2",
+            )
+        return super().probe_proof_prefix(
+            lean_header=lean_header,
+            theorem_decl=theorem_decl,
+            proof_prefix=proof_prefix,
+            timeout_s=timeout_s,
+        )
+
+
+class TimeTargetInstantiationLeanRunner(FakeLeanRunner):
+    def probe_proof_prefix(self, *, lean_header, theorem_decl, proof_prefix, timeout_s=None):
+        _ = (lean_header, theorem_decl)
+        self.probes.append(proof_prefix)
+        self.timeouts.append(timeout_s)
+        if "hglobal k" in proof_prefix:
+            raise AssertionError("universal instantiator must not instantiate time forall with k")
+        if proof_prefix.strip() == "intro hcond":
+            return ProofActionCheckResult(
+                action_id="probe",
+                strategy="probe_proof_prefix",
+                tactic_block=proof_prefix,
+                status="progress",
+                goals_excerpt=(
+                    "unsolved goals\n"
+                    "k : Real\n"
+                    "t_half : Time\n"
+                    "hcond : k > 0\n"
+                    "⊢ (omega t_half.val).val <= 0"
+                ),
+                unsolved_goal_count=1,
+            )
+        if "exact h_inst_hglobal" in proof_prefix:
+            return ProofActionCheckResult(
+                action_id="probe",
+                strategy="probe_proof_prefix",
+                tactic_block=proof_prefix,
+                status="closed",
+                unsolved_goal_count=0,
+            )
+        if "have h_inst_hglobal" in proof_prefix and "hglobal t_half.val" in proof_prefix:
+            return ProofActionCheckResult(
+                action_id="probe",
+                strategy="probe_proof_prefix",
+                tactic_block=proof_prefix,
+                status="progress",
+                goals_excerpt=(
+                    "unsolved goals\n"
+                    "h_inst_hglobal : (omega t_half.val).val <= 0\n"
+                    "⊢ (omega t_half.val).val <= 0"
+                ),
+                unsolved_goal_count=1,
+            )
+        return super().probe_proof_prefix(
+            lean_header=lean_header,
+            theorem_decl=theorem_decl,
+            proof_prefix=proof_prefix,
+            timeout_s=timeout_s,
+        )
+
+
+class NoPhantomT0InstantiationLeanRunner(FakeLeanRunner):
+    def probe_proof_prefix(self, *, lean_header, theorem_decl, proof_prefix, timeout_s=None):
+        _ = (lean_header, theorem_decl)
+        self.probes.append(proof_prefix)
+        self.timeouts.append(timeout_s)
+        if "hglobal t0" in proof_prefix:
+            raise AssertionError("universal instantiator must not use t0 unless it is introduced")
+        if proof_prefix.strip() == "intro hcond":
+            return ProofActionCheckResult(
+                action_id="probe",
+                strategy="probe_proof_prefix",
+                tactic_block=proof_prefix,
+                status="progress",
+                goals_excerpt=(
+                    "unsolved goals\n"
+                    "k : Real\n"
+                    "hglobal : forall (t0 : Real), (omega t0).val <= 0\n"
+                    "hcond : k > 0\n"
+                    "⊢ True"
+                ),
+                unsolved_goal_count=1,
+            )
+        return super().probe_proof_prefix(
+            lean_header=lean_header,
+            theorem_decl=theorem_decl,
+            proof_prefix=proof_prefix,
+            timeout_s=timeout_s,
+        )
+
+
+class DeterministicRepairLeanRunner(FakeLeanRunner):
+    def probe_proof_prefix(self, *, lean_header, theorem_decl, proof_prefix, timeout_s=None):
+        _ = (lean_header, theorem_decl)
+        self.probes.append(proof_prefix)
+        self.timeouts.append(timeout_s)
+        if "field_simp [hden] at *" in proof_prefix:
+            return ProofActionCheckResult(
+                action_id="probe",
+                strategy="probe_proof_prefix",
+                tactic_block=proof_prefix,
+                status="progress",
+                goals_excerpt="unsolved goals",
+            )
+        if "nlinarith [h_eq]" in proof_prefix:
+            return ProofActionCheckResult(
+                action_id="probe",
+                strategy="probe_proof_prefix",
+                tactic_block=proof_prefix,
+                status="invalid",
+                error_type="nlinarith_failed",
+                error_message="nlinarith failed to solve",
+                stderr_excerpt="error: nlinarith failed to solve",
+            )
+        if "linarith [h_eq]" in proof_prefix:
+            return ProofActionCheckResult(
+                action_id="probe",
+                strategy="probe_proof_prefix",
+                tactic_block=proof_prefix,
+                status="progress",
+                goals_excerpt="unsolved goals",
+            )
+        if "rw [h_eq]" in proof_prefix:
+            return ProofActionCheckResult(
+                action_id="probe",
+                strategy="probe_proof_prefix",
+                tactic_block=proof_prefix,
+                status="invalid",
+                error_type="rewrite_failed",
+                error_message="rewrite failed, pattern not found",
+                stderr_excerpt="error: rewrite failed, pattern not found",
+            )
+        return super().probe_proof_prefix(
+            lean_header=lean_header,
+            theorem_decl=theorem_decl,
+            proof_prefix=proof_prefix,
+            timeout_s=timeout_s,
+        )
+
+
 def _cfg(*, max_nodes: int = 4, max_llm_calls: int = 1) -> PipelineConfig:
     cfg = PipelineConfig()
     cfg.proof.llm_guided_search.max_nodes = max_nodes
@@ -264,6 +495,273 @@ def _context() -> ProofContext:
     )
 
 
+def test_search_controller_enters_forall_context_before_llm() -> None:
+    cfg = _cfg(max_nodes=3, max_llm_calls=1)
+    context = ProofContext(
+        sample_id="s_forall",
+        candidate_id="c_forall",
+        theorem_decl="theorem c_forall (hvel : forall t0 : Real, t0 = t0) : forall t0 : Real, t0 = t0",
+        lean_header="import Mathlib",
+        target_formula="forall t0 : Real, t0 = t0",
+        local_binders=["hvel : forall t0 : Real, t0 = t0"],
+        allowed_local_facts=["hvel"],
+        local_hypotheses=["hvel"],
+    )
+    llm = FakeLLM(
+        [
+            {
+                "strategy": "close_goal",
+                "tactic_block": "exact hvel t0",
+                "uses_facts": ["hvel"],
+                "uses_decls": [],
+            }
+        ]
+    )
+    runner = StructuralPreludeLeanRunner()
+
+    trace = run_llm_guided_search(
+        proof_context=context,
+        lean_runner=runner,
+        llm_client=llm,
+        cfg=cfg,
+    )
+
+    assert runner.probes[0].strip() == "intro t0"
+    assert trace.search_status == "success"
+    assert trace.final_proof_body and trace.final_proof_body.startswith("intro t0")
+    assert trace.accepted_actions[0]["strategy"] == "structural_prelude"
+    assert trace.accepted_actions[0]["introduced_locals"] == ["t0"]
+    assert '"target": "forall t0 : Real, t0 = t0"' in llm.prompts[0]
+    assert '"target": "Real,' not in llm.prompts[0]
+    assert '"t0 : Real"' in llm.prompts[0]
+
+
+def test_search_controller_enters_implication_domain_context_before_llm() -> None:
+    cfg = _cfg(max_nodes=3, max_llm_calls=1)
+    context = ProofContext(
+        sample_id="s_domain",
+        candidate_id="c_domain",
+        theorem_decl="theorem c_domain (t0 : Real) : 0 <= t0 ∧ t0 <= 4 -> True",
+        lean_header="import Mathlib",
+        target_formula="0 <= t0 ∧ t0 <= 4 -> True",
+        local_binders=["t0 : Real"],
+    )
+    llm = FakeLLM(
+        [
+            {
+                "strategy": "close_goal",
+                "tactic_block": "exact trivial",
+                "uses_facts": [],
+                "uses_decls": [],
+            }
+        ]
+    )
+    runner = StructuralDomainLeanRunner(closed_token="not_present", progress_token="not_present")
+
+    trace = run_llm_guided_search(
+        proof_context=context,
+        lean_runner=runner,
+        llm_client=llm,
+        cfg=cfg,
+    )
+
+    assert runner.probes[0].strip() == "intro hdom\nrcases hdom with ⟨h0, h1⟩"
+    assert trace.search_status == "success"
+    assert trace.final_proof_body and trace.final_proof_body.startswith("intro hdom")
+    assert trace.accepted_actions[0]["introduced_locals"] == ["h0", "h1"]
+    assert '"h0 : 0 <= t0"' in llm.prompts[0]
+    assert '"h1 : t0 <= 4"' in llm.prompts[0]
+
+
+def test_search_controller_instantiates_universal_hypotheses_after_structural_prelude() -> None:
+    cfg = _cfg(max_nodes=3, max_llm_calls=1)
+    context = ProofContext(
+        sample_id="s_universal",
+        candidate_id="c_universal",
+        theorem_decl=(
+            "theorem c_universal "
+            "(hvel : forall t0 : Real, 0 <= t0 -> t0 <= 4 -> (v t0).val = 6 * t0 - 2) : "
+            "forall t0 : Real, 0 <= t0 ∧ t0 <= 4 -> (v t0).val = 6 * t0 - 2"
+        ),
+        lean_header="import Mathlib",
+        target_formula="forall t0 : Real, 0 <= t0 ∧ t0 <= 4 -> (v t0).val = 6 * t0 - 2",
+        local_binders=["hvel : forall t0 : Real, 0 <= t0 -> t0 <= 4 -> (v t0).val = 6 * t0 - 2"],
+        allowed_local_facts=["hvel"],
+        local_hypotheses=["hvel"],
+    )
+    llm = FakeLLM(
+        [
+            {
+                "strategy": "close_goal",
+                "tactic_block": "exact h_inst_hvel",
+                "uses_facts": ["h_inst_hvel"],
+                "uses_decls": [],
+            }
+        ]
+    )
+
+    trace = run_llm_guided_search(
+        proof_context=context,
+        lean_runner=UniversalInstantiationLeanRunner(closed_token="not_present", progress_token="not_present"),
+        llm_client=llm,
+        cfg=cfg,
+    )
+
+    assert trace.search_status == "success"
+    assert any(row["strategy"] == "instantiate_universal_fact" for row in trace.accepted_actions)
+    instantiation = [row for row in trace.accepted_actions if row["strategy"] == "instantiate_universal_fact"][0]
+    assert "exact hvel t0 h0 h1" in instantiation["tactic_block"]
+    assert '"h_inst_hvel : (v t0).val = 6 * t0 - 2"' in llm.prompts[0]
+
+
+def test_component_planner_flattens_nested_conjunction_and_generates_exact() -> None:
+    context = ProofContext(
+        sample_id="s_components",
+        candidate_id="c_components",
+        theorem_decl="theorem c_components (hA : A) (hB : B) (hC : C) (hD : D) : A ∧ B ∧ C ∧ D",
+        lean_header="import Mathlib",
+        target_formula="A ∧ B ∧ C ∧ D",
+        local_binders=["hA : A", "hB : B", "hC : C", "hD : D"],
+        allowed_local_facts=["hA", "hB", "hC", "hD"],
+        local_hypotheses=["hA", "hB", "hC", "hD"],
+    )
+    node = ProofSearchNode(
+        node_id="root",
+        parent_id=None,
+        depth=0,
+        proof_prefix="",
+        local_facts=["hA", "hB", "hC", "hD"],
+        local_fact_types={},
+    )
+
+    proposal = _component_close_proposal(context, node)
+
+    assert _target_components(context) == ["A", "B", "C", "D"]
+    assert proposal is not None
+    assert proposal.strategy == "close_target_components"
+    assert proposal.tactic_block == "exact ⟨hA, hB, hC, hD⟩"
+
+
+def test_search_controller_rejects_llm_manual_conjunction_close_when_components_missing() -> None:
+    cfg = _cfg(max_nodes=1, max_llm_calls=1)
+    cfg.proof.llm_guided_search.deterministic_obligation_replay_first = False
+    cfg.proof.llm_guided_search.deterministic_side_conditions_first = False
+    context = ProofContext(
+        sample_id="s_components_missing",
+        candidate_id="c_components_missing",
+        theorem_decl="theorem c_components_missing (hA : A) : A ∧ B ∧ C ∧ D",
+        lean_header="import Mathlib",
+        target_formula="A ∧ B ∧ C ∧ D",
+        local_binders=["hA : A"],
+        allowed_local_facts=["hA"],
+        local_hypotheses=["hA"],
+    )
+    llm = FakeLLM(
+        [
+            {
+                "strategy": "target_fact_plan_close",
+                "tactic_block": "constructor\n· exact hA\n· constructor\n  · sorry\n  · constructor\n    · sorry\n    · sorry",
+                "uses_facts": ["hA"],
+                "uses_decls": [],
+            }
+        ]
+    )
+
+    trace = run_llm_guided_search(
+        proof_context=context,
+        lean_runner=FakeLeanRunner(closed_token="not_present", progress_token="not_present"),
+        llm_client=llm,
+        cfg=cfg,
+    )
+
+    assert trace.rejected_actions
+    assert trace.rejected_actions[0]["error_type"] == "target_component_facts_missing"
+    assert "B" in trace.rejected_actions[0]["missing_target_components"]
+    assert trace.rejected_actions[0]["error_type"] != "branching_constructor_disallowed_linear_prefix"
+
+
+def test_universal_instantiator_does_not_use_arbitrary_real_constant_as_time() -> None:
+    cfg = _cfg(max_nodes=3, max_llm_calls=1)
+    context = ProofContext(
+        sample_id="s_time_target",
+        candidate_id="c_time_target",
+        theorem_decl=(
+            "theorem c_time_target "
+            "(k : Real) (t_half : Time) "
+            "(omega : Real -> AngularVelocity) "
+            "(hglobal : forall t0 : Real, (omega t0).val <= 0) : "
+            "k > 0 -> (omega t_half.val).val <= 0"
+        ),
+        lean_header="import Mathlib\nimport MechLib",
+        target_formula="k > 0 -> (omega t_half.val).val <= 0",
+        local_binders=[
+            "k : Real",
+            "t_half : Time",
+            "omega : Real -> AngularVelocity",
+            "hglobal : forall t0 : Real, (omega t0).val <= 0",
+        ],
+        allowed_local_facts=["hglobal"],
+        local_hypotheses=["hglobal"],
+    )
+    llm = FakeLLM(
+        [
+            {
+                "strategy": "close_goal",
+                "tactic_block": "exact h_inst_hglobal",
+                "uses_facts": ["h_inst_hglobal"],
+                "uses_decls": [],
+            }
+        ]
+    )
+    runner = TimeTargetInstantiationLeanRunner(closed_token="not_present", progress_token="not_present")
+
+    trace = run_llm_guided_search(
+        proof_context=context,
+        lean_runner=runner,
+        llm_client=llm,
+        cfg=cfg,
+    )
+
+    assert trace.search_status == "success"
+    instantiation = [row for row in trace.accepted_actions if row["strategy"] == "instantiate_universal_fact"][0]
+    assert "hglobal t_half.val" in instantiation["tactic_block"]
+    assert "hglobal k" not in "\n".join(runner.probes)
+
+
+def test_universal_instantiator_does_not_use_t0_from_goal_local_context() -> None:
+    cfg = _cfg(max_nodes=1, max_llm_calls=0)
+    context = ProofContext(
+        sample_id="s_no_phantom_t0",
+        candidate_id="c_no_phantom_t0",
+        theorem_decl=(
+            "theorem c_no_phantom_t0 "
+            "(k : Real) (omega : Real -> AngularVelocity) "
+            "(hglobal : forall t0 : Real, (omega t0).val <= 0) : "
+            "k > 0 -> True"
+        ),
+        lean_header="import Mathlib\nimport MechLib",
+        target_formula="k > 0 -> True",
+        local_binders=[
+            "k : Real",
+            "omega : Real -> AngularVelocity",
+            "hglobal : forall t0 : Real, (omega t0).val <= 0",
+        ],
+        allowed_local_facts=["hglobal"],
+        local_hypotheses=["hglobal"],
+    )
+    runner = NoPhantomT0InstantiationLeanRunner(closed_token="not_present", progress_token="not_present")
+
+    trace = run_llm_guided_search(
+        proof_context=context,
+        lean_runner=runner,
+        llm_client=FakeLLM([]),
+        cfg=cfg,
+    )
+
+    assert not any(row["strategy"] == "instantiate_universal_fact" for row in trace.accepted_actions)
+    assert "hglobal t0" not in "\n".join(runner.probes)
+
+
 def test_claim_repair_tactic_body_indents_single_line_nested_have() -> None:
     body = """nlinarith [given_mass_relation]
 have hmb_ne : m_B.val ≠ 0 := by
@@ -276,6 +774,73 @@ apply (mul_right_cancel₀ hmb_ne)"""
         "    linarith [h_m_B_pos]\n"
         "  apply (mul_right_cancel₀ hmb_ne)"
     )
+
+
+def test_search_controller_repairs_fraction_claim_with_field_simp_before_llm_repair() -> None:
+    context = ProofContext(
+        sample_id="s_fraction_repair",
+        candidate_id="c_fraction_repair",
+        theorem_decl="theorem c_fraction_repair (h_eq : True) (hden : y ≠ 0) : True",
+        lean_header="import Mathlib",
+        target_formula="True",
+        local_binders=["h_eq : True", "hden : y ≠ 0"],
+        allowed_local_facts=["h_eq", "hden"],
+        local_hypotheses=["h_eq", "hden"],
+    )
+    llm = FakeLLM(
+        [
+            {
+                "strategy": "introduce_intermediate_have",
+                "tactic_block": "have h_frac : x / y = z := by\n  nlinarith [h_eq]",
+                "uses_facts": ["h_eq"],
+                "uses_decls": [],
+            }
+        ]
+    )
+
+    trace = run_llm_guided_search(
+        proof_context=context,
+        lean_runner=DeterministicRepairLeanRunner(progress_token="not_present"),
+        llm_client=llm,
+        cfg=_cfg(max_nodes=2, max_llm_calls=1),
+    )
+
+    assert llm.calls == 1
+    assert any(row.get("repair_kind") == "fraction_field_simp_then_nlinarith" for row in trace.accepted_actions)
+    assert "field_simp [hden] at *" in trace.accepted_actions[0]["tactic_block"]
+
+
+def test_search_controller_repairs_rewrite_failure_with_linarith_before_llm_repair() -> None:
+    context = ProofContext(
+        sample_id="s_rw_repair",
+        candidate_id="c_rw_repair",
+        theorem_decl="theorem c_rw_repair (h_eq : True) : True",
+        lean_header="import Mathlib",
+        target_formula="True",
+        local_binders=["h_eq : True"],
+        allowed_local_facts=["h_eq"],
+        local_hypotheses=["h_eq"],
+    )
+    llm = FakeLLM(
+        [
+            {
+                "strategy": "introduce_intermediate_have",
+                "tactic_block": "have h_rw : True := by\n  rw [h_eq]",
+                "uses_facts": ["h_eq"],
+                "uses_decls": [],
+            }
+        ]
+    )
+
+    trace = run_llm_guided_search(
+        proof_context=context,
+        lean_runner=DeterministicRepairLeanRunner(progress_token="not_present"),
+        llm_client=llm,
+        cfg=_cfg(max_nodes=2, max_llm_calls=1),
+    )
+
+    assert any(row.get("repair_kind") == "rewrite_failed_algebra_or_simpa" for row in trace.accepted_actions)
+    assert "linarith [h_eq]" in trace.accepted_actions[0]["tactic_block"]
 
 
 def test_search_controller_accepts_valid_progress_action_into_node() -> None:
@@ -457,7 +1022,13 @@ def test_search_controller_augments_typed_physical_positive_assumption_before_si
     assert trace.added_physical_assumptions[0]["name"] == "h_m_pos"
     assert "(h_m_pos : 0 < m.val)" in (trace.augmented_theorem_decl or "")
     assert runner.compile_calls and "(h_m_pos : 0 < m.val)" in runner.compile_calls[0]
-    assert any(row["strategy"] == "augment_physical_positive_hypotheses" for row in trace.accepted_actions)
+    assert not any(row["strategy"] == "augment_physical_positive_hypotheses" for row in trace.accepted_actions)
+    assert len(trace.augmentation_checks) == 1
+    assert trace.augmentation_checks[0]["strategy"] == "augment_physical_positive_hypotheses"
+    assert trace.augmentation_checks[0]["status"] == "context_augmented"
+    assert trace.augmentation_checks[0]["accepted"] is True
+    assert trace.augmentation_checks[0]["phase"] == "pre_search"
+    assert trace.augmentation_checks[0]["search_node_action"] is False
     assert any("hden" in probe for probe in runner.probes)
 
 
@@ -573,6 +1144,67 @@ def test_search_controller_rejects_branching_constructor_in_linear_prefix_withou
 
     assert runner.probes == []
     assert trace.rejected_actions[0]["error_type"] == "branching_constructor_disallowed_linear_prefix"
+
+
+def test_search_controller_allows_constructor_inside_local_have_block() -> None:
+    llm = FakeLLM(
+        [
+            {
+                "action_id": "local_pair",
+                "strategy": "introduce_intermediate_have",
+                "tactic_block": "have h_pair : True ∧ True := by\n  constructor\n  · exact h\n  · exact h",
+                "uses_facts": ["h"],
+                "uses_decls": [],
+            }
+        ]
+    )
+    runner = FakeLeanRunner(progress_token="h_pair")
+
+    trace = run_llm_guided_search(
+        proof_context=_context(),
+        lean_runner=runner,
+        llm_client=llm,
+        cfg=_cfg(max_nodes=2, max_llm_calls=1),
+    )
+
+    assert runner.probes
+    assert trace.accepted_actions[0]["strategy"] == "introduce_intermediate_have"
+    assert trace.accepted_actions[0]["new_local_facts"] == ["h_pair"]
+
+
+def test_search_controller_repairs_function_valued_quantity_val_application_before_probe() -> None:
+    context = ProofContext(
+        sample_id="s_function_val",
+        candidate_id="c_function_val",
+        theorem_decl="theorem c_function_val (m : Real -> Mass) (t_eval90 : Time) (h : True) : True",
+        lean_header="import MechLib",
+        target_formula="True",
+        local_binders=["m : Real -> Mass", "t_eval90 : Time", "h : True"],
+        allowed_local_facts=["h"],
+        local_hypotheses=["h"],
+    )
+    llm = FakeLLM(
+        [
+            {
+                "strategy": "introduce_intermediate_have",
+                "tactic_block": "have h_mass90 : m.val t_eval90 = 100 := by\n  exact h",
+                "uses_facts": ["h"],
+                "uses_decls": [],
+            }
+        ]
+    )
+    runner = FakeLeanRunner(progress_token="(m t_eval90.val).val = 100")
+
+    trace = run_llm_guided_search(
+        proof_context=context,
+        lean_runner=runner,
+        llm_client=llm,
+        cfg=_cfg(max_nodes=2, max_llm_calls=1),
+    )
+
+    assert "(m t_eval90.val).val = 100" in runner.probes[0]
+    assert trace.accepted_actions[0]["function_value_application_repaired"] is True
+    assert trace.accepted_actions[0]["new_local_facts"] == ["h_mass90"]
 
 
 def test_search_controller_rejects_repeated_failed_action_shape_without_second_probe() -> None:
@@ -696,6 +1328,30 @@ def test_search_controller_does_not_repeat_same_side_condition_denominator() -> 
     assert len(runner.probes) == 1
 
 
+def test_search_controller_closes_conjunction_target_from_matching_component_facts() -> None:
+    context = ProofContext(
+        sample_id="s_components",
+        candidate_id="c_components",
+        theorem_decl="theorem c_components (x y : Real) (hx : x = x) (hy : y = y) : x = x ∧ y = y",
+        lean_header="import Mathlib",
+        target_formula="x = x ∧ y = y",
+        local_binders=["x y : Real", "hx : x = x", "hy : y = y"],
+        allowed_local_facts=["hx", "hy"],
+        local_hypotheses=["hx", "hy"],
+    )
+
+    trace = run_llm_guided_search(
+        proof_context=context,
+        lean_runner=FakeLeanRunner(closed_token="exact ⟨hx, hy⟩", progress_token="not_present"),
+        llm_client=FakeLLM([]),
+        cfg=_cfg(max_nodes=2, max_llm_calls=0),
+    )
+
+    assert trace.search_status == "success"
+    assert trace.accepted_actions[0]["strategy"] == "close_target_components"
+    assert trace.final_proof_body == "exact ⟨hx, hy⟩"
+
+
 def test_search_controller_defers_llm_when_deterministic_side_condition_is_available() -> None:
     cfg = _cfg(max_nodes=1, max_llm_calls=1)
     cfg.proof.llm_guided_search.deterministic_side_conditions_first = True
@@ -804,6 +1460,64 @@ def test_search_controller_does_not_credit_rejected_action_facts_or_obligations(
     assert rejected["new_local_facts"] == []
     assert rejected["covered_obligations"] == []
     assert rejected["remaining_obligations_after"] == ["obl_newton"]
+
+
+class IncompleteHaveLeanRunner(FakeLeanRunner):
+    def probe_proof_prefix(self, *, lean_header, theorem_decl, proof_prefix, timeout_s=None):
+        _ = (lean_header, theorem_decl, timeout_s)
+        self.probes.append(proof_prefix)
+        return ProofActionCheckResult(
+            action_id="probe",
+            strategy="probe_proof_prefix",
+            tactic_block=proof_prefix,
+            status="progress",
+            error_type="unsolved_goals",
+            error_message="unsolved goals",
+            stderr_excerpt=(
+                "/tmp/probe.lean:12:20: error: unsolved goals\n"
+                "h : True\n"
+                "⊢ False\n"
+                "/tmp/probe.lean:10:39: error: unsolved goals\n"
+                "h h_bad : True\n"
+                "⊢ True"
+            ),
+            goals_excerpt=(
+                "unsolved goals\n"
+                "h : True\n"
+                "⊢ False\n"
+                "unsolved goals\n"
+                "h h_bad : True\n"
+                "⊢ True"
+            ),
+            unsolved_goal_count=2,
+        )
+
+
+def test_search_controller_rejects_unfinished_have_as_fact() -> None:
+    llm = FakeLLM(
+        [
+            {
+                "strategy": "introduce_intermediate_have",
+                "tactic_block": "have h_bad : False := by\n  simp_all",
+                "uses_facts": ["h"],
+                "uses_decls": [],
+            }
+        ]
+    )
+
+    trace = run_llm_guided_search(
+        proof_context=_context(),
+        lean_runner=IncompleteHaveLeanRunner(),
+        llm_client=llm,
+        cfg=_cfg(max_nodes=2, max_llm_calls=1),
+    )
+
+    assert trace.accepted_actions == []
+    rejected = trace.rejected_actions[0]
+    assert rejected["accepted"] is False
+    assert rejected["error_type"] == "have_subgoal_unresolved"
+    assert rejected["proposed_local_facts"] == ["h_bad"]
+    assert rejected["new_local_facts"] == []
 
 
 def test_search_controller_does_not_create_fact_from_error_category_probe() -> None:
@@ -1209,4 +1923,9 @@ def test_search_controller_does_not_augment_non_physical_missing_side_condition(
 
     assert trace.physical_assumption_augmented is False
     assert trace.accepted_actions == []
-    assert any(row["strategy"] == "augment_physical_positive_hypotheses" for row in trace.rejected_actions)
+    assert trace.rejected_actions and trace.rejected_actions[0]["strategy"] == "missing_side_condition"
+    assert len(trace.augmentation_checks) == 1
+    assert trace.augmentation_checks[0]["strategy"] == "augment_physical_positive_hypotheses"
+    assert trace.augmentation_checks[0]["accepted"] is False
+    assert trace.augmentation_checks[0]["error_type"] == "missing_term_not_typed_physical_quantity"
+    assert trace.augmentation_checks[0]["search_node_action"] is False

@@ -135,21 +135,6 @@
     "V2Notes": "Matched from testing-set v1 long-form problem text; domain headings ignored."
   },
   {
-    "Name": "competition_mechanics_Ch1_Q11",
-    "Level": "competition_hard",
-    "Category": "mechanics",
-    "Header": "import Mathlib\nimport Aesop\nimport Mathlib.Tactic\nimport PHYSlib.Foundations.SI\nimport PHYSlib.Foundations.SIDeriv\nopen BigOperators Real Nat Topology Filter Rat UnitsSystem SI\nunseal Rat.add Rat.mul Rat.sub Rat.inv",
-    "Theorem": "theorem Ch1_Q11\n  (v1 v2 : Speed)\n  (l : Length)\n  (α : ℝ)\n  (h_pos : 0 < l.val ∧ 0 < v1.val ∧ 0 < v2.val ∧ 0 < α ∧ α < Real.pi)\n  (t : Time)\n  (xA yA xB yB : Time → Length)\n  (posA_x : ∀ t, xA t = v1 * t)\n  (posA_y : ∀ t, yA t = 0)\n  (posB_x : ∀ t, xB t = l -  Real.cos α • v2 * t/1)\n  (posB_y : ∀ t, yB t = Real.sin α • v2 * t)\n  (dist : Time → Length)\n  (h_dist : ∀ t:Time, dist t**2 = (xB t - xA t)**2 + (yB t - yA t)**2)\n  (dist_min_sq : Scalar (2 • length_unit)\n:=l**2 * ((Real.sin α) ^ 2 • v2**2) / (v1**2 + (Real.cos α) • (v1 * v2)/1 + v2**2))\n  :\n  ∃ t_min : Time, (dist t_min)**2 = dist_min_sq ∧ ∀ t':Time, dist t' ≥ dist t_min := by sorry",
-    "Statement": "import Mathlib\nimport Aesop\nimport Mathlib.Tactic\nimport PHYSlib.Foundations.SI\nimport PHYSlib.Foundations.SIDeriv\nopen BigOperators Real Nat Topology Filter Rat UnitsSystem SI\nunseal Rat.add Rat.mul Rat.sub Rat.inv\ntheorem Ch1_Q11\n  (v1 v2 : Speed)\n  (l : Length)\n  (α : ℝ)\n  (h_pos : 0 < l.val ∧ 0 < v1.val ∧ 0 < v2.val ∧ 0 < α ∧ α < Real.pi)\n  (t : Time)\n  (xA yA xB yB : Time → Length)\n  (posA_x : ∀ t, xA t = v1 * t)\n  (posA_y : ∀ t, yA t = 0)\n  (posB_x : ∀ t, xB t = l -  Real.cos α • v2 * t/1)\n  (posB_y : ∀ t, yB t = Real.sin α • v2 * t)\n  (dist : Time → Length)\n  (h_dist : ∀ t:Time, dist t**2 = (xB t - xA t)**2 + (yB t - yA t)**2)\n  (dist_min_sq : Scalar (2 • length_unit)\n:=l**2 * ((Real.sin α) ^ 2 • v2**2) / (v1**2 + (Real.cos α) • (v1 * v2)/1 + v2**2))\n  :\n  ∃ t_min : Time, (dist t_min)**2 = dist_min_sq ∧ ∀ t':Time, dist t' ≥ dist t_min := by sorry",
-    "Proof": "",
-    "Informal_statement": "EXAMPLE Ch1_Q11 Q: Particles $A$ and $B$ start simultaneously from points $A$ and $B$, respectively. Particle $A$ moves with constant velocity $\\boldsymbol{v}_1$ along line $AB$, and particle $B$ moves with constant velocity $v_2$ along line $BC$, where the angle between $BC$ and $AB$ is $\\alpha$. The initial separation between $A$ and $B$ along $AB$ is $l$. Prove that the minimum distance between the two particles is \\[ r_{\\min} = \\frac{v_2 \\sin \\alpha}{\\sqrt{v_1^2 + v_2^2 + 2 v_1 v_2 \\cos \\alpha}} \\, l. \\]",
-    "Informal_proof": "",
-    "V2Order": 10,
-    "V2SourceKind": "lean4phys",
-    "V2SourceRef": "competition_mechanics_Ch1_Q11",
-    "V2Notes": "Matched from testing-set v1 long-form problem text; domain headings ignored."
-  },
-  {
     "Name": "competition_mechanics_Ch3_Q1",
     "Level": "competition_hard",
     "Category": "mechanics",
@@ -529,25 +514,6 @@
     "V2ArchiveCheckedPath": "archive/output_checked_part2/4-5.md",
     "V2ArchiveImagePaths": [
       "images/04ddef09b015bdc4fd73d462205a3e78737ec4c05075cf745b2a104be1cc5ef4.jpg"
-    ],
-    "V2Notes": "Converted from archive part2 output_checked markdown using leakage cutoff; images are passed through MixedV2DatasetAdapter as image_path when present; no image_description is used."
-  },
-  {
-    "Name": "archive_part2_5_8",
-    "Level": "archive_part2",
-    "Category": "mechanics",
-    "Header": "",
-    "Theorem": "",
-    "Statement": "",
-    "Proof": "",
-    "Informal_statement": "5-8陀螺以等角速度 $\\omega_{\\parallel}$ 绕轴 $O B$ 转动，而轴 $O B$ 等速地画出一圆锥，如图所示。如陀螺的中心轴 $O B$ 绕轴OS每分钟转数为 $n,\\angle B O S=\\theta($ （常量），求陀螺的角速度 $\\omega$ 和角加速 $\\alpha$  \n\n![](images/33b0e424f0ec4d88c56143eb850b09daecffda049d9243b864e481e9c2154061.jpg)  \n题5-8图",
-    "V2Order": 32,
-    "V2SourceKind": "archive_part2",
-    "V2SourceRef": "5-8",
-    "V2ArchiveId": "5-8",
-    "V2ArchiveCheckedPath": "archive/output_checked_part2/5-8.md",
-    "V2ArchiveImagePaths": [
-      "images/33b0e424f0ec4d88c56143eb850b09daecffda049d9243b864e481e9c2154061.jpg"
     ],
     "V2Notes": "Converted from archive part2 output_checked markdown using leakage cutoff; images are passed through MixedV2DatasetAdapter as image_path when present; no image_description is used."
   },
